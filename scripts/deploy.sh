@@ -3,25 +3,134 @@ set -euo pipefail
 
 API_URL="https://backboard.railway.app/graphql/v2"
 
+# ── error handling ───────────────────────────────────────────────────
+
+die() {
+  local message="$1"
+  local details="${2:-}"
+  local hint="${3:-}"
+
+  echo ""
+  echo "::error::$message"
+  echo "────────────────────────────────────────────────────────────────"
+  echo "❌ ERROR: $message"
+  echo ""
+
+  if [[ -n "$details" ]]; then
+    echo "Details:"
+    echo "$details" | sed 's/^/  /'
+    echo ""
+  fi
+
+  if [[ -n "$hint" ]]; then
+    echo "💡 Hint: $hint"
+    echo ""
+  fi
+
+  echo "────────────────────────────────────────────────────────────────"
+  exit 1
+}
+
 # ── helpers ──────────────────────────────────────────────────────────
 
 railway_gql() {
   local query="$1"
   local variables="$2"
+  local operation="${3:-GraphQL request}"
 
-  response=$(curl -sf -X POST "$API_URL" \
+  local http_code
+  local response
+
+  # Use a temp file to capture both response and http code
+  local tmp_file
+  tmp_file=$(mktemp)
+
+  http_code=$(curl -s -w "%{http_code}" -X POST "$API_URL" \
     -H "Authorization: Bearer $RAILWAY_API_TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"query\": \"$query\", \"variables\": $variables}" 2>&1) || {
-    echo "::error::Railway API request failed"
-    echo "$response"
-    exit 1
+    -d "{\"query\": \"$query\", \"variables\": $variables}" \
+    -o "$tmp_file" 2>&1) || {
+    local curl_exit=$?
+    rm -f "$tmp_file"
+
+    case $curl_exit in
+      6)  die "Could not resolve Railway API host" \
+              "curl exit code: $curl_exit (DNS resolution failed)" \
+              "Check your network connection and DNS settings" ;;
+      7)  die "Could not connect to Railway API" \
+              "curl exit code: $curl_exit (connection refused)" \
+              "Railway API may be down. Check https://status.railway.app" ;;
+      28) die "Railway API request timed out" \
+              "curl exit code: $curl_exit (operation timeout)" \
+              "Try again or check Railway status at https://status.railway.app" ;;
+      35) die "SSL/TLS connection failed" \
+              "curl exit code: $curl_exit (SSL connect error)" \
+              "Check your network security settings" ;;
+      *)  die "Railway API request failed" \
+              "curl exit code: $curl_exit" \
+              "Check your network connection" ;;
+    esac
   }
 
+  response=$(cat "$tmp_file")
+  rm -f "$tmp_file"
+
+  # Check HTTP status code
+  case $http_code in
+    200) ;; # OK, continue
+    401)
+      die "Railway API authentication failed" \
+          "HTTP $http_code: Unauthorized\nAPI URL: $API_URL" \
+          "Verify your RAILWAY_API_TOKEN is valid and not expired"
+      ;;
+    403)
+      die "Railway API access forbidden" \
+          "HTTP $http_code: Forbidden\nAPI URL: $API_URL" \
+          "Check that your API token has permission for this operation"
+      ;;
+    404)
+      die "Railway API endpoint not found" \
+          "HTTP $http_code: Not Found\nAPI URL: $API_URL" \
+          "The Railway API may have changed. Check for action updates."
+      ;;
+    429)
+      die "Railway API rate limit exceeded" \
+          "HTTP $http_code: Too Many Requests" \
+          "Wait a few minutes and try again"
+      ;;
+    5*)
+      die "Railway API server error" \
+          "HTTP $http_code: Server Error\nResponse: $response" \
+          "Railway may be experiencing issues. Check https://status.railway.app"
+      ;;
+    *)
+      if [[ "$http_code" != "200" ]]; then
+        die "Unexpected Railway API response" \
+            "HTTP $http_code\nResponse: $response" \
+            "Check Railway status or report this issue"
+      fi
+      ;;
+  esac
+
+  # Check for GraphQL errors
   if echo "$response" | grep -q '"errors"'; then
-    echo "::error::Railway GraphQL error"
-    echo "$response" | jq -r '.errors[].message' 2>/dev/null || echo "$response"
-    exit 1
+    local error_messages
+    error_messages=$(echo "$response" | jq -r '.errors[].message' 2>/dev/null || echo "$response")
+
+    # Provide specific hints based on common error patterns
+    local hint="Check the Railway dashboard for more details"
+
+    if echo "$error_messages" | grep -qi "not found"; then
+      hint="Verify the service ID and environment ID are correct"
+    elif echo "$error_messages" | grep -qi "permission"; then
+      hint="Ensure your API token has access to this project"
+    elif echo "$error_messages" | grep -qi "invalid"; then
+      hint="Check that all input values are properly formatted"
+    fi
+
+    die "Railway GraphQL error during: $operation" \
+        "Error(s):\n$error_messages" \
+        "$hint"
   fi
 
   echo "$response"
@@ -31,10 +140,17 @@ update_image() {
   local service_id="$1"
   local name="$2"
 
+  if [[ -z "$service_id" ]]; then
+    die "Service ID is empty for [$name]" \
+        "Service: $name\nService ID: (empty)" \
+        "Check your services input - format should be 'label:service_id'"
+  fi
+
   echo "  ↳ Updating image on [$name]"
   railway_gql \
     "mutation(\$sid:String!,\$eid:String!,\$input:ServiceInstanceUpdateInput!){serviceInstanceUpdate(serviceId:\$sid,environmentId:\$eid,input:\$input)}" \
     "{\"sid\":\"$service_id\",\"eid\":\"$RAILWAY_ENV_ID\",\"input\":{\"source\":{\"image\":\"$IMAGE_TAG\"}}}" \
+    "update image on service [$name] (ID: $service_id)" \
     > /dev/null
 }
 
@@ -42,10 +158,17 @@ redeploy() {
   local service_id="$1"
   local name="$2"
 
+  if [[ -z "$service_id" ]]; then
+    die "Service ID is empty for [$name]" \
+        "Service: $name\nService ID: (empty)" \
+        "Check your services input - format should be 'label:service_id'"
+  fi
+
   echo "  ↳ Redeploying [$name]"
   railway_gql \
     "mutation(\$sid:String!,\$eid:String!){serviceInstanceRedeploy(serviceId:\$sid,environmentId:\$eid)}" \
     "{\"sid\":\"$service_id\",\"eid\":\"$RAILWAY_ENV_ID\"}" \
+    "redeploy service [$name] (ID: $service_id)" \
     > /dev/null
 }
 
