@@ -1,0 +1,48 @@
+name: "Railway Deploy"
+description: "Update Docker image and redeploy services on Railway via GraphQL API"
+author: "HarleyTherapy"
+
+inputs:
+  api-token:
+    description: "Railway API token"
+    required: true
+  environment-id:
+    description: "Railway environment ID"
+    required: true
+  image:
+    description: "Full Docker image URI with tag (e.g. ghcr.io/org/app:sha-abc123)"
+    required: true
+  services:
+    description: "Multiline label:service_id pairs. Labels are for logging only. All services get the same image."
+    required: true
+  first-service:
+    description: "Label of the service to redeploy before all others. Remaining services deploy after wait."
+    required: false
+    default: ""
+  wait-seconds:
+    description: "Seconds to wait after first-service redeploys before deploying the rest"
+    required: false
+    default: "30"
+
+outputs:
+  deployed-services:
+    description: "Comma-separated list of deployed service names"
+    value: ${{ steps.deploy.outputs.deployed-services }}
+  image-tag:
+    description: "The image tag that was deployed"
+    value: ${{ inputs.image }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Deploy to Railway
+      id: deploy
+      shell: bash
+      env:
+        RAILWAY_API_TOKEN: ${{ inputs.api-token }}
+        RAILWAY_ENV_ID: ${{ inputs.environment-id }}
+        IMAGE_TAG: ${{ inputs.image }}
+        SERVICES: ${{ inputs.services }}
+        FIRST_SERVICE: ${{ inputs.first-service }}
+        WAIT_SECONDS: ${{ inputs.wait-seconds }}
+      run: ${{ github.action_path }}/scripts/deploy.sh
