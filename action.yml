@@ -4,8 +4,12 @@ author: "mediazard"
 
 inputs:
   api-token:
-    description: "Railway API token"
+    description: "Railway API token (account, workspace, or project token)"
     required: true
+  token-type:
+    description: "Token type: 'bearer' for account/workspace tokens (default), 'project' for project-scoped tokens"
+    required: false
+    default: "bearer"
   environment-id:
     description: "Railway environment ID"
     required: true
@@ -48,6 +52,7 @@ runs:
       shell: bash
       env:
         RAILWAY_API_TOKEN: ${{ inputs.api-token }}
+        RAILWAY_TOKEN_TYPE: ${{ inputs.token-type }}
         RAILWAY_ENV_ID: ${{ inputs.environment-id }}
         IMAGE_TAG: ${{ inputs.image }}
         SERVICES: ${{ inputs.services }}

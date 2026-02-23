@@ -6,6 +6,14 @@ API_URL="https://backboard.railway.app/graphql/v2"
 DRY_RUN="${DRY_RUN:-false}"
 DEBUG="${DEBUG:-false}"
 
+RAILWAY_TOKEN_TYPE="${RAILWAY_TOKEN_TYPE:-bearer}"
+
+if [[ "$RAILWAY_TOKEN_TYPE" == "project" ]]; then
+  AUTH_HEADER="Project-Access-Token: $RAILWAY_API_TOKEN"
+else
+  AUTH_HEADER="Authorization: Bearer $RAILWAY_API_TOKEN"
+fi
+
 debug_log() {
   if [[ "$DEBUG" == "true" ]]; then
     echo "[DEBUG] $*" >&2
@@ -86,7 +94,7 @@ railway_gql() {
   tmp_file=$(mktemp)
 
   http_code=$(curl -s -w "%{http_code}" -X POST "$API_URL" \
-    -H "Authorization: Bearer $RAILWAY_API_TOKEN" \
+    -H "$AUTH_HEADER" \
     -H "Content-Type: application/json" \
     -d "{\"query\": \"$query\", \"variables\": $variables}" \
     -o "$tmp_file" 2>&1) || {
@@ -260,6 +268,11 @@ while IFS= read -r line; do
   SERVICE_MAP["$label"]="$id"
 done <<< "$SERVICES"
 
+if [[ "$AUTH_HEADER" == Project-Access-Token:* ]]; then
+  echo "🔑 Token type: project"
+else
+  echo "🔑 Token type: account/workspace"
+fi
 echo "🐳 Image: $IMAGE_TAG"
 echo "🌍 Environment: $RAILWAY_ENV_ID"
 echo "📦 Services (${#SERVICE_MAP[@]}): ${!SERVICE_MAP[*]}"
