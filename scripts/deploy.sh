@@ -248,11 +248,11 @@ redeploy() {
     --arg eid "$RAILWAY_ENV_ID" \
     '{sid: $sid, eid: $eid}')
 
-  echo "  ↳ Redeploying [$name]"
+  echo "  ↳ Deploying [$name]"
   railway_gql \
-    "mutation(\$sid:String!,\$eid:String!){serviceInstanceRedeploy(serviceId:\$sid,environmentId:\$eid)}" \
+    "mutation(\$sid:String!,\$eid:String!){serviceInstanceDeploy(serviceId:\$sid,environmentId:\$eid)}" \
     "$variables" \
-    "redeploy service [$name] (ID: $service_id)" \
+    "deploy service [$name] (ID: $service_id)" \
     > /dev/null
 }
 
