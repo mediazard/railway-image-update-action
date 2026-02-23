@@ -1,6 +1,6 @@
 name: "Railway Deploy"
 description: "Update Docker image and redeploy services on Railway via GraphQL API"
-author: "HarleyTherapy"
+author: "mediazard"
 
 inputs:
   api-token:
