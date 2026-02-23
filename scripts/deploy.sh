@@ -157,15 +157,13 @@ railway_gql() {
 
 build_image_source_input() {
   if [[ "$HAS_REGISTRY_CREDENTIALS" == "true" ]]; then
-    local escaped_username escaped_password
-    escaped_username=$(printf '%s' "$REGISTRY_USERNAME" | jq -Rs '.')
-    escaped_password=$(printf '%s' "$REGISTRY_PASSWORD" | jq -Rs '.')
-    # Remove outer quotes added by jq -Rs
-    escaped_username="${escaped_username:1:-1}"
-    escaped_password="${escaped_password:1:-1}"
-    echo "{\"source\":{\"image\":\"$IMAGE_TAG\",\"credentials\":{\"username\":\"$escaped_username\",\"password\":\"$escaped_password\"}}}"
+    jq -n \
+      --arg image "$IMAGE_TAG" \
+      --arg username "$REGISTRY_USERNAME" \
+      --arg password "$REGISTRY_PASSWORD" \
+      '{source: {image: $image, credentials: {username: $username, password: $password}}}'
   else
-    echo "{\"source\":{\"image\":\"$IMAGE_TAG\"}}"
+    jq -n --arg image "$IMAGE_TAG" '{source: {image: $image}}'
   fi
 }
 
@@ -182,10 +180,17 @@ update_image() {
   local input_json
   input_json=$(build_image_source_input)
 
+  local variables
+  variables=$(jq -n \
+    --arg sid "$service_id" \
+    --arg eid "$RAILWAY_ENV_ID" \
+    --argjson input "$input_json" \
+    '{sid: $sid, eid: $eid, input: $input}')
+
   echo "  ↳ Updating image on [$name]"
   railway_gql \
     "mutation(\$sid:String!,\$eid:String!,\$input:ServiceInstanceUpdateInput!){serviceInstanceUpdate(serviceId:\$sid,environmentId:\$eid,input:\$input)}" \
-    "{\"sid\":\"$service_id\",\"eid\":\"$RAILWAY_ENV_ID\",\"input\":$input_json}" \
+    "$variables" \
     "update image on service [$name] (ID: $service_id)" \
     > /dev/null
 }
@@ -200,10 +205,16 @@ redeploy() {
         "Check your services input - format should be 'label:service_id'"
   fi
 
+  local variables
+  variables=$(jq -n \
+    --arg sid "$service_id" \
+    --arg eid "$RAILWAY_ENV_ID" \
+    '{sid: $sid, eid: $eid}')
+
   echo "  ↳ Redeploying [$name]"
   railway_gql \
     "mutation(\$sid:String!,\$eid:String!){serviceInstanceRedeploy(serviceId:\$sid,environmentId:\$eid)}" \
-    "{\"sid\":\"$service_id\",\"eid\":\"$RAILWAY_ENV_ID\"}" \
+    "$variables" \
     "redeploy service [$name] (ID: $service_id)" \
     > /dev/null
 }
