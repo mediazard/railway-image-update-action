@@ -29,10 +29,8 @@ test_json() {
     result=$(jq -n --arg image "$image" '{source: {image: $image}}' 2>&1)
   fi
 
-  # Validate JSON
   if echo "$result" | jq . >/dev/null 2>&1; then
     echo -e "${GREEN}✓ PASS${NC}"
-    echo "    → $result"
     ((PASSED++)) || true
     return 0
   else
@@ -60,12 +58,45 @@ test_variables_json() {
 
   if echo "$result" | jq . >/dev/null 2>&1; then
     echo -e "${GREEN}✓ PASS${NC}"
-    echo "    → $result"
     ((PASSED++)) || true
     return 0
   else
     echo -e "${RED}✗ FAIL${NC}"
     echo "    → $result"
+    ((FAILED++)) || true
+    return 1
+  fi
+}
+
+test_body_json() {
+  local description="$1"
+  local query="$2"
+  local variables="$3"
+
+  echo -n "Testing body: $description... "
+
+  local result
+  result=$(jq -n --arg q "$query" --argjson v "$variables" '{query: $q, variables: $v}' 2>&1)
+
+  if ! echo "$result" | jq . >/dev/null 2>&1; then
+    echo -e "${RED}✗ FAIL (invalid JSON)${NC}"
+    echo "    → $result"
+    ((FAILED++)) || true
+    return 1
+  fi
+
+  # Verify query round-trips correctly through jq
+  local extracted_query
+  extracted_query=$(echo "$result" | jq -r '.query')
+
+  if [[ "$extracted_query" == "$query" ]]; then
+    echo -e "${GREEN}✓ PASS${NC}"
+    ((PASSED++)) || true
+    return 0
+  else
+    echo -e "${RED}✗ FAIL (query mangled)${NC}"
+    echo "    Expected: $query"
+    echo "    Got:      $extracted_query"
     ((FAILED++)) || true
     return 1
   fi
@@ -98,7 +129,6 @@ echo ""
 echo -e "${YELLOW}── Full variables JSON tests ──${NC}"
 echo ""
 
-# Build a sample input JSON first
 input_with_creds=$(jq -n \
   --arg image "ghcr.io/org/app:latest" \
   --arg username "user@test.com" \
@@ -110,6 +140,29 @@ input_no_creds=$(jq -n --arg image "ghcr.io/org/app:latest" '{source: {image: $i
 test_variables_json "Service with credentials" "svc-abc123" "env-xyz789" "$input_with_creds"
 test_variables_json "Service without credentials" "svc-def456" "env-xyz789" "$input_no_creds"
 test_variables_json "UUID-style IDs" "550e8400-e29b-41d4-a716-446655440000" "6ba7b810-9dad-11d1-80b4-00c04fd430c8" "$input_no_creds"
+
+echo ""
+echo -e "${YELLOW}── railway_gql body construction tests ──${NC}"
+echo ""
+
+sample_vars=$(jq -n --arg sid "svc-123" --arg eid "env-456" '{sid: $sid, eid: $eid}')
+update_vars=$(jq -n \
+  --arg sid "svc-123" \
+  --arg eid "env-456" \
+  --argjson input "$input_no_creds" \
+  '{sid: $sid, eid: $eid, input: $input}')
+
+test_body_json "Deploy mutation" \
+  'mutation($sid:String!,$eid:String!){serviceInstanceDeploy(serviceId:$sid,environmentId:$eid)}' \
+  "$sample_vars"
+
+test_body_json "Update mutation" \
+  'mutation($sid:String!,$eid:String!,$input:ServiceInstanceUpdateInput!){serviceInstanceUpdate(serviceId:$sid,environmentId:$eid,input:$input)}' \
+  "$update_vars"
+
+test_body_json "Query with special GraphQL chars" \
+  'query($id:String!){service(id:$id){name,createdAt,updatedAt}}' \
+  '{"id":"svc-abc"}'
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════════"
