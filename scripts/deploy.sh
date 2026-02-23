@@ -27,7 +27,7 @@ die() {
 
   if [[ -n "$details" ]]; then
     echo "Details:" >&2
-    echo "$details" | sed 's/^/  /' >&2
+    printf '%b\n' "$details" | sed 's/^/  /' >&2
     echo "" >&2
   fi
 
@@ -133,6 +133,11 @@ railway_gql() {
           "HTTP $http_code: Not Found\nAPI URL: $API_URL" \
           "The Railway API may have changed. Check for action updates."
       ;;
+    400)
+      die "Railway API bad request during: $operation" \
+          "HTTP $http_code: Bad Request\nResponse: $response" \
+          "Check that service IDs, environment ID, and input fields are correct"
+      ;;
     429)
       die "Railway API rate limit exceeded" \
           "HTTP $http_code: Too Many Requests" \
@@ -176,18 +181,18 @@ railway_gql() {
   echo "$response"
 }
 
-build_image_source_input() {
+build_service_update_input() {
   local result
   if [[ "$HAS_REGISTRY_CREDENTIALS" == "true" ]]; then
     result=$(jq -n \
       --arg image "$IMAGE_TAG" \
       --arg username "$REGISTRY_USERNAME" \
       --arg password "$REGISTRY_PASSWORD" \
-      '{source: {image: $image, credentials: {username: $username, password: $password}}}')
+      '{source: {image: $image}, registryCredentials: {username: $username, password: $password}}')
   else
     result=$(jq -n --arg image "$IMAGE_TAG" '{source: {image: $image}}')
   fi
-  debug_log "build_image_source_input: $result"
+  debug_log "build_service_update_input: $result"
   echo "$result"
 }
 
@@ -202,7 +207,7 @@ update_image() {
   fi
 
   local input_json
-  input_json=$(build_image_source_input)
+  input_json=$(build_service_update_input)
 
   local variables
   variables=$(jq -n \

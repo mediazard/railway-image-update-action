@@ -24,7 +24,7 @@ test_json() {
       --arg image "$image" \
       --arg username "$username" \
       --arg password "$password" \
-      '{source: {image: $image, credentials: {username: $username, password: $password}}}' 2>&1)
+      '{source: {image: $image}, registryCredentials: {username: $username, password: $password}}' 2>&1)
   else
     result=$(jq -n --arg image "$image" '{source: {image: $image}}' 2>&1)
   fi
@@ -76,7 +76,7 @@ echo "JSON Construction Tests for deploy.sh"
 echo "═══════════════════════════════════════════════════════════════════"
 echo ""
 
-echo -e "${YELLOW}── build_image_source_input() tests ──${NC}"
+echo -e "${YELLOW}── build_service_update_input() tests ──${NC}"
 echo ""
 
 test_json "No credentials" "ghcr.io/org/app:latest"
@@ -103,7 +103,7 @@ input_with_creds=$(jq -n \
   --arg image "ghcr.io/org/app:latest" \
   --arg username "user@test.com" \
   --arg password 'p@$$word"test' \
-  '{source: {image: $image, credentials: {username: $username, password: $password}}}')
+  '{source: {image: $image}, registryCredentials: {username: $username, password: $password}}')
 
 input_no_creds=$(jq -n --arg image "ghcr.io/org/app:latest" '{source: {image: $image}}')
 
