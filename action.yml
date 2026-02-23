@@ -23,6 +23,14 @@ inputs:
     description: "Seconds to wait after first-service redeploys before deploying the rest"
     required: false
     default: "30"
+  registry-username:
+    description: "Registry username for private image pull authentication"
+    required: false
+    default: ""
+  registry-password:
+    description: "Registry password or token for private image pull authentication"
+    required: false
+    default: ""
 
 outputs:
   deployed-services:
@@ -45,4 +53,6 @@ runs:
         SERVICES: ${{ inputs.services }}
         FIRST_SERVICE: ${{ inputs.first-service }}
         WAIT_SECONDS: ${{ inputs.wait-seconds }}
+        REGISTRY_USERNAME: ${{ inputs.registry-username }}
+        REGISTRY_PASSWORD: ${{ inputs.registry-password }}
       run: ${{ github.action_path }}/scripts/deploy.sh

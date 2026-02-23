@@ -41,6 +41,25 @@ A reusable composite GitHub Action that updates Docker image tags on Railway ser
     wait-seconds: "60"
 ```
 
+### Private registry authentication
+
+For images from private registries (AWS ECR, Azure ACR, private Docker Hub, self-hosted):
+
+```yaml
+- name: Deploy from private registry
+  uses: HarleyTherapy/railway-image-update-action@v1
+  with:
+    api-token: ${{ secrets.RAILWAY_API_TOKEN }}
+    environment-id: ${{ vars.RAILWAY_ENV_ID }}
+    image: private.registry.com/myorg/myapp:latest
+    services: |
+      api:${{ vars.RAILWAY_API_SERVICE_ID }}
+    registry-username: ${{ secrets.REGISTRY_USERNAME }}
+    registry-password: ${{ secrets.REGISTRY_PASSWORD }}
+```
+
+> **Note**: Both `registry-username` and `registry-password` must be provided together. Store credentials as GitHub secrets, never as plain text.
+
 ## Inputs
 
 | Input            | Required | Default | Description                                                                 |
@@ -51,6 +70,8 @@ A reusable composite GitHub Action that updates Docker image tags on Railway ser
 | `services`       | Yes      | —       | Multiline `label:service_id` pairs. Labels are for logging only.            |
 | `first-service`  | No       | `""`    | Label of service to deploy first. Others deploy after wait.                 |
 | `wait-seconds`   | No       | `30`    | Seconds to wait after first-service before deploying remaining services.    |
+| `registry-username` | No    | `""`    | Username for private registry authentication (requires registry-password)   |
+| `registry-password` | No    | `""`    | Password/token for private registry authentication (requires registry-username) |
 
 ## Outputs
 
@@ -75,6 +96,12 @@ A reusable composite GitHub Action that updates Docker image tags on Railway ser
 - Railway account with API access
 - `jq` and `curl` available on runner (pre-installed on `ubuntu-latest`)
 - Docker image already pushed to a registry accessible by Railway
+
+## Security
+
+- **API tokens and registry credentials** should always be stored as [GitHub encrypted secrets](https://docs.github.com/en/actions/security-guides/encrypted-secrets)
+- Never hardcode sensitive values in workflow files
+- Registry credentials are passed securely to Railway and are not logged
 
 ## License
 

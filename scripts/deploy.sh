@@ -31,6 +31,25 @@ die() {
   exit 1
 }
 
+# ── validate registry credentials ────────────────────────────────────
+
+if [[ -n "${REGISTRY_USERNAME:-}" && -z "${REGISTRY_PASSWORD:-}" ]]; then
+  die "registry-username provided without registry-password" \
+      "Both credentials must be provided together" \
+      "Add registry-password input to your workflow"
+fi
+
+if [[ -z "${REGISTRY_USERNAME:-}" && -n "${REGISTRY_PASSWORD:-}" ]]; then
+  die "registry-password provided without registry-username" \
+      "Both credentials must be provided together" \
+      "Add registry-username input to your workflow"
+fi
+
+HAS_REGISTRY_CREDENTIALS="false"
+if [[ -n "${REGISTRY_USERNAME:-}" && -n "${REGISTRY_PASSWORD:-}" ]]; then
+  HAS_REGISTRY_CREDENTIALS="true"
+fi
+
 # ── helpers ──────────────────────────────────────────────────────────
 
 railway_gql() {
@@ -136,6 +155,20 @@ railway_gql() {
   echo "$response"
 }
 
+build_image_source_input() {
+  if [[ "$HAS_REGISTRY_CREDENTIALS" == "true" ]]; then
+    local escaped_username escaped_password
+    escaped_username=$(printf '%s' "$REGISTRY_USERNAME" | jq -Rs '.')
+    escaped_password=$(printf '%s' "$REGISTRY_PASSWORD" | jq -Rs '.')
+    # Remove outer quotes added by jq -Rs
+    escaped_username="${escaped_username:1:-1}"
+    escaped_password="${escaped_password:1:-1}"
+    echo "{\"source\":{\"image\":\"$IMAGE_TAG\",\"credentials\":{\"username\":\"$escaped_username\",\"password\":\"$escaped_password\"}}}"
+  else
+    echo "{\"source\":{\"image\":\"$IMAGE_TAG\"}}"
+  fi
+}
+
 update_image() {
   local service_id="$1"
   local name="$2"
@@ -146,10 +179,13 @@ update_image() {
         "Check your services input - format should be 'label:service_id'"
   fi
 
+  local input_json
+  input_json=$(build_image_source_input)
+
   echo "  ↳ Updating image on [$name]"
   railway_gql \
     "mutation(\$sid:String!,\$eid:String!,\$input:ServiceInstanceUpdateInput!){serviceInstanceUpdate(serviceId:\$sid,environmentId:\$eid,input:\$input)}" \
-    "{\"sid\":\"$service_id\",\"eid\":\"$RAILWAY_ENV_ID\",\"input\":{\"source\":{\"image\":\"$IMAGE_TAG\"}}}" \
+    "{\"sid\":\"$service_id\",\"eid\":\"$RAILWAY_ENV_ID\",\"input\":$input_json}" \
     "update image on service [$name] (ID: $service_id)" \
     > /dev/null
 }
@@ -187,6 +223,9 @@ done <<< "$SERVICES"
 echo "🐳 Image: $IMAGE_TAG"
 echo "🌍 Environment: $RAILWAY_ENV_ID"
 echo "📦 Services (${#SERVICE_MAP[@]}): ${!SERVICE_MAP[*]}"
+if [[ "$HAS_REGISTRY_CREDENTIALS" == "true" ]]; then
+  echo "🔐 Registry credentials: provided"
+fi
 echo ""
 
 # ── step 1: update image on all services ─────────────────────────────
