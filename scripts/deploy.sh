@@ -3,6 +3,15 @@ set -euo pipefail
 
 API_URL="https://backboard.railway.app/graphql/v2"
 
+DRY_RUN="${DRY_RUN:-false}"
+DEBUG="${DEBUG:-false}"
+
+debug_log() {
+  if [[ "$DEBUG" == "true" ]]; then
+    echo "[DEBUG] $*" >&2
+  fi
+}
+
 # ── error handling ───────────────────────────────────────────────────
 
 die() {
@@ -56,6 +65,18 @@ railway_gql() {
   local query="$1"
   local variables="$2"
   local operation="${3:-GraphQL request}"
+
+  debug_log "railway_gql operation: $operation"
+  debug_log "railway_gql query: $query"
+  debug_log "railway_gql variables: $variables"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo "[DRY-RUN] Would send to $API_URL:"
+    echo "[DRY-RUN]   Operation: $operation"
+    echo "[DRY-RUN]   Variables: $variables" | jq . 2>/dev/null || echo "[DRY-RUN]   Variables: $variables"
+    echo '{"data":{"dryRun":true}}'
+    return 0
+  fi
 
   local http_code
   local response
@@ -156,15 +177,18 @@ railway_gql() {
 }
 
 build_image_source_input() {
+  local result
   if [[ "$HAS_REGISTRY_CREDENTIALS" == "true" ]]; then
-    jq -n \
+    result=$(jq -n \
       --arg image "$IMAGE_TAG" \
       --arg username "$REGISTRY_USERNAME" \
       --arg password "$REGISTRY_PASSWORD" \
-      '{source: {image: $image, credentials: {username: $username, password: $password}}}'
+      '{source: {image: $image, credentials: {username: $username, password: $password}}}')
   else
-    jq -n --arg image "$IMAGE_TAG" '{source: {image: $image}}'
+    result=$(jq -n --arg image "$IMAGE_TAG" '{source: {image: $image}}')
   fi
+  debug_log "build_image_source_input: $result"
+  echo "$result"
 }
 
 update_image() {
