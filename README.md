@@ -15,7 +15,7 @@ A reusable composite GitHub Action that updates Docker image tags on Railway ser
 
 ```yaml
 - name: Deploy to Railway
-  uses: mediazard/railway-image-update-action@v0.0.1
+  uses: mediazard/railway-image-update-action@v0.0.2
   with:
     api-token: ${{ secrets.RAILWAY_API_TOKEN }}
     environment-id: ${{ vars.RAILWAY_ENV_ID }}
@@ -28,7 +28,7 @@ A reusable composite GitHub Action that updates Docker image tags on Railway ser
 
 ```yaml
 - name: Deploy to Railway
-  uses: mediazard/railway-image-update-action@v0.0.1
+  uses: mediazard/railway-image-update-action@v0.0.2
   with:
     api-token: ${{ secrets.RAILWAY_API_TOKEN }}
     environment-id: ${{ vars.RAILWAY_PROD_ENV_ID }}
@@ -47,7 +47,7 @@ For images from private registries (AWS ECR, Azure ACR, private Docker Hub, self
 
 ```yaml
 - name: Deploy from private registry
-  uses: mediazard/railway-image-update-action@v0.0.1
+  uses: mediazard/railway-image-update-action@v0.0.2
   with:
     api-token: ${{ secrets.RAILWAY_API_TOKEN }}
     environment-id: ${{ vars.RAILWAY_ENV_ID }}
