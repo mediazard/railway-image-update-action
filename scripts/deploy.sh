@@ -6,14 +6,6 @@ API_URL="https://backboard.railway.app/graphql/v2"
 DRY_RUN="${DRY_RUN:-false}"
 DEBUG="${DEBUG:-false}"
 
-RAILWAY_TOKEN_TYPE="${RAILWAY_TOKEN_TYPE:-bearer}"
-
-if [[ "$RAILWAY_TOKEN_TYPE" == "project" ]]; then
-  AUTH_HEADER="Project-Access-Token: $RAILWAY_API_TOKEN"
-else
-  AUTH_HEADER="Authorization: Bearer $RAILWAY_API_TOKEN"
-fi
-
 debug_log() {
   if [[ "$DEBUG" == "true" ]]; then
     echo "[DEBUG] $*" >&2
@@ -48,6 +40,32 @@ die() {
   exit 1
 }
 
+# ── validate required inputs ────────────────────────────────────────
+
+if [[ -z "${RAILWAY_API_TOKEN:-}" ]]; then
+  die "RAILWAY_API_TOKEN is not set" \
+      "The api-token input is required" \
+      "Add 'api-token: \${{ secrets.RAILWAY_API_TOKEN }}' to your workflow"
+fi
+
+if [[ -z "${RAILWAY_ENV_ID:-}" ]]; then
+  die "RAILWAY_ENV_ID is not set" \
+      "The environment-id input is required" \
+      "Add 'environment-id: \${{ vars.RAILWAY_ENV_ID }}' to your workflow"
+fi
+
+if [[ -z "${IMAGE_TAG:-}" ]]; then
+  die "IMAGE_TAG is not set" \
+      "The image input is required" \
+      "Add 'image: ghcr.io/your-org/your-app:tag' to your workflow"
+fi
+
+if [[ -z "${SERVICES:-}" ]]; then
+  die "SERVICES is not set" \
+      "The services input is required" \
+      "Add 'services: |' with 'label:service_id' pairs to your workflow"
+fi
+
 # ── validate registry credentials ────────────────────────────────────
 
 if [[ -n "${REGISTRY_USERNAME:-}" && -z "${REGISTRY_PASSWORD:-}" ]]; then
@@ -67,6 +85,16 @@ if [[ -n "${REGISTRY_USERNAME:-}" && -n "${REGISTRY_PASSWORD:-}" ]]; then
   HAS_REGISTRY_CREDENTIALS="true"
 fi
 
+# ── auth header ──────────────────────────────────────────────────────
+
+RAILWAY_TOKEN_TYPE="${RAILWAY_TOKEN_TYPE:-bearer}"
+
+if [[ "$RAILWAY_TOKEN_TYPE" == "project" ]]; then
+  AUTH_HEADER="Project-Access-Token: $RAILWAY_API_TOKEN"
+else
+  AUTH_HEADER="Authorization: Bearer $RAILWAY_API_TOKEN"
+fi
+
 # ── helpers ──────────────────────────────────────────────────────────
 
 railway_gql() {
@@ -78,25 +106,27 @@ railway_gql() {
   debug_log "railway_gql query: $query"
   debug_log "railway_gql variables: $variables"
 
+  local body
+  body=$(jq -n --arg q "$query" --argjson v "$variables" '{query: $q, variables: $v}')
+
   if [[ "$DRY_RUN" == "true" ]]; then
     echo "[DRY-RUN] Would send to $API_URL:"
     echo "[DRY-RUN]   Operation: $operation"
-    echo "[DRY-RUN]   Variables: $variables" | jq . 2>/dev/null || echo "[DRY-RUN]   Variables: $variables"
+    echo "[DRY-RUN]   Body:"
+    echo "$body" | jq . 2>/dev/null || echo "$body"
     echo '{"data":{"dryRun":true}}'
     return 0
   fi
 
   local http_code
   local response
-
-  # Use a temp file to capture both response and http code
   local tmp_file
   tmp_file=$(mktemp)
 
   http_code=$(curl -s -w "%{http_code}" -X POST "$API_URL" \
     -H "$AUTH_HEADER" \
     -H "Content-Type: application/json" \
-    -d "{\"query\": \"$query\", \"variables\": $variables}" \
+    -d "$body" \
     -o "$tmp_file" 2>&1) || {
     local curl_exit=$?
     rm -f "$tmp_file"
@@ -120,12 +150,11 @@ railway_gql() {
     esac
   }
 
-  response=$(cat "$tmp_file")
+  response=$(<"$tmp_file")
   rm -f "$tmp_file"
 
-  # Check HTTP status code
   case $http_code in
-    200) ;; # OK, continue
+    200) ;;
     401)
       die "Railway API authentication failed" \
           "HTTP $http_code: Unauthorized\nAPI URL: $API_URL" \
@@ -157,20 +186,16 @@ railway_gql() {
           "Railway may be experiencing issues. Check https://status.railway.app"
       ;;
     *)
-      if [[ "$http_code" != "200" ]]; then
-        die "Unexpected Railway API response" \
-            "HTTP $http_code\nResponse: $response" \
-            "Check Railway status or report this issue"
-      fi
+      die "Unexpected Railway API response" \
+          "HTTP $http_code\nResponse: $response" \
+          "Check Railway status or report this issue"
       ;;
   esac
 
-  # Check for GraphQL errors
   if echo "$response" | grep -q '"errors"'; then
     local error_messages
     error_messages=$(echo "$response" | jq -r '.errors[].message' 2>/dev/null || echo "$response")
 
-    # Provide specific hints based on common error patterns
     local hint="Check the Railway dashboard for more details"
 
     if echo "$error_messages" | grep -qi "not found"; then
@@ -204,7 +229,7 @@ build_service_update_input() {
   echo "$result"
 }
 
-update_image() {
+validate_service_id() {
   local service_id="$1"
   local name="$2"
 
@@ -213,6 +238,13 @@ update_image() {
         "Service: $name\nService ID: (empty)" \
         "Check your services input - format should be 'label:service_id'"
   fi
+}
+
+update_image() {
+  local service_id="$1"
+  local name="$2"
+
+  validate_service_id "$service_id" "$name"
 
   local input_json
   input_json=$(build_service_update_input)
@@ -236,11 +268,7 @@ redeploy() {
   local service_id="$1"
   local name="$2"
 
-  if [[ -z "$service_id" ]]; then
-    die "Service ID is empty for [$name]" \
-        "Service: $name\nService ID: (empty)" \
-        "Check your services input - format should be 'label:service_id'"
-  fi
+  validate_service_id "$service_id" "$name"
 
   local variables
   variables=$(jq -n \
@@ -281,24 +309,25 @@ if [[ "$HAS_REGISTRY_CREDENTIALS" == "true" ]]; then
 fi
 echo ""
 
-# ── step 1: update image on all services ─────────────────────────────
+# ── update + redeploy ────────────────────────────────────────────────
 
-echo "Step 1/3: Updating image source on all services"
-for label in "${!SERVICE_MAP[@]}"; do
-  update_image "${SERVICE_MAP[$label]}" "$label"
-done
-echo ""
+if [[ -n "${FIRST_SERVICE:-}" ]]; then
+  # ── ordered deploy (3 steps) ──────────────────────────────────────
 
-# ── step 2: redeploy with optional ordering ─────────────────────────
-
-if [[ -n "$FIRST_SERVICE" ]]; then
-  echo "Step 2/3: Redeploying [$FIRST_SERVICE] first"
+  echo "Step 1/3: Updating image source on all services"
+  for label in "${!SERVICE_MAP[@]}"; do
+    update_image "${SERVICE_MAP[$label]}" "$label"
+  done
+  echo ""
 
   if [[ -z "${SERVICE_MAP[$FIRST_SERVICE]+x}" ]]; then
-    echo "::error::first-service '$FIRST_SERVICE' not found in services list"
-    exit 1
+    available_labels=$(printf '%s, ' "${!SERVICE_MAP[@]}")
+    die "first-service '$FIRST_SERVICE' not found in services list" \
+        "Requested first-service: $FIRST_SERVICE\nAvailable services: ${available_labels%, }" \
+        "Use one of the available service labels, or remove the first-service input"
   fi
 
+  echo "Step 2/3: Redeploying [$FIRST_SERVICE] first"
   redeploy "${SERVICE_MAP[$FIRST_SERVICE]}" "$FIRST_SERVICE"
   DEPLOYED+=("$FIRST_SERVICE")
 
@@ -314,12 +343,19 @@ if [[ -n "$FIRST_SERVICE" ]]; then
     fi
   done
 else
-  echo "Step 2/3: No first-service specified — redeploying all together"
+  # ── parallel deploy (2 steps) ─────────────────────────────────────
+
+  echo "Step 1/2: Updating image source on all services"
+  for label in "${!SERVICE_MAP[@]}"; do
+    update_image "${SERVICE_MAP[$label]}" "$label"
+  done
+  echo ""
+
+  echo "Step 2/2: Redeploying all services"
   for label in "${!SERVICE_MAP[@]}"; do
     redeploy "${SERVICE_MAP[$label]}" "$label"
     DEPLOYED+=("$label")
   done
-  echo "Step 3/3: Skipped (no ordering needed)"
 fi
 
 echo ""

@@ -6,6 +6,8 @@ A reusable composite GitHub Action that updates Docker image tags on Railway ser
 
 - Framework-agnostic, service-count-agnostic
 - Supports ordered deployments (deploy one service first, wait, then deploy the rest)
+- Supports account, workspace, and project-scoped API tokens
+- Private registry authentication (AWS ECR, Azure ACR, GHCR, Docker Hub, self-hosted)
 - Pure bash — no Node.js or additional dependencies
 - Works with any Docker registry accessible by Railway
 
@@ -15,7 +17,7 @@ A reusable composite GitHub Action that updates Docker image tags on Railway ser
 
 ```yaml
 - name: Deploy to Railway
-  uses: mediazard/railway-image-update-action@v0.0.2
+  uses: mediazard/railway-image-update-action@v1
   with:
     api-token: ${{ secrets.RAILWAY_API_TOKEN }}
     environment-id: ${{ vars.RAILWAY_ENV_ID }}
@@ -28,7 +30,7 @@ A reusable composite GitHub Action that updates Docker image tags on Railway ser
 
 ```yaml
 - name: Deploy to Railway
-  uses: mediazard/railway-image-update-action@v0.0.2
+  uses: mediazard/railway-image-update-action@v1
   with:
     api-token: ${{ secrets.RAILWAY_API_TOKEN }}
     environment-id: ${{ vars.RAILWAY_PROD_ENV_ID }}
@@ -47,7 +49,7 @@ For images from private registries (AWS ECR, Azure ACR, private Docker Hub, self
 
 ```yaml
 - name: Deploy from private registry
-  uses: mediazard/railway-image-update-action@v0.0.2
+  uses: mediazard/railway-image-update-action@v1
   with:
     api-token: ${{ secrets.RAILWAY_API_TOKEN }}
     environment-id: ${{ vars.RAILWAY_ENV_ID }}
@@ -60,36 +62,49 @@ For images from private registries (AWS ECR, Azure ACR, private Docker Hub, self
 
 > **Note**: Both `registry-username` and `registry-password` must be provided together. Store credentials as GitHub secrets, never as plain text.
 
+### Project-scoped token
+
+If using a Railway project token instead of an account/workspace token:
+
+```yaml
+- name: Deploy to Railway
+  uses: mediazard/railway-image-update-action@v1
+  with:
+    api-token: ${{ secrets.RAILWAY_PROJECT_TOKEN }}
+    token-type: project
+    environment-id: ${{ vars.RAILWAY_ENV_ID }}
+    image: ghcr.io/myorg/myapp:latest
+    services: |
+      api:${{ vars.RAILWAY_API_SERVICE_ID }}
+```
+
 ## Inputs
 
-| Input            | Required | Default | Description                                                                 |
-| ---------------- | -------- | ------- | --------------------------------------------------------------------------- |
-| `api-token`      | Yes      | —       | Railway API token                                                           |
-| `environment-id` | Yes      | —       | Railway environment ID                                                      |
-| `image`          | Yes      | —       | Full Docker image URI with tag                                              |
-| `services`       | Yes      | —       | Multiline `label:service_id` pairs. Labels are for logging only.            |
-| `first-service`  | No       | `""`    | Label of service to deploy first. Others deploy after wait.                 |
-| `wait-seconds`   | No       | `30`    | Seconds to wait after first-service before deploying remaining services.    |
-| `registry-username` | No    | `""`    | Username for private registry authentication (requires registry-password)   |
-| `registry-password` | No    | `""`    | Password/token for private registry authentication (requires registry-username) |
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `api-token` | Yes | — | Railway API token (account, workspace, or project) |
+| `token-type` | No | `bearer` | Token type: `bearer` for account/workspace, `project` for project-scoped |
+| `environment-id` | Yes | — | Railway environment ID |
+| `image` | Yes | — | Full Docker image URI with tag |
+| `services` | Yes | — | Multiline `label:service_id` pairs. Labels are for logging only. |
+| `first-service` | No | `""` | Label of service to deploy first. Others deploy after wait. |
+| `wait-seconds` | No | `30` | Seconds to wait after first-service before deploying remaining services. |
+| `registry-username` | No | `""` | Username for private registry authentication (requires registry-password) |
+| `registry-password` | No | `""` | Password/token for private registry authentication (requires registry-username) |
 
 ## Outputs
 
-| Output              | Description                                |
-| ------------------- | ------------------------------------------ |
-| `deployed-services` | Comma-separated list of deployed services  |
-| `image-tag`         | The image tag that was deployed            |
+| Output | Description |
+|--------|-------------|
+| `deployed-services` | Comma-separated list of deployed services |
+| `image-tag` | The image tag that was deployed |
 
 ## How It Works
 
-1. Parses the `services` input into label:id pairs
+1. Validates all required inputs and credentials
 2. Updates the Docker image source on **all** services via Railway GraphQL API
-3. If `first-service` is set:
-   - Redeploys that service first
-   - Waits `wait-seconds`
-   - Redeploys remaining services
-4. If `first-service` is not set:
-   - Redeploys all services together
+3. If `first-service` is set: redeploys that service, waits, then redeploys the rest
+4. If `first-service` is not set: redeploys all services together
 
 ## Prerequisites
 
@@ -97,10 +112,21 @@ For images from private registries (AWS ECR, Azure ACR, private Docker Hub, self
 - `jq` and `curl` available on runner (pre-installed on `ubuntu-latest`)
 - Docker image already pushed to a registry accessible by Railway
 
+## Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `RAILWAY_API_TOKEN is not set` | Missing `api-token` input | Add `api-token: ${{ secrets.RAILWAY_API_TOKEN }}` |
+| `Railway API authentication failed` | Invalid or expired token | Regenerate token in Railway dashboard |
+| `Railway API access forbidden` | Token lacks permissions | Use a token with access to the target project |
+| `first-service '...' not found` | Label doesn't match any service | Check spelling matches a label in `services` |
+| `registry-username provided without registry-password` | Only one credential provided | Provide both or neither |
+
 ## Security
 
 - **API tokens and registry credentials** should always be stored as [GitHub encrypted secrets](https://docs.github.com/en/actions/security-guides/encrypted-secrets)
 - Never hardcode sensitive values in workflow files
+- All JSON payloads are constructed with `jq` to prevent injection
 - Registry credentials are passed securely to Railway and are not logged
 
 ## License
