@@ -35,14 +35,28 @@ inputs:
     description: "Registry password or token for private image pull authentication"
     required: false
     default: ""
+  resolve-to-digest:
+    description: "Resolve the image tag to a content-addressed digest before passing to Railway. Prevents mutable-tag races. Set to 'false' only if you manage digest pinning yourself."
+    required: false
+    default: "true"
+  allow-mutable-tag:
+    description: "When resolve-to-digest is 'false', allow deploying a mutable tag (latest, main, master, develop, stable, or no tag). Defaults to 'false' to fail fast on unsafe refs."
+    required: false
+    default: "false"
 
 outputs:
   deployed-services:
-    description: "Comma-separated list of deployed service names"
+    description: "Comma-separated list of service labels that were successfully deployed (always written, even on partial failure)"
     value: ${{ steps.deploy.outputs.deployed-services }}
+  failed-services:
+    description: "Comma-separated list of service labels that were not deployed (empty on full success; populated on partial or full failure)"
+    value: ${{ steps.deploy.outputs.failed-services }}
   image-tag:
-    description: "The image tag that was deployed"
-    value: ${{ inputs.image }}
+    description: "The resolved image reference that was deployed. When `resolve-to-digest` is `true` (default), this is a digest-pinned ref (e.g. `ghcr.io/org/app@sha256:...`). When `resolve-to-digest` is `false`, this is the input image ref verbatim."
+    value: ${{ steps.deploy.outputs.image-tag }}
+  deployment-ids:
+    description: "Newline-separated `label=deployment-id` pairs for each service deployed (e.g. `web=abc123`). Use to deep-link into the Railway dashboard."
+    value: ${{ steps.deploy.outputs.deployment-ids }}
 
 runs:
   using: "composite"
@@ -60,4 +74,6 @@ runs:
         WAIT_SECONDS: ${{ inputs.wait-seconds }}
         REGISTRY_USERNAME: ${{ inputs.registry-username }}
         REGISTRY_PASSWORD: ${{ inputs.registry-password }}
+        RESOLVE_TO_DIGEST: ${{ inputs.resolve-to-digest }}
+        ALLOW_MUTABLE_TAG: ${{ inputs.allow-mutable-tag }}
       run: ${{ github.action_path }}/scripts/deploy.sh

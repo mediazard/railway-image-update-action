@@ -1,0 +1,15 @@
+# CODEOWNERS
+# Require review from the mediazard engineering team for sensitive changes.
+# GitHub resolves the first matching pattern, so list more specific patterns last.
+
+# Core action logic and CI/CD — require engineering review
+/scripts/         @mediazard/engineering
+/action.yml       @mediazard/engineering
+/.github/workflows/ @mediazard/engineering
+
+# Security and contribution files also gated
+/SECURITY.md      @mediazard/engineering
+/CONTRIBUTING.md  @mediazard/engineering
+
+# README and documentation — unowned (anyone can update)
+# /README.md      (intentionally unowned)
