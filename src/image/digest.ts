@@ -62,15 +62,30 @@ export async function resolveImageDigest(
   //    emoji — matches bash v0 byte-for-byte.
   core.info(`  🔍 Resolving manifest digest for: ${ref}`);
 
+  // Defense-in-depth against argv injection: even though IMAGE_REF_PATTERN
+  // now rejects leading `-`, the derived `registry` segment must also not
+  // start with one — otherwise docker would consume it as a global flag
+  // (e.g. `--config`, `--host`).
+  if (opts.registry.startsWith('-') || ref.startsWith('-')) {
+    throw new ActionError(
+      'Refusing docker arguments that look like CLI flags',
+      `registry='${opts.registry}', ref='${ref}'`,
+      'Image reference must not start with a hyphen',
+    );
+  }
+
   const run: ExecFn = execFn ?? exec.getExecOutput;
 
   // 4. If credentials provided, `docker login` first via stdin to avoid
-  //    leaking the password in `ps`/argv.
+  //    leaking the password in `ps`/argv. The `--` separator after flags
+  //    pins `registry` as the positional argument, so even if some future
+  //    version of docker invents a new global flag with a similar name,
+  //    we won't be fooled.
   if (opts.credentials) {
     const { username, password } = opts.credentials;
     const loginResult = await run(
       'docker',
-      ['login', opts.registry, '-u', username, '--password-stdin'],
+      ['login', '-u', username, '--password-stdin', '--', opts.registry],
       {
         input: Buffer.from(password),
         silent: true,
@@ -89,10 +104,10 @@ export async function resolveImageDigest(
 
   // 5. Inspect the manifest. `buildx imagetools inspect` is preferred over
   //    `docker manifest inspect` because it works with multi-arch indexes
-  //    without `experimental` mode.
+  //    without `experimental` mode. `--` separator pins `ref` as positional.
   const inspect = await run(
     'docker',
-    ['buildx', 'imagetools', 'inspect', ref, '--format', '{{json .Manifest}}'],
+    ['buildx', 'imagetools', 'inspect', '--format', '{{json .Manifest}}', '--', ref],
     { silent: true, ignoreReturnCode: true },
   );
 

@@ -1,6 +1,6 @@
-# Railway Deploy Action
+# Railway Image Update Action
 
-A reusable composite GitHub Action that updates Docker image tags on Railway services and triggers redeployment via the Railway GraphQL API.
+A reusable GitHub Action that updates Docker image source on Railway services and triggers redeployment via the Railway GraphQL API.
 
 ## Features
 
@@ -8,8 +8,19 @@ A reusable composite GitHub Action that updates Docker image tags on Railway ser
 - Supports ordered deployments (deploy one service first, wait, then deploy the rest)
 - Supports account, workspace, and project-scoped API tokens
 - Private registry authentication (AWS ECR, Azure ACR, GHCR, Docker Hub, self-hosted)
-- Pure bash — no Node.js or additional dependencies
-- Works with any Docker registry accessible by Railway
+- **Resolves image tags to content-addressed digests by default** — prevents mutable-tag races
+- TypeScript implementation, bundled to a single committed `dist/index.js` (no runtime install)
+- Runs on `node20` (~200 ms cold start)
+
+## Why digest pinning?
+
+By default, the action resolves your image tag to a content-addressed digest (`sha256:...`) before calling Railway's API. This prevents a subtle race:
+
+> You push `myapp:latest` and trigger a deploy. Concurrently, a different build also pushes to `myapp:latest`. Railway resolves the tag at pull time — potentially pulling the *other* build's image into *your* deployment.
+
+With digest pinning, Railway gets `ghcr.io/myorg/myapp@sha256:<exact-digest>`, which is immutable. The image that reaches your container is exactly what you tested.
+
+If you prefer to manage immutability yourself (e.g. you already use `sha-${{ github.sha }}` tags), set `resolve-to-digest: false`. Without explicit opt-in via `allow-mutable-tag: true`, the action will still fail fast if the ref looks mutable (`:latest`, `:main`, `:master`, `:develop`, `:stable`, or no tag).
 
 ## Usage
 
@@ -17,14 +28,19 @@ A reusable composite GitHub Action that updates Docker image tags on Railway ser
 
 ```yaml
 - name: Deploy to Railway
+  id: deploy
   uses: mediazard/railway-image-update-action@v1
   with:
     api-token: ${{ secrets.RAILWAY_API_TOKEN }}
     environment-id: ${{ vars.RAILWAY_ENV_ID }}
-    image: ghcr.io/myorg/myapp:latest
+    image: ghcr.io/myorg/myapp:sha-${{ github.sha }}
     services: |
       api:${{ vars.RAILWAY_API_SERVICE_ID }}
+
+- run: echo "Deployed ${{ steps.deploy.outputs.image-tag }}"
 ```
+
+The `image-tag` output contains the resolved digest ref (e.g. `ghcr.io/myorg/myapp@sha256:...`), so you have an auditable record of exactly what was deployed.
 
 ### Ordered deployment (multiple services)
 
@@ -45,7 +61,7 @@ A reusable composite GitHub Action that updates Docker image tags on Railway ser
 
 ### Private registry authentication
 
-For images from private registries (AWS ECR, Azure ACR, private Docker Hub, self-hosted):
+For images from private registries, credentials authenticate both the digest resolution step and Railway's pull:
 
 ```yaml
 - name: Deploy from private registry
@@ -53,22 +69,19 @@ For images from private registries (AWS ECR, Azure ACR, private Docker Hub, self
   with:
     api-token: ${{ secrets.RAILWAY_API_TOKEN }}
     environment-id: ${{ vars.RAILWAY_ENV_ID }}
-    image: private.registry.com/myorg/myapp:latest
+    image: private.registry.com/myorg/myapp:sha-${{ github.sha }}
     services: |
       api:${{ vars.RAILWAY_API_SERVICE_ID }}
     registry-username: ${{ secrets.REGISTRY_USERNAME }}
     registry-password: ${{ secrets.REGISTRY_PASSWORD }}
 ```
 
-> **Note**: Both `registry-username` and `registry-password` must be provided together. Store credentials as GitHub secrets, never as plain text.
+Both `registry-username` and `registry-password` must be provided together. Store credentials as GitHub secrets.
 
 ### Project-scoped token
 
-If using a Railway project token instead of an account/workspace token:
-
 ```yaml
-- name: Deploy to Railway
-  uses: mediazard/railway-image-update-action@v1
+- uses: mediazard/railway-image-update-action@v1
   with:
     api-token: ${{ secrets.RAILWAY_PROJECT_TOKEN }}
     token-type: project
@@ -83,34 +96,65 @@ If using a Railway project token instead of an account/workspace token:
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `api-token` | Yes | — | Railway API token (account, workspace, or project) |
-| `token-type` | No | `bearer` | Token type: `bearer` for account/workspace, `project` for project-scoped |
-| `environment-id` | Yes | — | Railway environment ID |
-| `image` | Yes | — | Full Docker image URI with tag |
+| `token-type` | No | `bearer` | `bearer` for account/workspace, `project` for project-scoped |
+| `environment-id` | Yes | — | Railway environment ID (UUID) |
+| `image` | Yes | — | Full Docker image URI with tag or digest |
 | `services` | Yes | — | Multiline `label:service_id` pairs. Labels are for logging only. |
 | `first-service` | No | `""` | Label of service to deploy first. Others deploy after wait. |
-| `wait-seconds` | No | `30` | Seconds to wait after first-service before deploying remaining services. |
-| `registry-username` | No | `""` | Username for private registry authentication (requires registry-password) |
-| `registry-password` | No | `""` | Password/token for private registry authentication (requires registry-username) |
+| `wait-seconds` | No | `30` | Seconds to wait after first-service before deploying remaining |
+| `registry-username` | No | `""` | Username for private registry (requires registry-password) |
+| `registry-password` | No | `""` | Password/token for private registry (requires registry-username) |
+| `resolve-to-digest` | No | `true` | Resolve the image tag to a content-addressed digest before deploying |
+| `allow-mutable-tag` | No | `false` | When `resolve-to-digest: false`, allow deploying mutable tags |
 
 ## Outputs
 
 | Output | Description |
 |--------|-------------|
-| `deployed-services` | Comma-separated list of deployed services |
-| `image-tag` | The image tag that was deployed |
+| `deployed-services` | Comma-separated list of deployed service labels (always written, even on failure) |
+| `failed-services` | Comma-separated list of labels that did NOT deploy (empty on full success) |
+| `image-tag` | The resolved image reference. With `resolve-to-digest: true` (default) this is a digest-pinned ref |
+| `deployment-ids` | Newline-separated `label=id` pairs |
 
-## How It Works
+## How it works
 
-1. Validates all required inputs and credentials
-2. Updates the Docker image source on **all** services via Railway GraphQL API
-3. If `first-service` is set: redeploys that service, waits, then redeploys the rest
-4. If `first-service` is not set: redeploys all services together
+### Without `first-service` (2-step flow)
 
-## Prerequisites
+1. **Step 1/2** — Update image source on all services
+2. **Step 2/2** — Redeploy all services
 
-- Railway account with API access
-- `jq` and `curl` available on runner (pre-installed on `ubuntu-latest`)
-- Docker image already pushed to a registry accessible by Railway
+Services are processed sequentially in input order. Sequential iteration is an invariant — never replaced with `Promise.all`. This preserves deterministic partial-failure semantics.
+
+### With `first-service` (3-step flow)
+
+1. **Step 1/3** — Update + redeploy `first-service`
+2. Wait `wait-seconds`
+3. **Step 2/3** — Update image source on remaining services
+4. **Step 3/3** — Redeploy remaining services
+
+If any step fails, only services that completed their own update + redeploy appear in `deployed-services`. Services not yet touched remain on the old image — safe to retry.
+
+## Architecture
+
+Pure TypeScript, bundled to a single `dist/index.js` via `@vercel/ncc`. The runtime is `node20` (provided by the GitHub Actions runner).
+
+Dependencies (runtime — bundled):
+- `@actions/core`, `@actions/exec` — Actions runtime
+- `graphql-request@^7` — GraphQL client with `AbortController` support
+- `p-retry@^4` — exponential backoff + jitter retry (CJS-only; v5+ is ESM and breaks ncc)
+- `zod@~3.23` — input validation + response shape checks
+
+The `dist/index.js` is committed so consumers don't pull `node_modules` at runtime; the bundle is reproducible (Node patch pinned in `.node-version`, ncc bundle-freshness gate in CI).
+
+## Pinning the action version
+
+| Pin style | Example | Trade-off |
+|-----------|---------|-----------|
+| Full SHA (recommended) | `@<full-sha>` | Immutable, supply-chain safe |
+| Rolling major tag | `@v1` | Auto-updates within major; tag is force-pushed on each release |
+| Specific version | `@v1.0.0` | Lightweight immutable tag |
+
+See [SECURITY.md](SECURITY.md) for the full policy.
 
 ## Troubleshooting
 
@@ -120,14 +164,8 @@ If using a Railway project token instead of an account/workspace token:
 | `Railway API authentication failed` | Invalid or expired token | Regenerate token in Railway dashboard |
 | `Railway API access forbidden` | Token lacks permissions | Use a token with access to the target project |
 | `first-service '...' not found` | Label doesn't match any service | Check spelling matches a label in `services` |
-| `registry-username provided without registry-password` | Only one credential provided | Provide both or neither |
-
-## Security
-
-- **API tokens and registry credentials** should always be stored as [GitHub encrypted secrets](https://docs.github.com/en/actions/security-guides/encrypted-secrets)
-- Never hardcode sensitive values in workflow files
-- All JSON payloads are constructed with `jq` to prevent injection
-- Registry credentials are passed securely to Railway and are not logged
+| `Refusing to deploy mutable tag` | `resolve-to-digest: false` + mutable tag + `allow-mutable-tag: false` | Use immutable tag, enable `resolve-to-digest: true`, or set `allow-mutable-tag: true` |
+| `Failed to resolve manifest digest` | Registry unreachable or image not found | Check registry credentials, image existence, network access |
 
 ## License
 

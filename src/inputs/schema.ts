@@ -12,10 +12,16 @@ export const UUID_PATTERN =
 /**
  * Image reference: `registry/repo[:tag | @sha256:<hex>]`.
  *
- * Intentionally narrow — does NOT accept `localhost:5000/...` port forms.
- * Matches v0's regex byte-for-byte. The trade-off is documented in CHANGELOG.
+ * Intentionally narrow:
+ * - first character MUST be `[a-z0-9]` — prevents leading `-` (would otherwise
+ *   match `--config/foo:bar` and slip through as a docker CLI flag downstream)
+ * - body characters limited to `[a-z0-9._/-]`
+ * - optional tag or sha256 digest suffix
+ *
+ * Does NOT accept `localhost:5000/...` port forms. CHANGELOG documents the
+ * trade-off.
  */
-export const IMAGE_REF_PATTERN = /^[a-z0-9._/-]+(:[a-zA-Z0-9._-]+|@sha256:[0-9a-f]{64})?$/;
+export const IMAGE_REF_PATTERN = /^[a-z0-9][a-z0-9._/-]*(:[a-zA-Z0-9._-]+|@sha256:[0-9a-f]{64})?$/;
 
 /**
  * Parse the multiline `services` input into a `Map<label, serviceId>`.

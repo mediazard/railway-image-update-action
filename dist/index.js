@@ -60676,12 +60676,22 @@ async function resolveImageDigest(ref, opts, execFn) {
     // 3. Live mode: announce the lookup. Note the leading two spaces and 🔍
     //    emoji — matches bash v0 byte-for-byte.
     core.info(`  🔍 Resolving manifest digest for: ${ref}`);
+    // Defense-in-depth against argv injection: even though IMAGE_REF_PATTERN
+    // now rejects leading `-`, the derived `registry` segment must also not
+    // start with one — otherwise docker would consume it as a global flag
+    // (e.g. `--config`, `--host`).
+    if (opts.registry.startsWith('-') || ref.startsWith('-')) {
+        throw new errors_1.ActionError('Refusing docker arguments that look like CLI flags', `registry='${opts.registry}', ref='${ref}'`, 'Image reference must not start with a hyphen');
+    }
     const run = execFn ?? exec.getExecOutput;
     // 4. If credentials provided, `docker login` first via stdin to avoid
-    //    leaking the password in `ps`/argv.
+    //    leaking the password in `ps`/argv. The `--` separator after flags
+    //    pins `registry` as the positional argument, so even if some future
+    //    version of docker invents a new global flag with a similar name,
+    //    we won't be fooled.
     if (opts.credentials) {
         const { username, password } = opts.credentials;
-        const loginResult = await run('docker', ['login', opts.registry, '-u', username, '--password-stdin'], {
+        const loginResult = await run('docker', ['login', '-u', username, '--password-stdin', '--', opts.registry], {
             input: Buffer.from(password),
             silent: true,
             ignoreReturnCode: true,
@@ -60693,8 +60703,8 @@ async function resolveImageDigest(ref, opts, execFn) {
     }
     // 5. Inspect the manifest. `buildx imagetools inspect` is preferred over
     //    `docker manifest inspect` because it works with multi-arch indexes
-    //    without `experimental` mode.
-    const inspect = await run('docker', ['buildx', 'imagetools', 'inspect', ref, '--format', '{{json .Manifest}}'], { silent: true, ignoreReturnCode: true });
+    //    without `experimental` mode. `--` separator pins `ref` as positional.
+    const inspect = await run('docker', ['buildx', 'imagetools', 'inspect', '--format', '{{json .Manifest}}', '--', ref], { silent: true, ignoreReturnCode: true });
     if (inspect.exitCode !== 0) {
         throw new errors_1.ActionError('Failed to resolve manifest digest for image', `Image: ${ref}\nError: ${inspect.stderr}`, 'Check that the image exists, is accessible, and registry credentials are correct');
     }
@@ -60836,9 +60846,15 @@ const schema_1 = __nccwpck_require__(2898);
  * `z.coerce.boolean()` which accepts almost anything as truthy.
  */
 function readRawFromCore() {
+    // Read + mask BOTH secrets FIRST, before any other input. Any subsequent
+    // log line that contains the token or password is automatically masked
+    // by the runner, even if a later read throws.
     const apiToken = core.getInput('api-token');
     if (apiToken !== '')
         core.setSecret(apiToken);
+    const registryPassword = core.getInput('registry-password');
+    if (registryPassword !== '')
+        core.setSecret(registryPassword);
     const tokenType = core.getInput('token-type');
     const environmentId = core.getInput('environment-id');
     const image = core.getInput('image');
@@ -60847,9 +60863,6 @@ function readRawFromCore() {
     const waitSeconds = core.getInput('wait-seconds');
     // NOT masked — see comment above.
     const registryUsername = core.getInput('registry-username');
-    const registryPassword = core.getInput('registry-password');
-    if (registryPassword !== '')
-        core.setSecret(registryPassword);
     const resolveToDigest = core.getBooleanInput('resolve-to-digest');
     const allowMutableTag = core.getBooleanInput('allow-mutable-tag');
     return {
@@ -60916,10 +60929,16 @@ exports.UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 /**
  * Image reference: `registry/repo[:tag | @sha256:<hex>]`.
  *
- * Intentionally narrow — does NOT accept `localhost:5000/...` port forms.
- * Matches v0's regex byte-for-byte. The trade-off is documented in CHANGELOG.
+ * Intentionally narrow:
+ * - first character MUST be `[a-z0-9]` — prevents leading `-` (would otherwise
+ *   match `--config/foo:bar` and slip through as a docker CLI flag downstream)
+ * - body characters limited to `[a-z0-9._/-]`
+ * - optional tag or sha256 digest suffix
+ *
+ * Does NOT accept `localhost:5000/...` port forms. CHANGELOG documents the
+ * trade-off.
  */
-exports.IMAGE_REF_PATTERN = /^[a-z0-9._/-]+(:[a-zA-Z0-9._-]+|@sha256:[0-9a-f]{64})?$/;
+exports.IMAGE_REF_PATTERN = /^[a-z0-9][a-z0-9._/-]*(:[a-zA-Z0-9._-]+|@sha256:[0-9a-f]{64})?$/;
 /**
  * Parse the multiline `services` input into a `Map<label, serviceId>`.
  *
@@ -61162,19 +61181,25 @@ const writer_1 = __nccwpck_require__(1515);
 const run_1 = __nccwpck_require__(9786);
 const saved_1 = __nccwpck_require__(8762);
 /**
- * Action entry point. Dispatches main vs post based on saved state — if main
- * recorded cleanup work (e.g. a docker login), we're in the post step.
+ * Action entry point. Dispatches main vs post based on the `mainStarted`
+ * sentinel — set by `runMain` at its first line, observable on the post
+ * invocation. Empty sentinel ⇒ runMain (first invocation, OR runner re-invoke
+ * before main started). Non-empty ⇒ runPost (cleanup phase).
+ *
  * `runs.post-if: always()` ensures this entry is invoked on every workflow
- * outcome, so the post branch must NEVER call `core.setFailed` — a cleanup
- * failure must not mask the main run's result.
+ * outcome, so the post branch must NEVER call `core.setFailed` or set
+ * `process.exitCode` — a cleanup failure must not mask the main run's result.
  */
 async function entry() {
-    if (saved_1.savedState.getDockerLogoutRegistry() !== '') {
+    if (saved_1.savedState.hasMainStarted()) {
         return runPost();
     }
     return runMain();
 }
 async function runMain() {
+    // Load-bearing FIRST line: tell the post invocation we ran. Without this,
+    // the post step would re-enter runMain when no cleanup work was recorded.
+    saved_1.savedState.markMainStarted();
     // Construct an empty DeployState FIRST so the finally block can always write
     // outputs — even if readInputs() throws. v0's bash trap emits empty
     // deployed-services / failed-services keys on early die(); consumer
@@ -61194,9 +61219,10 @@ async function runMain() {
     catch (err) {
         const actionErr = err instanceof errors_1.ActionError
             ? err
-            : new errors_1.ActionError(err instanceof Error ? err.message : String(err), undefined, undefined, {
-                cause: err,
-            });
+            : // Intentionally do NOT pass { cause: err } here — Node's default
+                // unhandled-rejection printer walks .cause chains and would print
+                // the underlying ClientError's request body, which we just stripped.
+                new errors_1.ActionError(err instanceof Error ? err.message : String(err));
         await (0, errors_1.emitToCore)(actionErr);
         // Set exit code, do NOT call core.setFailed — it would re-emit ::error::.
         process.exitCode = 1;
@@ -61211,7 +61237,10 @@ async function runPost() {
     try {
         const registry = saved_1.savedState.getDockerLogoutRegistry();
         if (registry !== '') {
-            await (0, exec_1.getExecOutput)('docker', ['logout', registry], { ignoreReturnCode: true, silent: true });
+            await (0, exec_1.getExecOutput)('docker', ['logout', '--', registry], {
+                ignoreReturnCode: true,
+                silent: true,
+            });
         }
     }
     catch (err) {
@@ -61548,12 +61577,32 @@ function createDryRunClient() {
             core.info(`[DRY-RUN] Would send to ${mutations_1.RAILWAY_API_URL}:`);
             core.info(`[DRY-RUN]   Operation: ${operation}`);
             core.info(`[DRY-RUN]   Body:`);
-            core.info(JSON.stringify({ query: document, variables }));
+            // Redact registryCredentials BEFORE JSON.stringify — `core.setSecret`
+            // only substring-masks the original password string, and JSON escapes
+            // (`\"`, `\\`, `\n`) would slip past the runner's masker.
+            core.info(JSON.stringify({ query: document, variables: redactCreds(variables) }));
             const response = document.includes('serviceInstanceDeploy')
                 ? { data: { serviceInstanceDeploy: 'dry-run-deploy-id' } }
                 : { data: { dryRun: true } };
             return Promise.resolve(response);
         },
+    };
+}
+/**
+ * Return a shallow clone of the variables with any
+ * `input.registryCredentials` replaced by `'[REDACTED]'`. Used by the
+ * dry-run client so credentials can't leak past `core.setSecret`'s
+ * substring mask when JSON-escaping changes the encoded form.
+ */
+function redactCreds(variables) {
+    if (!variables || typeof variables !== 'object')
+        return variables;
+    const v = variables;
+    if (!v.input || !v.input.registryCredentials)
+        return variables;
+    return {
+        ...variables,
+        input: { ...v.input, registryCredentials: '[REDACTED]' },
     };
 }
 
@@ -61675,14 +61724,17 @@ function mapToActionError(err, operation) {
         if (gqlErrors.length > 0) {
             const messages = gqlErrors.map((e) => e.message);
             const details = messages.join('\n');
-            return new errors_1.ActionError(`Railway GraphQL error during: ${operation}`, details, hintFromGqlMessages(messages), { cause: err });
+            // Intentionally no { cause } — Node's default unhandled-rejection
+            // printer walks `.cause` chains; ClientError.message stringifies the
+            // request body, which we just stripped.
+            return new errors_1.ActionError(`Railway GraphQL error during: ${operation}`, details, hintFromGqlMessages(messages));
         }
         const mapped = mapByStatus(status, operation);
         if (mapped) {
-            return new errors_1.ActionError(mapped.message, `HTTP ${status}`, mapped.hint, { cause: err });
+            return new errors_1.ActionError(mapped.message, `HTTP ${status}`, mapped.hint);
         }
         // Status with no mapping (rare; 5xx already covered, generic 4xx).
-        return new errors_1.ActionError(`Railway API request failed with HTTP ${status} (during: ${operation})`, `HTTP ${status}`, 'Check the Railway dashboard for more details.', { cause: err });
+        return new errors_1.ActionError(`Railway API request failed with HTTP ${status} (during: ${operation})`, `HTTP ${status}`, 'Check the Railway dashboard for more details.');
     }
     // Network-class error (post-retry exhaustion). Surface code only — never
     // include the URL, headers, or body that some libraries attach.
@@ -61694,12 +61746,12 @@ function mapToActionError(err, operation) {
         const code = (typeof causeCode === 'string' ? causeCode : undefined) ??
             (typeof e.code === 'string' ? e.code : undefined);
         if (code) {
-            return new errors_1.ActionError('Railway API request failed', code, 'Check your network connection and that backboard.railway.app is reachable.', { cause: err });
+            return new errors_1.ActionError('Railway API request failed', code, 'Check your network connection and that backboard.railway.app is reachable.');
         }
     }
-    // Unknown error class — preserve only the message text.
+    // Unknown error class — preserve only the message text. No { cause }.
     const fallbackMessage = err instanceof Error ? err.message : String(err);
-    return new errors_1.ActionError(`Railway API request failed (during: ${operation})`, fallbackMessage, 'Re-run the action with ACTIONS_STEP_DEBUG=true for more detail.', { cause: err });
+    return new errors_1.ActionError(`Railway API request failed (during: ${operation})`, fallbackMessage, 'Re-run the action with ACTIONS_STEP_DEBUG=true for more detail.');
 }
 
 
@@ -62150,7 +62202,8 @@ function recordDeploymentId(state, label, id) {
         state.attachDeploymentId(label, id);
     }
     else {
-        core.warning(`[${label}] deployment-id: (unavailable)`);
+        // Preserves v0's exact warning shape so consumer log-grepping keeps working.
+        core.warning(`[${label}] deployment-id: (unavailable — raw response: null)`);
     }
 }
 function sleep(ms) {
@@ -62202,12 +62255,28 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.savedState = void 0;
 const core = __importStar(__nccwpck_require__(7484));
 /**
- * Typed wrappers around core.saveState / core.getState. We deliberately do
- * NOT store a 'phase' marker — the post-step decides what to do by inspecting
- * the *cleanup work* recorded by main. If nothing was recorded, the post-step
- * exits silently (main never started, or it had no resources to clean up).
+ * Typed wrappers around core.saveState / core.getState.
+ *
+ * GitHub invokes this bundle twice when `runs.post` is set (`main` then
+ * `post-if: always()`). We need a reliable way to tell the two apart, so the
+ * very first thing `runMain` does is `markMainStarted()`. The post invocation
+ * sees the marker and dispatches to runPost; if main never ran (e.g. the
+ * runner crashed before our code executed), the marker is empty and the
+ * post-step exits silently. Without this marker, the post invocation would
+ * re-run `runMain` when no docker login happened during main.
  */
 exports.savedState = {
+    /**
+     * Records that `runMain` started. Called once, at the top of `runMain`,
+     * BEFORE any other work — this is the load-bearing dispatch sentinel.
+     */
+    markMainStarted() {
+        core.saveState('mainStarted', 'true');
+    },
+    /** Returns `'true'` on the post invocation iff runMain actually started. */
+    hasMainStarted() {
+        return core.getState('mainStarted') === 'true';
+    },
     /** Records that a docker registry was logged into; post must docker-logout it. */
     recordDockerLogout(registry) {
         core.saveState('dockerLogoutRegistry', registry);

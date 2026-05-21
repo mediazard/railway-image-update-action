@@ -218,7 +218,8 @@ function recordDeploymentId(state: DeployState, label: string, id: string | null
     core.info(`[${label}] deployment-id: ${id}`);
     state.attachDeploymentId(label, id);
   } else {
-    core.warning(`[${label}] deployment-id: (unavailable)`);
+    // Preserves v0's exact warning shape so consumer log-grepping keeps working.
+    core.warning(`[${label}] deployment-id: (unavailable — raw response: null)`);
   }
 }
 

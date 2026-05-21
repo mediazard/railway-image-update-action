@@ -1,0 +1,16 @@
+# CODEOWNERS — review gating for sensitive changes.
+# GitHub resolves the first matching pattern; list more specific patterns last.
+
+# Core action logic and CI/CD
+/src/                @mediazard/engineering
+/dist/               @mediazard/engineering
+/action.yml          @mediazard/engineering
+/.github/workflows/  @mediazard/engineering
+/package.json        @mediazard/engineering
+/package-lock.json   @mediazard/engineering
+
+# Security + contribution guidance
+/SECURITY.md         @mediazard/engineering
+/CONTRIBUTING.md     @mediazard/engineering
+
+# README and docs — unowned (anyone can update)

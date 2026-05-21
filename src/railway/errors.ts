@@ -117,17 +117,19 @@ export function mapToActionError(err: unknown, operation: string): ActionError {
     if (gqlErrors.length > 0) {
       const messages = gqlErrors.map((e) => e.message);
       const details = messages.join('\n');
+      // Intentionally no { cause } — Node's default unhandled-rejection
+      // printer walks `.cause` chains; ClientError.message stringifies the
+      // request body, which we just stripped.
       return new ActionError(
         `Railway GraphQL error during: ${operation}`,
         details,
         hintFromGqlMessages(messages),
-        { cause: err },
       );
     }
 
     const mapped = mapByStatus(status, operation);
     if (mapped) {
-      return new ActionError(mapped.message, `HTTP ${status}`, mapped.hint, { cause: err });
+      return new ActionError(mapped.message, `HTTP ${status}`, mapped.hint);
     }
 
     // Status with no mapping (rare; 5xx already covered, generic 4xx).
@@ -135,7 +137,6 @@ export function mapToActionError(err: unknown, operation: string): ActionError {
       `Railway API request failed with HTTP ${status} (during: ${operation})`,
       `HTTP ${status}`,
       'Check the Railway dashboard for more details.',
-      { cause: err },
     );
   }
 
@@ -155,17 +156,15 @@ export function mapToActionError(err: unknown, operation: string): ActionError {
         'Railway API request failed',
         code,
         'Check your network connection and that backboard.railway.app is reachable.',
-        { cause: err },
       );
     }
   }
 
-  // Unknown error class — preserve only the message text.
+  // Unknown error class — preserve only the message text. No { cause }.
   const fallbackMessage = err instanceof Error ? err.message : String(err);
   return new ActionError(
     `Railway API request failed (during: ${operation})`,
     fallbackMessage,
     'Re-run the action with ACTIONS_STEP_DEBUG=true for more detail.',
-    { cause: err },
   );
 }

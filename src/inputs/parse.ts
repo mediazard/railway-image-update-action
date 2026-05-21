@@ -48,8 +48,14 @@ export interface RawInputs {
  * `z.coerce.boolean()` which accepts almost anything as truthy.
  */
 export function readRawFromCore(): RawInputs {
+  // Read + mask BOTH secrets FIRST, before any other input. Any subsequent
+  // log line that contains the token or password is automatically masked
+  // by the runner, even if a later read throws.
   const apiToken = core.getInput('api-token');
   if (apiToken !== '') core.setSecret(apiToken);
+
+  const registryPassword = core.getInput('registry-password');
+  if (registryPassword !== '') core.setSecret(registryPassword);
 
   const tokenType = core.getInput('token-type');
   const environmentId = core.getInput('environment-id');
@@ -60,9 +66,6 @@ export function readRawFromCore(): RawInputs {
 
   // NOT masked — see comment above.
   const registryUsername = core.getInput('registry-username');
-
-  const registryPassword = core.getInput('registry-password');
-  if (registryPassword !== '') core.setSecret(registryPassword);
 
   const resolveToDigest = core.getBooleanInput('resolve-to-digest');
   const allowMutableTag = core.getBooleanInput('allow-mutable-tag');

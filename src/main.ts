@@ -11,20 +11,27 @@ import { run } from './run';
 import { savedState } from './state/saved';
 
 /**
- * Action entry point. Dispatches main vs post based on saved state — if main
- * recorded cleanup work (e.g. a docker login), we're in the post step.
+ * Action entry point. Dispatches main vs post based on the `mainStarted`
+ * sentinel — set by `runMain` at its first line, observable on the post
+ * invocation. Empty sentinel ⇒ runMain (first invocation, OR runner re-invoke
+ * before main started). Non-empty ⇒ runPost (cleanup phase).
+ *
  * `runs.post-if: always()` ensures this entry is invoked on every workflow
- * outcome, so the post branch must NEVER call `core.setFailed` — a cleanup
- * failure must not mask the main run's result.
+ * outcome, so the post branch must NEVER call `core.setFailed` or set
+ * `process.exitCode` — a cleanup failure must not mask the main run's result.
  */
 async function entry(): Promise<void> {
-  if (savedState.getDockerLogoutRegistry() !== '') {
+  if (savedState.hasMainStarted()) {
     return runPost();
   }
   return runMain();
 }
 
 async function runMain(): Promise<void> {
+  // Load-bearing FIRST line: tell the post invocation we ran. Without this,
+  // the post step would re-enter runMain when no cleanup work was recorded.
+  savedState.markMainStarted();
+
   // Construct an empty DeployState FIRST so the finally block can always write
   // outputs — even if readInputs() throws. v0's bash trap emits empty
   // deployed-services / failed-services keys on early die(); consumer
@@ -48,9 +55,10 @@ async function runMain(): Promise<void> {
     const actionErr =
       err instanceof ActionError
         ? err
-        : new ActionError(err instanceof Error ? err.message : String(err), undefined, undefined, {
-            cause: err,
-          });
+        : // Intentionally do NOT pass { cause: err } here — Node's default
+          // unhandled-rejection printer walks .cause chains and would print
+          // the underlying ClientError's request body, which we just stripped.
+          new ActionError(err instanceof Error ? err.message : String(err));
     await emitToCore(actionErr);
     // Set exit code, do NOT call core.setFailed — it would re-emit ::error::.
     process.exitCode = 1;
@@ -65,7 +73,10 @@ async function runPost(): Promise<void> {
   try {
     const registry = savedState.getDockerLogoutRegistry();
     if (registry !== '') {
-      await getExecOutput('docker', ['logout', registry], { ignoreReturnCode: true, silent: true });
+      await getExecOutput('docker', ['logout', '--', registry], {
+        ignoreReturnCode: true,
+        silent: true,
+      });
     }
   } catch (err) {
     core.warning(
