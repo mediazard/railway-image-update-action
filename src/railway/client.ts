@@ -6,12 +6,20 @@ import type { TokenType } from '../types';
 import { RAILWAY_API_URL } from './mutations';
 
 /**
- * Default per-request timeout in milliseconds. New in v1 — v0 inherited curl's
- * effectively-indefinite default; bounding this is a deliberate behavior change
- * documented in CHANGELOG. AbortController-based, so it cooperates with
- * `withRetry`'s `ABORT_ERR` retry classification.
+ * Default per-ATTEMPT timeout in milliseconds. **Important**: this is the cap
+ * on a single HTTP attempt — `withRetry` resets it for each of up to 3
+ * attempts, so the worst-case wall-clock per operation is roughly
+ * `PER_ATTEMPT_REQUEST_TIMEOUT_MS × 3 + backoff` (~95s with defaults).
+ *
+ * New in v1 — v0 inherited curl's effectively-indefinite default; bounding
+ * this is a deliberate behavior change documented in CHANGELOG.
+ * AbortController-based, so it cooperates with `withRetry`'s `ABORT_ERR`
+ * retry classification.
  */
-export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+export const PER_ATTEMPT_REQUEST_TIMEOUT_MS = 30_000;
+
+/** @deprecated use PER_ATTEMPT_REQUEST_TIMEOUT_MS — kept for backwards compat. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = PER_ATTEMPT_REQUEST_TIMEOUT_MS;
 
 /**
  * Minimal transport surface used by `operations.ts`. Retry policy is **not**
@@ -33,7 +41,7 @@ export interface CreateRailwayClientOptions {
   tokenType: TokenType;
   /** Injectable for `client.roundtrip.test.ts` (msw intercepts via global). */
   fetch?: typeof fetch;
-  /** Per-request abort timeout. Defaults to `DEFAULT_REQUEST_TIMEOUT_MS`. */
+  /** Per-attempt abort timeout. Defaults to `PER_ATTEMPT_REQUEST_TIMEOUT_MS`. */
   requestTimeoutMs?: number;
 }
 
@@ -85,7 +93,7 @@ function chainSignals(controller: AbortController, external: AbortSignal | undef
  */
 export function createRailwayClient(opts: CreateRailwayClientOptions): RailwayClient {
   const apiUrl = opts.apiUrl ?? RAILWAY_API_URL;
-  const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const timeoutMs = opts.requestTimeoutMs ?? PER_ATTEMPT_REQUEST_TIMEOUT_MS;
   const headers = buildAuthHeaders(opts.token, opts.tokenType);
 
   const client = new GraphQLClient(apiUrl, {

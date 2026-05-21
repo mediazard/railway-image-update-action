@@ -134,6 +134,12 @@ Services are processed sequentially in input order. Sequential iteration is an i
 
 If any step fails, only services that completed their own update + redeploy appear in `deployed-services`. Services not yet touched remain on the old image — safe to retry.
 
+## Runner requirements
+
+- **Node 20** — provided automatically on GitHub-hosted runners (`ubuntu-latest`, `windows-latest`, `macos-latest`). Self-hosted runners must have Node 20 installed.
+- **`docker buildx`** — required when `resolve-to-digest: true` (the default). Pre-installed on `ubuntu-latest`. Self-hosted runners without docker must either disable digest resolution (`resolve-to-digest: false`) AND set `allow-mutable-tag: true` (or use an immutable `:tag` or `@sha256:` ref), or install docker + buildx.
+- **Linux runners** are the supported configuration. `windows-latest` and `macos-latest` may work for the no-docker path but are not tested.
+
 ## Architecture
 
 Pure TypeScript, bundled to a single `dist/index.js` via `@vercel/ncc`. The runtime is `node20` (provided by the GitHub Actions runner).

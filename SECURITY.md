@@ -27,11 +27,15 @@ You will receive an acknowledgement within 2 business days and a status update w
 - **Registry password** — read from the `registry-password` input and registered via `core.setSecret` immediately. Used only to `docker login` the registry during digest resolution.
 - **Registry username** — read but NOT masked (OCI registry usernames are not secrets per convention; masking them in logs breaks debug-ability).
 
+> ⚠️ **Store sensitive inputs as `secrets`, not `vars`.** GitHub auto-masks `${{ secrets.* }}` in logs; `${{ vars.* }}` is plain text. `core.setSecret` inside the action provides defense-in-depth but cannot retroactively mask log lines emitted before the action started.
+
 ## Hardening notes
 
 - All GraphQL response error wrappers strip the request body and headers before logging — your token cannot leak through a stack trace. The error wrapper never sets `Error.cause`, so Node's default unhandled-rejection printer cannot walk back to the underlying transport error and re-emit the request body.
 - **Argv injection defense**: image references with a leading `-` are rejected at parse time; every `docker` invocation uses `--` to terminate flags so a future input that slipped through couldn't be interpreted as a docker CLI flag (e.g. `--config`, `--host`).
+- **Workflow-command injection defense**: inputs that flow into `ActionError.details` (`api-token`, `token-type`, `first-service`, `registry-username`) reject control chars (`\r`, `\n`) and `%` via regex at parse time. Stderr from `docker` is sanitized (`::` → `∶∶`) before being embedded in any error detail block.
 - DRY_RUN logging recursively redacts any object key matching `password|secret|token|credentials` before JSON-stringifying — so even if a future GraphQL variables shape adds credentials at a new path, they won't reach the workflow log.
+- **Supply chain**: `npm ci` runs with `ignore-scripts=true` (`.npmrc`), so a fork PR that tampers with `package-lock.json` cannot execute postinstall hooks on the CI runner.
 - Bundle is committed (`dist/index.js`) so consumers don't pull `node_modules` at runtime; you can audit exactly what runs.
 - The action pins all third-party actions in CI workflows by SHA, and Node by exact patch via `.node-version`.
 

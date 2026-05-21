@@ -27,17 +27,17 @@ describe('createDryRunClient — canned responses', () => {
       { sid: 's', eid: 'e' },
       { operationName: 'deployService' },
     );
-    expect(result).toEqual({ data: { serviceInstanceDeploy: 'dry-run-deploy-id' } });
+    expect(result).toEqual({ serviceInstanceDeploy: 'dry-run-deploy-id' });
   });
 
-  it('returns dryRun: true for UPDATE_IMAGE_MUTATION', async () => {
+  it('returns serviceInstanceUpdate stub for UPDATE_IMAGE_MUTATION', async () => {
     const client = createDryRunClient();
     const result = await client.request<unknown, unknown>(
       UPDATE_IMAGE_MUTATION,
       { sid: 's', eid: 'e', input: { source: { image: 'x' } } },
       { operationName: 'updateImage' },
     );
-    expect(result).toEqual({ data: { dryRun: true } });
+    expect(result).toEqual({ serviceInstanceUpdate: { id: 'dry-run-update-id' } });
   });
 
   it('returns dryRun: true for any non-deploy document', async () => {
@@ -47,7 +47,7 @@ describe('createDryRunClient — canned responses', () => {
       {},
       { operationName: 'whatever' },
     );
-    expect(result).toEqual({ data: { dryRun: true } });
+    expect(result).toEqual({ dryRun: true });
   });
 });
 

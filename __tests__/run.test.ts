@@ -82,10 +82,10 @@ function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
 function happyClient(): FakeRailwayClient {
   const c = new FakeRailwayClient();
   c.setResponse('serviceInstanceUpdate', {
-    response: { data: { serviceInstanceUpdate: { id: 'u' } } },
+    response: { serviceInstanceUpdate: { id: 'u' } },
   });
   c.setResponse('serviceInstanceDeploy', {
-    response: { data: { serviceInstanceDeploy: 'deploy-id-x' } },
+    response: { serviceInstanceDeploy: 'deploy-id-x' },
   });
   return c;
 }
@@ -215,10 +215,10 @@ describe('run — partial-failure preservation (v0 trap semantic)', () => {
     // run() re-throws; state.deployedLabels() should still contain ['a'].
     const client = new FakeRailwayClient();
     client.setResponse('serviceInstanceUpdate', {
-      response: { data: { serviceInstanceUpdate: {} } },
+      response: { serviceInstanceUpdate: {} },
     });
     client.setResponse('serviceInstanceDeploy', {
-      response: { data: { serviceInstanceDeploy: 'deploy-id-x' } },
+      response: { serviceInstanceDeploy: 'deploy-id-x' },
     });
     // Custom dispatch for redeploy: succeed for A, throw for B, never reached for C.
     let deployCount = 0;

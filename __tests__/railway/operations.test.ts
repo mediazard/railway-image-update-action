@@ -30,7 +30,7 @@ describe('updateImage — happy path', () => {
   it('sends variables.input.registryCredentials when credentials provided', async () => {
     const client = new FakeRailwayClient();
     client.setResponse('updateImage', {
-      response: { data: { serviceInstanceUpdate: null } },
+      response: { serviceInstanceUpdate: null },
     });
 
     await updateImage(client, {
@@ -53,7 +53,7 @@ describe('updateImage — happy path', () => {
   it('omits registryCredentials when not provided (input is source-only)', async () => {
     const client = new FakeRailwayClient();
     client.setResponse('updateImage', {
-      response: { data: { serviceInstanceUpdate: null } },
+      response: { serviceInstanceUpdate: null },
     });
 
     await updateImage(client, {
@@ -101,8 +101,10 @@ describe('updateImage — error paths', () => {
 
   it('throws ActionError when response shape mismatches schema (zod parse fail)', async () => {
     const client = new FakeRailwayClient();
-    // Outer `data` is missing entirely — UpdateResponseSchema requires `data`.
-    client.setResponse('updateImage', { response: { errors: ['bogus'] } });
+    // `serviceInstanceUpdate` field is missing — UpdateResponseSchema requires it.
+    // (graphql-request@7 unwraps the outer `data` envelope, so our schema
+    // validates the inner payload.)
+    client.setResponse('updateImage', { response: { somethingElse: true } });
 
     await expect(
       updateImage(client, {
@@ -118,7 +120,7 @@ describe('redeploy — happy path', () => {
   it('returns { deploymentId: "abc123" } when API returns that id', async () => {
     const client = new FakeRailwayClient();
     client.setResponse('deployService', {
-      response: { data: { serviceInstanceDeploy: 'abc123' } },
+      response: { serviceInstanceDeploy: 'abc123' },
     });
 
     const result = await redeploy(client, {
@@ -132,7 +134,7 @@ describe('redeploy — happy path', () => {
   it('returns { deploymentId: null } when API returns null', async () => {
     const client = new FakeRailwayClient();
     client.setResponse('deployService', {
-      response: { data: { serviceInstanceDeploy: null } },
+      response: { serviceInstanceDeploy: null },
     });
 
     const result = await redeploy(client, {
@@ -146,7 +148,7 @@ describe('redeploy — happy path', () => {
   it('passes operationName=deployService to the client', async () => {
     const client = new FakeRailwayClient();
     client.setResponse('deployService', {
-      response: { data: { serviceInstanceDeploy: 'd' } },
+      response: { serviceInstanceDeploy: 'd' },
     });
     await redeploy(client, {
       serviceId: SERVICE_ID,

@@ -114,7 +114,11 @@ export async function resolveImageDigest(
   if (inspect.exitCode !== 0) {
     throw new ActionError(
       'Failed to resolve manifest digest for image',
-      `Image: ${ref}\nError: ${inspect.stderr}`,
+      // sanitize stderr: a hostile registry could echo `::add-mask::...` and
+      // since ActionError.details is emitted via core.info (raw stdout, no
+      // escaping), an attacker-controlled error payload would inject workflow
+      // commands. Replace `::` with the U+2236 ratio glyph and strip CR.
+      `Image: ${ref}\nError: ${sanitizeForLog(inspect.stderr)}`,
       'Check that the image exists, is accessible, and registry credentials are correct',
     );
   }
@@ -128,7 +132,7 @@ export async function resolveImageDigest(
     // unmasked stdout fragments. details already includes the stdout.
     throw new ActionError(
       'Failed to parse manifest JSON for image',
-      `Image: ${ref}\nOutput: ${inspect.stdout}`,
+      `Image: ${ref}\nOutput: ${sanitizeForLog(inspect.stdout)}`,
       'Ensure the image tag exists and the registry returns a valid manifest',
     );
   }
@@ -151,4 +155,15 @@ export async function resolveImageDigest(
 
   core.info(`  ✓ Resolved: ${resolved}`);
   return resolved;
+}
+
+/**
+ * Defang attacker-controlled docker output before embedding in
+ * `ActionError.details`. `core.info` writes details raw to stdout, so a
+ * payload containing `\n::add-mask::SECRET` (from a hostile registry's
+ * error message) would inject GitHub Actions workflow commands. Replace
+ * any `::` with the U+2236 ratio glyph and drop CRs.
+ */
+function sanitizeForLog(s: string): string {
+  return s.replace(/::/g, '∶∶').replace(/\r/g, '');
 }

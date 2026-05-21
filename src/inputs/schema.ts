@@ -113,20 +113,28 @@ function refineFirstServiceExists(
 }
 
 /**
+ * Inputs that may end up in `ActionError.details` (which is logged via
+ * core.info → raw stdout) MUST reject control chars + `%`. Otherwise an
+ * attacker who controls the input can inject GitHub Actions workflow
+ * commands (`::add-mask::secret`, `::error::...`) into the log stream.
+ */
+const NO_WORKFLOW_COMMAND_CHARS = /^[^\r\n%]*$/;
+
+/**
  * Zod schema for all 11 action inputs. Booleans use `z.boolean()` because the
  * parse step uses `core.getBooleanInput` (Appendix D) which already throws on
  * invalid values per the GitHub Actions YAML 1.2 boolean spec.
  */
 export const ActionInputsSchema = z
   .object({
-    apiToken: z.string().min(1),
+    apiToken: z.string().min(1).regex(NO_WORKFLOW_COMMAND_CHARS),
     tokenType: z.enum(['bearer', 'project']).default('bearer'),
     environmentId: z.string().regex(UUID_PATTERN),
     image: z.string().regex(IMAGE_REF_PATTERN),
     services: z.string().min(1).transform(parseServicesString),
-    firstService: z.string().default(''),
-    waitSeconds: z.coerce.number().int().nonnegative().default(30),
-    registryUsername: z.string().default(''),
+    firstService: z.string().regex(NO_WORKFLOW_COMMAND_CHARS).default(''),
+    waitSeconds: z.coerce.number().int().nonnegative().max(900).default(30),
+    registryUsername: z.string().regex(NO_WORKFLOW_COMMAND_CHARS).default(''),
     registryPassword: z.string().default(''),
     resolveToDigest: z.boolean().default(true),
     allowMutableTag: z.boolean().default(false),

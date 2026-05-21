@@ -17,20 +17,29 @@ import { withRetry } from './retry';
 /**
  * Response schema for `serviceInstanceDeploy`. The field can be `null` — v0
  * surfaces this as the "deployment-id: (unavailable)" warning path.
+ *
+ * NOTE: graphql-request@7's `client.request()` returns the UNWRAPPED `data`
+ * payload — not the full `{data, errors}` response envelope. So we validate
+ * the inner shape only.
  */
 const DeployResponseSchema = z.object({
-  data: z.object({ serviceInstanceDeploy: z.string().nullable() }),
+  serviceInstanceDeploy: z.string().nullable(),
 });
 
 /**
  * Response schema for `serviceInstanceUpdate`. We don't consume the value —
- * just assert the wrapping shape so API drift fails loudly. No `.passthrough()`
- * is needed: zod ignores unknown keys by default, and `z.unknown()` already
- * accepts anything at the inner position.
+ * just assert the field is PRESENT so API drift (e.g. Railway renaming the
+ * mutation) fails loudly. `z.unknown()` accepts any value including
+ * `undefined`, so we add a `.refine` to require the key actually exists.
+ *
+ * As with `DeployResponseSchema`, this validates the UNWRAPPED data, not the
+ * full `{data, errors}` envelope.
  */
-const UpdateResponseSchema = z.object({
-  data: z.object({ serviceInstanceUpdate: z.unknown() }),
-});
+const UpdateResponseSchema = z
+  .object({ serviceInstanceUpdate: z.unknown() })
+  .refine((o) => 'serviceInstanceUpdate' in o, {
+    message: "Response missing 'serviceInstanceUpdate' field",
+  });
 
 /** Arguments accepted by `updateImage`. */
 export interface UpdateImageArgs {
@@ -92,7 +101,7 @@ export async function redeploy(
       }),
     );
     const parsed = DeployResponseSchema.parse(raw);
-    return { deploymentId: parsed.data.serviceInstanceDeploy };
+    return { deploymentId: parsed.serviceInstanceDeploy };
   } catch (err) {
     const actionErr: ActionError = mapToActionError(err, `deployService:${args.serviceLabel}`);
     throw actionErr;

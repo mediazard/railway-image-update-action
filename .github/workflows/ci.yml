@@ -53,8 +53,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Run actionlint
-        # Pin to a specific actionlint release SHA (v1.7.7) rather than
-        # piping the bootstrap script from `main` — supply-chain hygiene.
+        # Pin to a specific actionlint release tag rather than piping the
+        # bootstrap script from `main` — supply-chain hygiene.
+        # No glob arg: docker:// runs argv-style with no shell, so `*.yml`
+        # would not expand. actionlint scans .github/workflows/ by default.
         uses: docker://rhysd/actionlint:1.7.7
         with:
-          args: -color .github/workflows/*.yml
+          args: -color

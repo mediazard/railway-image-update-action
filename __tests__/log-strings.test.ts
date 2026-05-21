@@ -74,10 +74,10 @@ function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
 function happyClient(deployId: string | null = 'deploy-id-1'): FakeRailwayClient {
   const c = new FakeRailwayClient();
   c.setResponse('serviceInstanceUpdate', {
-    response: { data: { serviceInstanceUpdate: {} } },
+    response: { serviceInstanceUpdate: {} },
   });
   c.setResponse('serviceInstanceDeploy', {
-    response: { data: { serviceInstanceDeploy: deployId } },
+    response: { serviceInstanceDeploy: deployId },
   });
   return c;
 }

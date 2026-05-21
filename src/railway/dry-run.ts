@@ -30,9 +30,17 @@ export function createDryRunClient(): RailwayClient {
       // (`\"`, `\\`, `\n`) would slip past the runner's masker.
       core.info(JSON.stringify({ query: document, variables: redactCreds(variables) }));
 
-      const response: unknown = document.includes('serviceInstanceDeploy')
-        ? { data: { serviceInstanceDeploy: 'dry-run-deploy-id' } }
-        : { data: { dryRun: true } };
+      // Return the UNWRAPPED data payload to match graphql-request@7's
+      // behavior (it strips the {data, errors} envelope before returning).
+      // Each branch returns the shape `operations.ts`'s zod schemas expect.
+      let response: unknown;
+      if (document.includes('serviceInstanceDeploy')) {
+        response = { serviceInstanceDeploy: 'dry-run-deploy-id' };
+      } else if (document.includes('serviceInstanceUpdate')) {
+        response = { serviceInstanceUpdate: { id: 'dry-run-update-id' } };
+      } else {
+        response = { dryRun: true };
+      }
 
       return Promise.resolve(response as TResult);
     },

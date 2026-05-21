@@ -60706,7 +60706,12 @@ async function resolveImageDigest(ref, opts, execFn) {
     //    without `experimental` mode. `--` separator pins `ref` as positional.
     const inspect = await run('docker', ['buildx', 'imagetools', 'inspect', '--format', '{{json .Manifest}}', '--', ref], { silent: true, ignoreReturnCode: true });
     if (inspect.exitCode !== 0) {
-        throw new errors_1.ActionError('Failed to resolve manifest digest for image', `Image: ${ref}\nError: ${inspect.stderr}`, 'Check that the image exists, is accessible, and registry credentials are correct');
+        throw new errors_1.ActionError('Failed to resolve manifest digest for image', 
+        // sanitize stderr: a hostile registry could echo `::add-mask::...` and
+        // since ActionError.details is emitted via core.info (raw stdout, no
+        // escaping), an attacker-controlled error payload would inject workflow
+        // commands. Replace `::` with the U+2236 ratio glyph and strip CR.
+        `Image: ${ref}\nError: ${sanitizeForLog(inspect.stderr)}`, 'Check that the image exists, is accessible, and registry credentials are correct');
     }
     let parsed;
     try {
@@ -60716,7 +60721,7 @@ async function resolveImageDigest(ref, opts, execFn) {
         // Intentionally no { cause } — Node's default unhandled-rejection
         // printer walks .cause chains; the underlying SyntaxError can include
         // unmasked stdout fragments. details already includes the stdout.
-        throw new errors_1.ActionError('Failed to parse manifest JSON for image', `Image: ${ref}\nOutput: ${inspect.stdout}`, 'Ensure the image tag exists and the registry returns a valid manifest');
+        throw new errors_1.ActionError('Failed to parse manifest JSON for image', `Image: ${ref}\nOutput: ${sanitizeForLog(inspect.stdout)}`, 'Ensure the image tag exists and the registry returns a valid manifest');
     }
     const digest = parsed.digest;
     if (!digest) {
@@ -60730,6 +60735,16 @@ async function resolveImageDigest(ref, opts, execFn) {
     const resolved = `${base}@${digest}`;
     core.info(`  ✓ Resolved: ${resolved}`);
     return resolved;
+}
+/**
+ * Defang attacker-controlled docker output before embedding in
+ * `ActionError.details`. `core.info` writes details raw to stdout, so a
+ * payload containing `\n::add-mask::SECRET` (from a hostile registry's
+ * error message) would inject GitHub Actions workflow commands. Replace
+ * any `::` with the U+2236 ratio glyph and drop CRs.
+ */
+function sanitizeForLog(s) {
+    return s.replace(/::/g, '∶∶').replace(/\r/g, '');
 }
 
 
@@ -60997,20 +61012,27 @@ function refineFirstServiceExists(val, ctx) {
     }
 }
 /**
+ * Inputs that may end up in `ActionError.details` (which is logged via
+ * core.info → raw stdout) MUST reject control chars + `%`. Otherwise an
+ * attacker who controls the input can inject GitHub Actions workflow
+ * commands (`::add-mask::secret`, `::error::...`) into the log stream.
+ */
+const NO_WORKFLOW_COMMAND_CHARS = /^[^\r\n%]*$/;
+/**
  * Zod schema for all 11 action inputs. Booleans use `z.boolean()` because the
  * parse step uses `core.getBooleanInput` (Appendix D) which already throws on
  * invalid values per the GitHub Actions YAML 1.2 boolean spec.
  */
 exports.ActionInputsSchema = zod_1.z
     .object({
-    apiToken: zod_1.z.string().min(1),
+    apiToken: zod_1.z.string().min(1).regex(NO_WORKFLOW_COMMAND_CHARS),
     tokenType: zod_1.z.enum(['bearer', 'project']).default('bearer'),
     environmentId: zod_1.z.string().regex(exports.UUID_PATTERN),
     image: zod_1.z.string().regex(exports.IMAGE_REF_PATTERN),
     services: zod_1.z.string().min(1).transform(parseServicesString),
-    firstService: zod_1.z.string().default(''),
-    waitSeconds: zod_1.z.coerce.number().int().nonnegative().default(30),
-    registryUsername: zod_1.z.string().default(''),
+    firstService: zod_1.z.string().regex(NO_WORKFLOW_COMMAND_CHARS).default(''),
+    waitSeconds: zod_1.z.coerce.number().int().nonnegative().max(900).default(30),
+    registryUsername: zod_1.z.string().regex(NO_WORKFLOW_COMMAND_CHARS).default(''),
     registryPassword: zod_1.z.string().default(''),
     resolveToDigest: zod_1.z.boolean().default(true),
     allowMutableTag: zod_1.z.boolean().default(false),
@@ -61217,7 +61239,14 @@ async function runMain() {
         process.exitCode = 1;
     }
     finally {
-        (0, writer_1.writeOutputs)(state);
+        // Wrapped in try/catch so a writeOutputs failure (e.g. GITHUB_OUTPUT
+        // unwritable) cannot mask the original error from the main try block.
+        try {
+            (0, writer_1.writeOutputs)(state);
+        }
+        catch (writeErr) {
+            core.warning(`Failed to write GitHub Action outputs: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
+        }
     }
 }
 async function runPost() {
@@ -61407,18 +61436,25 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.DEFAULT_REQUEST_TIMEOUT_MS = void 0;
+exports.DEFAULT_REQUEST_TIMEOUT_MS = exports.PER_ATTEMPT_REQUEST_TIMEOUT_MS = void 0;
 exports.createRailwayClient = createRailwayClient;
 const core = __importStar(__nccwpck_require__(7484));
 const graphql_request_1 = __nccwpck_require__(8984);
 const mutations_1 = __nccwpck_require__(7803);
 /**
- * Default per-request timeout in milliseconds. New in v1 — v0 inherited curl's
- * effectively-indefinite default; bounding this is a deliberate behavior change
- * documented in CHANGELOG. AbortController-based, so it cooperates with
- * `withRetry`'s `ABORT_ERR` retry classification.
+ * Default per-ATTEMPT timeout in milliseconds. **Important**: this is the cap
+ * on a single HTTP attempt — `withRetry` resets it for each of up to 3
+ * attempts, so the worst-case wall-clock per operation is roughly
+ * `PER_ATTEMPT_REQUEST_TIMEOUT_MS × 3 + backoff` (~95s with defaults).
+ *
+ * New in v1 — v0 inherited curl's effectively-indefinite default; bounding
+ * this is a deliberate behavior change documented in CHANGELOG.
+ * AbortController-based, so it cooperates with `withRetry`'s `ABORT_ERR`
+ * retry classification.
  */
-exports.DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+exports.PER_ATTEMPT_REQUEST_TIMEOUT_MS = 30_000;
+/** @deprecated use PER_ATTEMPT_REQUEST_TIMEOUT_MS — kept for backwards compat. */
+exports.DEFAULT_REQUEST_TIMEOUT_MS = exports.PER_ATTEMPT_REQUEST_TIMEOUT_MS;
 /**
  * Build the correct authorization header for the given Railway token type.
  *
@@ -61466,7 +61502,7 @@ function chainSignals(controller, external) {
  */
 function createRailwayClient(opts) {
     const apiUrl = opts.apiUrl ?? mutations_1.RAILWAY_API_URL;
-    const timeoutMs = opts.requestTimeoutMs ?? exports.DEFAULT_REQUEST_TIMEOUT_MS;
+    const timeoutMs = opts.requestTimeoutMs ?? exports.PER_ATTEMPT_REQUEST_TIMEOUT_MS;
     const headers = buildAuthHeaders(opts.token, opts.tokenType);
     const client = new graphql_request_1.GraphQLClient(apiUrl, {
         headers,
@@ -61570,9 +61606,19 @@ function createDryRunClient() {
             // only substring-masks the original password string, and JSON escapes
             // (`\"`, `\\`, `\n`) would slip past the runner's masker.
             core.info(JSON.stringify({ query: document, variables: redactCreds(variables) }));
-            const response = document.includes('serviceInstanceDeploy')
-                ? { data: { serviceInstanceDeploy: 'dry-run-deploy-id' } }
-                : { data: { dryRun: true } };
+            // Return the UNWRAPPED data payload to match graphql-request@7's
+            // behavior (it strips the {data, errors} envelope before returning).
+            // Each branch returns the shape `operations.ts`'s zod schemas expect.
+            let response;
+            if (document.includes('serviceInstanceDeploy')) {
+                response = { serviceInstanceDeploy: 'dry-run-deploy-id' };
+            }
+            else if (document.includes('serviceInstanceUpdate')) {
+                response = { serviceInstanceUpdate: { id: 'dry-run-update-id' } };
+            }
+            else {
+                response = { dryRun: true };
+            }
             return Promise.resolve(response);
         },
     };
@@ -61804,18 +61850,27 @@ const retry_1 = __nccwpck_require__(7789);
 /**
  * Response schema for `serviceInstanceDeploy`. The field can be `null` — v0
  * surfaces this as the "deployment-id: (unavailable)" warning path.
+ *
+ * NOTE: graphql-request@7's `client.request()` returns the UNWRAPPED `data`
+ * payload — not the full `{data, errors}` response envelope. So we validate
+ * the inner shape only.
  */
 const DeployResponseSchema = zod_1.z.object({
-    data: zod_1.z.object({ serviceInstanceDeploy: zod_1.z.string().nullable() }),
+    serviceInstanceDeploy: zod_1.z.string().nullable(),
 });
 /**
  * Response schema for `serviceInstanceUpdate`. We don't consume the value —
- * just assert the wrapping shape so API drift fails loudly. No `.passthrough()`
- * is needed: zod ignores unknown keys by default, and `z.unknown()` already
- * accepts anything at the inner position.
+ * just assert the field is PRESENT so API drift (e.g. Railway renaming the
+ * mutation) fails loudly. `z.unknown()` accepts any value including
+ * `undefined`, so we add a `.refine` to require the key actually exists.
+ *
+ * As with `DeployResponseSchema`, this validates the UNWRAPPED data, not the
+ * full `{data, errors}` envelope.
  */
-const UpdateResponseSchema = zod_1.z.object({
-    data: zod_1.z.object({ serviceInstanceUpdate: zod_1.z.unknown() }),
+const UpdateResponseSchema = zod_1.z
+    .object({ serviceInstanceUpdate: zod_1.z.unknown() })
+    .refine((o) => 'serviceInstanceUpdate' in o, {
+    message: "Response missing 'serviceInstanceUpdate' field",
 });
 /** Update the image source (and optional registry creds) on a Railway service. */
 async function updateImage(client, args) {
@@ -61852,7 +61907,7 @@ async function redeploy(client, args) {
             operationName: 'deployService',
         }));
         const parsed = DeployResponseSchema.parse(raw);
-        return { deploymentId: parsed.data.serviceInstanceDeploy };
+        return { deploymentId: parsed.serviceInstanceDeploy };
     }
     catch (err) {
         const actionErr = (0, errors_1.mapToActionError)(err, `deployService:${args.serviceLabel}`);

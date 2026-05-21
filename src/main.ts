@@ -64,7 +64,15 @@ async function runMain(): Promise<void> {
     // Set exit code, do NOT call core.setFailed — it would re-emit ::error::.
     process.exitCode = 1;
   } finally {
-    writeOutputs(state);
+    // Wrapped in try/catch so a writeOutputs failure (e.g. GITHUB_OUTPUT
+    // unwritable) cannot mask the original error from the main try block.
+    try {
+      writeOutputs(state);
+    } catch (writeErr) {
+      core.warning(
+        `Failed to write GitHub Action outputs: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,
+      );
+    }
   }
 }
 
