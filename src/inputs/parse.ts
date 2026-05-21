@@ -2,12 +2,7 @@ import * as core from '@actions/core';
 
 import { ActionError } from '../errors';
 
-import {
-  ActionInputsSchema,
-  zodErrorToActionError,
-  type ActionInputs,
-  type RawInputsView,
-} from './schema';
+import { ActionInputsSchema, zodErrorToActionError, type ActionInputs } from './schema';
 
 /**
  * String-typed snapshot of every `core.getInput` result, plus the two
@@ -93,25 +88,9 @@ export function readInputs(): ActionInputs {
   const raw = readRawFromCore();
   const result = ActionInputsSchema.safeParse(raw);
   if (!result.success) {
-    throw zodErrorToActionError(result.error, toRawView(raw));
+    throw zodErrorToActionError(result.error, raw);
   }
   return result.data;
-}
-
-function toRawView(raw: RawInputs): RawInputsView {
-  return {
-    apiToken: raw.apiToken,
-    tokenType: raw.tokenType,
-    environmentId: raw.environmentId,
-    image: raw.image,
-    services: raw.services,
-    firstService: raw.firstService,
-    waitSeconds: raw.waitSeconds,
-    registryUsername: raw.registryUsername,
-    registryPassword: raw.registryPassword,
-    resolveToDigest: raw.resolveToDigest,
-    allowMutableTag: raw.allowMutableTag,
-  };
 }
 
 // Re-export ActionError so callers that already import from this module have

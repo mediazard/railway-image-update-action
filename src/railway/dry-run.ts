@@ -40,17 +40,26 @@ export function createDryRunClient(): RailwayClient {
 }
 
 /**
- * Return a shallow clone of the variables with any
- * `input.registryCredentials` replaced by `'[REDACTED]'`. Used by the
- * dry-run client so credentials can't leak past `core.setSecret`'s
- * substring mask when JSON-escaping changes the encoded form.
+ * Walk the variables object and replace any value at a key matching
+ * `password|secret|token|credential(s)` (case-insensitive) with `'[REDACTED]'`.
+ * Used by the dry-run client so credentials can't leak past
+ * `core.setSecret`'s substring mask when JSON-escape sequences change the
+ * encoded form. Recursive so future GraphQL variables shapes are covered
+ * automatically.
  */
+const SENSITIVE_KEY = /password|secret|token|credentials?/i;
+
 function redactCreds<TVars>(variables: TVars): TVars {
-  if (!variables || typeof variables !== 'object') return variables;
-  const v = variables as { input?: { registryCredentials?: unknown } };
-  if (!v.input || !v.input.registryCredentials) return variables;
-  return {
-    ...(variables as object),
-    input: { ...v.input, registryCredentials: '[REDACTED]' },
-  } as TVars;
+  return redactValue(variables) as TVars;
+}
+
+function redactValue(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map(redactValue);
+  if (typeof value !== 'object') return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = SENSITIVE_KEY.test(key) ? '[REDACTED]' : redactValue(val);
+  }
+  return out;
 }

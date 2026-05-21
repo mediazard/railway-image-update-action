@@ -28,6 +28,9 @@ Complete reimplementation in TypeScript, bundled to `dist/index.js` via `@vercel
 - All bash test harnesses (`tests/test-dry-run.sh`, `tests/test-json-output.sh`).
 - `shellcheck` CI job.
 
+### Internal
+- Test framework: vitest@^4 + @vitest/coverage-v8@^4 (the plan initially called for jest, but ts-jest startup hung in our development shell; vitest is faster, native-TS via esbuild, and zero npm-audit findings).
+
 ### Migration
 - Existing `@v0` pinned consumers are unaffected. To opt into TypeScript, change `@v0` to `@v1` (or pin to a specific `v1.0.0` SHA). Inputs and outputs are unchanged.
 - `@v0` receives security patches only and is EOL 12 months after the `v1.0.0` release date.

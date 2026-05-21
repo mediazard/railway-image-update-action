@@ -162,7 +162,7 @@ See [SECURITY.md](SECURITY.md) for the full policy.
 |-------|-------|-----|
 | `RAILWAY_API_TOKEN is not set` | Missing `api-token` input | Add `api-token: ${{ secrets.RAILWAY_API_TOKEN }}` |
 | `Railway API authentication failed` | Invalid or expired token | Regenerate token in Railway dashboard |
-| `Railway API access forbidden` | Token lacks permissions | Use a token with access to the target project |
+| `Railway API rejected the request (forbidden)` | Token lacks permissions | Use a token with access to the target project |
 | `first-service '...' not found` | Label doesn't match any service | Check spelling matches a label in `services` |
 | `Refusing to deploy mutable tag` | `resolve-to-digest: false` + mutable tag + `allow-mutable-tag: false` | Use immutable tag, enable `resolve-to-digest: true`, or set `allow-mutable-tag: true` |
 | `Failed to resolve manifest digest` | Registry unreachable or image not found | Check registry credentials, image existence, network access |

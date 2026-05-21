@@ -29,7 +29,9 @@ You will receive an acknowledgement within 2 business days and a status update w
 
 ## Hardening notes
 
-- All GraphQL response error wrappers strip the request body and headers before logging — your token cannot leak through a stack trace.
+- All GraphQL response error wrappers strip the request body and headers before logging — your token cannot leak through a stack trace. The error wrapper never sets `Error.cause`, so Node's default unhandled-rejection printer cannot walk back to the underlying transport error and re-emit the request body.
+- **Argv injection defense**: image references with a leading `-` are rejected at parse time; every `docker` invocation uses `--` to terminate flags so a future input that slipped through couldn't be interpreted as a docker CLI flag (e.g. `--config`, `--host`).
+- DRY_RUN logging recursively redacts any object key matching `password|secret|token|credentials` before JSON-stringifying — so even if a future GraphQL variables shape adds credentials at a new path, they won't reach the workflow log.
 - Bundle is committed (`dist/index.js`) so consumers don't pull `node_modules` at runtime; you can audit exactly what runs.
 - The action pins all third-party actions in CI workflows by SHA, and Node by exact patch via `.node-version`.
 

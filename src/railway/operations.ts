@@ -24,13 +24,13 @@ const DeployResponseSchema = z.object({
 
 /**
  * Response schema for `serviceInstanceUpdate`. We don't consume the value —
- * just assert the wrapping shape so API drift fails loudly.
+ * just assert the wrapping shape so API drift fails loudly. No `.passthrough()`
+ * is needed: zod ignores unknown keys by default, and `z.unknown()` already
+ * accepts anything at the inner position.
  */
-const UpdateResponseSchema = z
-  .object({
-    data: z.object({ serviceInstanceUpdate: z.unknown() }).passthrough(),
-  })
-  .passthrough();
+const UpdateResponseSchema = z.object({
+  data: z.object({ serviceInstanceUpdate: z.unknown() }),
+});
 
 /** Arguments accepted by `updateImage`. */
 export interface UpdateImageArgs {

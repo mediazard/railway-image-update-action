@@ -60712,8 +60712,11 @@ async function resolveImageDigest(ref, opts, execFn) {
     try {
         parsed = JSON.parse(inspect.stdout);
     }
-    catch (cause) {
-        throw new errors_1.ActionError('Failed to parse manifest JSON for image', `Image: ${ref}\nOutput: ${inspect.stdout}`, 'Ensure the image tag exists and the registry returns a valid manifest', { cause });
+    catch {
+        // Intentionally no { cause } — Node's default unhandled-rejection
+        // printer walks .cause chains; the underlying SyntaxError can include
+        // unmasked stdout fragments. details already includes the stdout.
+        throw new errors_1.ActionError('Failed to parse manifest JSON for image', `Image: ${ref}\nOutput: ${inspect.stdout}`, 'Ensure the image tag exists and the registry returns a valid manifest');
     }
     const digest = parsed.digest;
     if (!digest) {
@@ -60887,24 +60890,9 @@ function readInputs() {
     const raw = readRawFromCore();
     const result = schema_1.ActionInputsSchema.safeParse(raw);
     if (!result.success) {
-        throw (0, schema_1.zodErrorToActionError)(result.error, toRawView(raw));
+        throw (0, schema_1.zodErrorToActionError)(result.error, raw);
     }
     return result.data;
-}
-function toRawView(raw) {
-    return {
-        apiToken: raw.apiToken,
-        tokenType: raw.tokenType,
-        environmentId: raw.environmentId,
-        image: raw.image,
-        services: raw.services,
-        firstService: raw.firstService,
-        waitSeconds: raw.waitSeconds,
-        registryUsername: raw.registryUsername,
-        registryPassword: raw.registryPassword,
-        resolveToDigest: raw.resolveToDigest,
-        allowMutableTag: raw.allowMutableTag,
-    };
 }
 
 
@@ -61183,8 +61171,9 @@ const saved_1 = __nccwpck_require__(8762);
 /**
  * Action entry point. Dispatches main vs post based on the `mainStarted`
  * sentinel — set by `runMain` at its first line, observable on the post
- * invocation. Empty sentinel ⇒ runMain (first invocation, OR runner re-invoke
- * before main started). Non-empty ⇒ runPost (cleanup phase).
+ * invocation. Sentinel `=== 'true'` ⇒ runPost (cleanup phase). Anything else
+ * (empty, missing) ⇒ runMain (first invocation, OR runner re-invoke before
+ * main started).
  *
  * `runs.post-if: always()` ensures this entry is invoked on every workflow
  * outcome, so the post branch must NEVER call `core.setFailed` or set
@@ -61589,21 +61578,29 @@ function createDryRunClient() {
     };
 }
 /**
- * Return a shallow clone of the variables with any
- * `input.registryCredentials` replaced by `'[REDACTED]'`. Used by the
- * dry-run client so credentials can't leak past `core.setSecret`'s
- * substring mask when JSON-escaping changes the encoded form.
+ * Walk the variables object and replace any value at a key matching
+ * `password|secret|token|credential(s)` (case-insensitive) with `'[REDACTED]'`.
+ * Used by the dry-run client so credentials can't leak past
+ * `core.setSecret`'s substring mask when JSON-escape sequences change the
+ * encoded form. Recursive so future GraphQL variables shapes are covered
+ * automatically.
  */
+const SENSITIVE_KEY = /password|secret|token|credentials?/i;
 function redactCreds(variables) {
-    if (!variables || typeof variables !== 'object')
-        return variables;
-    const v = variables;
-    if (!v.input || !v.input.registryCredentials)
-        return variables;
-    return {
-        ...variables,
-        input: { ...v.input, registryCredentials: '[REDACTED]' },
-    };
+    return redactValue(variables);
+}
+function redactValue(value) {
+    if (value === null || value === undefined)
+        return value;
+    if (Array.isArray(value))
+        return value.map(redactValue);
+    if (typeof value !== 'object')
+        return value;
+    const out = {};
+    for (const [key, val] of Object.entries(value)) {
+        out[key] = SENSITIVE_KEY.test(key) ? '[REDACTED]' : redactValue(val);
+    }
+    return out;
 }
 
 
@@ -61813,13 +61810,13 @@ const DeployResponseSchema = zod_1.z.object({
 });
 /**
  * Response schema for `serviceInstanceUpdate`. We don't consume the value —
- * just assert the wrapping shape so API drift fails loudly.
+ * just assert the wrapping shape so API drift fails loudly. No `.passthrough()`
+ * is needed: zod ignores unknown keys by default, and `z.unknown()` already
+ * accepts anything at the inner position.
  */
-const UpdateResponseSchema = zod_1.z
-    .object({
-    data: zod_1.z.object({ serviceInstanceUpdate: zod_1.z.unknown() }).passthrough(),
-})
-    .passthrough();
+const UpdateResponseSchema = zod_1.z.object({
+    data: zod_1.z.object({ serviceInstanceUpdate: zod_1.z.unknown() }),
+});
 /** Update the image source (and optional registry creds) on a Railway service. */
 async function updateImage(client, args) {
     const input = args.registryCredentials

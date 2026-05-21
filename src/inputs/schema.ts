@@ -137,7 +137,11 @@ export const ActionInputsSchema = z
 /** Strongly-typed inputs after parse + transform. */
 export type ActionInputs = z.infer<typeof ActionInputsSchema>;
 
-/** Best-effort raw snapshot used by error mapping to surface offending values. */
+/**
+ * Best-effort raw snapshot used by error mapping to surface offending values.
+ * Structurally identical to `RawInputs` from `./parse`; re-aliased to avoid
+ * a circular import between `schema.ts` and `parse.ts`.
+ */
 export interface RawInputsView {
   apiToken: string;
   tokenType: string;

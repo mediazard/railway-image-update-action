@@ -122,12 +122,14 @@ export async function resolveImageDigest(
   let parsed: ManifestJson;
   try {
     parsed = JSON.parse(inspect.stdout) as ManifestJson;
-  } catch (cause) {
+  } catch {
+    // Intentionally no { cause } — Node's default unhandled-rejection
+    // printer walks .cause chains; the underlying SyntaxError can include
+    // unmasked stdout fragments. details already includes the stdout.
     throw new ActionError(
       'Failed to parse manifest JSON for image',
       `Image: ${ref}\nOutput: ${inspect.stdout}`,
       'Ensure the image tag exists and the registry returns a valid manifest',
-      { cause },
     );
   }
 

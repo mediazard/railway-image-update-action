@@ -13,8 +13,9 @@ import { savedState } from './state/saved';
 /**
  * Action entry point. Dispatches main vs post based on the `mainStarted`
  * sentinel — set by `runMain` at its first line, observable on the post
- * invocation. Empty sentinel ⇒ runMain (first invocation, OR runner re-invoke
- * before main started). Non-empty ⇒ runPost (cleanup phase).
+ * invocation. Sentinel `=== 'true'` ⇒ runPost (cleanup phase). Anything else
+ * (empty, missing) ⇒ runMain (first invocation, OR runner re-invoke before
+ * main started).
  *
  * `runs.post-if: always()` ensures this entry is invoked on every workflow
  * outcome, so the post branch must NEVER call `core.setFailed` or set
