@@ -1,0 +1,5 @@
+# Mark the bundled action output as generated so it doesn't dominate diffs/stats.
+# We intentionally do NOT add `merge=ours`: the driver requires per-clone setup and
+# strands stale bundles on rebase/merge. Contributors regenerate dist/ if it
+# conflicts — see CONTRIBUTING.md.
+dist/* linguist-generated=true

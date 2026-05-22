@@ -1,0 +1,20 @@
+# CODEOWNERS — review gating for sensitive changes.
+# GitHub resolves the LAST matching pattern, so list general patterns first.
+
+# Catch-all for /.github/ so CODEOWNERS, dependabot, workflows, etc. are
+# themselves owned — otherwise a future PR could silently remove protections.
+/.github/            @mediazard/engineering
+
+# Core action logic and CI/CD (more specific overrides above where needed)
+/src/                @mediazard/engineering
+/dist/               @mediazard/engineering
+/action.yml          @mediazard/engineering
+/.github/workflows/  @mediazard/engineering
+/package.json        @mediazard/engineering
+/package-lock.json   @mediazard/engineering
+
+# Security + contribution guidance
+/SECURITY.md         @mediazard/engineering
+/CONTRIBUTING.md     @mediazard/engineering
+
+# README and docs — unowned (anyone can update)

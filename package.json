@@ -1,0 +1,47 @@
+{
+  "name": "railway-image-update-action",
+  "version": "1.0.0-rc.1",
+  "private": true,
+  "description": "Update Docker image source and redeploy services on Railway via GraphQL API",
+  "author": "mediazard",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=20.18.1 <21"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && prettier --check .",
+    "lint:fix": "eslint . --fix && prettier --write .",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "bundle": "ncc build src/main.ts -o dist --source-map --license licenses.txt",
+    "size": "node scripts/size-check.js",
+    "smoke": "node -e \"require('./dist/index.js')\"",
+    "verify": "npm run typecheck && npm run lint && npm test && npm run bundle && npm run size"
+  },
+  "dependencies": {
+    "@actions/core": "^1.10.1",
+    "@actions/exec": "^1.1.1",
+    "graphql-request": "^7.1.2",
+    "p-retry": "^4.6.2",
+    "zod": "~3.23.8"
+  },
+  "overrides": {
+    "undici": "^6.21.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "@vercel/ncc": "^0.38.1",
+    "@vitest/coverage-v8": "^4.1.7",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "msw": "~2.3.5",
+    "prettier": "^3.3.3",
+    "typescript": "^5.4.5",
+    "vitest": "^4.1.7"
+  }
+}

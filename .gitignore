@@ -35,8 +35,15 @@ temp/
 *.tmp
 *.bak
 
-# Node (if any tooling is added later)
+# Node
 node_modules/
+*.tsbuildinfo
+build/
+
+# Alternative package manager lockfiles — we use npm exclusively
+pnpm-lock.yaml
+yarn.lock
+bun.lockb
 
 # Shell history
 .bash_history

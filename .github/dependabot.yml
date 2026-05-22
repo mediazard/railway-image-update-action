@@ -1,0 +1,27 @@
+version: 2
+
+updates:
+  # npm dependencies — runtime + dev
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    # Bundle output changes on dep bumps — reviewers must confirm `npm run bundle` was re-run.
+
+  # Keep GitHub Actions used in workflows up to date
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
