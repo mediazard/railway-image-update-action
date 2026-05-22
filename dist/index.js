@@ -60899,13 +60899,14 @@ function readRawFromCore() {
 }
 /**
  * Read and validate every action input. Throws an `ActionError` with a
- * v0-equivalent stable message on any validation failure.
+ * user-readable message (per-field `.message` strings live inside the
+ * schema in `./schema.ts`) on any validation failure.
  */
 function readInputs() {
     const raw = readRawFromCore();
     const result = schema_1.ActionInputsSchema.safeParse(raw);
     if (!result.success) {
-        throw (0, schema_1.zodErrorToActionError)(result.error, raw);
+        throw (0, schema_1.zodErrorToActionError)(result.error);
     }
     return result.data;
 }
@@ -60924,10 +60925,7 @@ exports.parseServicesString = parseServicesString;
 exports.zodErrorToActionError = zodErrorToActionError;
 const zod_1 = __nccwpck_require__(4809);
 const errors_1 = __nccwpck_require__(3916);
-/**
- * UUID v4-ish pattern used for both `environmentId` and every per-service ID.
- * Byte-for-byte identical to the v0 bash regex (Appendix A).
- */
+/** UUID pattern used for both `environmentId` and every per-service ID. */
 exports.UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 /**
  * Image reference: `registry/repo[:tag | @sha256:<hex>]`.
@@ -60938,27 +60936,28 @@ exports.UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
  * - body characters limited to `[a-z0-9._/-]`
  * - optional tag or sha256 digest suffix
  *
- * Does NOT accept `localhost:5000/...` port forms. CHANGELOG documents the
- * trade-off.
+ * Does NOT accept `localhost:5000/...` port forms.
  */
 exports.IMAGE_REF_PATTERN = /^[a-z0-9][a-z0-9._/-]*(:[a-zA-Z0-9._-]+|@sha256:[0-9a-f]{64})?$/;
 /**
+ * Inputs that may end up in `ActionError.details` (which is logged via
+ * core.info → raw stdout) MUST reject control chars + `%`. Otherwise an
+ * attacker who controls the input can inject GitHub Actions workflow
+ * commands (`::add-mask::secret`, `::error::...`) into the log stream.
+ */
+const NO_WORKFLOW_COMMAND_CHARS = /^[^\r\n%]*$/;
+/**
  * Parse the multiline `services` input into a `Map<label, serviceId>`.
  *
- * Contract (Appendix A):
- *  - Split on `\n`; strip trailing `\r` (CRLF tolerance).
- *  - Skip empty lines (after trimming).
- *  - For each line split on the FIRST `:`, trim both sides.
- *  - Empty label → throws `ActionError("Service label is empty", ...)`.
- *  - Non-UUID service ID → throws
- *    `ActionError("Service ID for [<label>] is not a valid UUID", ...)`.
- *  - Map insertion order is the public contract for deploy order — never sort.
+ * - Split on `\n`; strip trailing `\r` (CRLF tolerance).
+ * - Skip empty lines (after trimming).
+ * - For each line, split on the FIRST `:`, trim both sides.
+ * - Empty label or non-UUID service id → throws `ActionError`.
+ * - Map insertion order is the public contract for deploy order — never sort.
  */
 function parseServicesString(input) {
     const result = new Map();
-    const lines = input.split('\n');
-    for (const rawLine of lines) {
-        // Strip trailing \r for CRLF tolerance.
+    for (const rawLine of input.split('\n')) {
         const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
         if (line.trim() === '')
             continue;
@@ -60966,18 +60965,16 @@ function parseServicesString(input) {
         const label = (colonIdx === -1 ? line : line.slice(0, colonIdx)).trim();
         const serviceId = (colonIdx === -1 ? '' : line.slice(colonIdx + 1)).trim();
         if (label === '') {
-            throw new errors_1.ActionError('Service label is empty', `Offending line: '${rawLine}'`, "Each services line must be 'label:service_id' with a non-empty label.");
+            throw new errors_1.ActionError('services line has an empty label', `Offending line: '${rawLine}'`, "Each services line must be 'label:service_id' with a non-empty label.");
         }
         if (!exports.UUID_PATTERN.test(serviceId)) {
-            throw new errors_1.ActionError(`Service ID for [${label}] is not a valid UUID`, `Got: '${serviceId}'`, 'Use the Railway service UUID, e.g. 1234abcd-12ab-34cd-56ef-1234567890ab.');
+            throw new errors_1.ActionError(`services: service ID for '${label}' is not a valid UUID`, `Got: '${serviceId}'`, 'Use the Railway service UUID, e.g. 1234abcd-12ab-34cd-56ef-1234567890ab.');
         }
         result.set(label, serviceId);
     }
     return result;
 }
-/**
- * Both registry credentials must be present, or both absent. v0 parity.
- */
+/** Both registry credentials must be present, or both absent. */
 function refineCredentialPair(val, ctx) {
     const hasUser = val.registryUsername !== '';
     const hasPass = val.registryPassword !== '';
@@ -61012,27 +61009,41 @@ function refineFirstServiceExists(val, ctx) {
     }
 }
 /**
- * Inputs that may end up in `ActionError.details` (which is logged via
- * core.info → raw stdout) MUST reject control chars + `%`. Otherwise an
- * attacker who controls the input can inject GitHub Actions workflow
- * commands (`::add-mask::secret`, `::error::...`) into the log stream.
- */
-const NO_WORKFLOW_COMMAND_CHARS = /^[^\r\n%]*$/;
-/**
- * Zod schema for all 11 action inputs. Booleans use `z.boolean()` because the
- * parse step uses `core.getBooleanInput` (Appendix D) which already throws on
- * invalid values per the GitHub Actions YAML 1.2 boolean spec.
+ * Zod schema for all 11 action inputs. Per-field `.message` strings carry
+ * action-input-name phrasing so a `safeParse` failure surfaces a
+ * user-readable error without any external mapping layer.
  */
 exports.ActionInputsSchema = zod_1.z
     .object({
-    apiToken: zod_1.z.string().min(1).regex(NO_WORKFLOW_COMMAND_CHARS),
-    tokenType: zod_1.z.enum(['bearer', 'project']).default('bearer'),
-    environmentId: zod_1.z.string().regex(exports.UUID_PATTERN),
-    image: zod_1.z.string().regex(exports.IMAGE_REF_PATTERN),
-    services: zod_1.z.string().min(1).transform(parseServicesString),
-    firstService: zod_1.z.string().regex(NO_WORKFLOW_COMMAND_CHARS).default(''),
-    waitSeconds: zod_1.z.coerce.number().int().nonnegative().max(900).default(30),
-    registryUsername: zod_1.z.string().regex(NO_WORKFLOW_COMMAND_CHARS).default(''),
+    apiToken: zod_1.z
+        .string()
+        .min(1, 'api-token is required')
+        .regex(NO_WORKFLOW_COMMAND_CHARS, 'api-token contains forbidden characters'),
+    tokenType: zod_1.z
+        .enum(['bearer', 'project'], {
+        errorMap: () => ({ message: "token-type must be 'bearer' or 'project'" }),
+    })
+        .default('bearer'),
+    environmentId: zod_1.z.string().regex(exports.UUID_PATTERN, 'environment-id must be a UUID'),
+    image: zod_1.z.string().regex(exports.IMAGE_REF_PATTERN, 'image is not a valid Docker image reference'),
+    services: zod_1.z
+        .string()
+        .min(1, 'services is required')
+        .transform(parseServicesString),
+    firstService: zod_1.z
+        .string()
+        .regex(NO_WORKFLOW_COMMAND_CHARS, 'first-service contains forbidden characters')
+        .default(''),
+    waitSeconds: zod_1.z.coerce
+        .number({ invalid_type_error: 'wait-seconds must be a non-negative integer' })
+        .int('wait-seconds must be a non-negative integer')
+        .nonnegative('wait-seconds must be a non-negative integer')
+        .max(900, 'wait-seconds must not exceed 900 (15 min)')
+        .default(30),
+    registryUsername: zod_1.z
+        .string()
+        .regex(NO_WORKFLOW_COMMAND_CHARS, 'registry-username contains forbidden characters')
+        .default(''),
     registryPassword: zod_1.z.string().default(''),
     resolveToDigest: zod_1.z.boolean().default(true),
     allowMutableTag: zod_1.z.boolean().default(false),
@@ -61040,99 +61051,15 @@ exports.ActionInputsSchema = zod_1.z
     .superRefine(refineCredentialPair)
     .superRefine(refineFirstServiceExists);
 /**
- * Map a `ZodError` produced by `ActionInputsSchema.safeParse(raw)` back to the
- * v0-equivalent stable error messages from Appendix A.
- *
- * The mapping is keyed by `issue.path[0]` + `issue.code` so we can produce
- * messages that mention the v0 env-style names (`RAILWAY_API_TOKEN`) instead
- * of the new action input names (`api-token`) — preserving the existing user
- * mental model and any grep-based log assertions consumer scripts rely on.
- *
- * If a custom-issue message was set by one of our `.superRefine`s, that exact
- * message is used as-is (it's already v0-equivalent).
- *
- * On any unmapped issue we fall back to the zod-rendered message under a
- * generic `Invalid action input` header so we never silently swallow drift.
+ * Convert a `ZodError` to an `ActionError`. Every zod issue in the schema
+ * carries a user-readable `.message` already, so this packager just surfaces
+ * the first one as the headline and lists all of them in `details`.
  */
-function zodErrorToActionError(err, raw) {
-    // Custom issues (from our `.superRefine`s + `parseServicesString`) already
-    // carry the v0-stable message; surface the first one.
-    const customIssue = err.issues.find((i) => i.code === zod_1.z.ZodIssueCode.custom);
-    if (customIssue) {
-        return new errors_1.ActionError(customIssue.message, buildDetails(customIssue.path, raw), hintFor(customIssue.path));
-    }
-    const issue = err.issues[0];
-    if (!issue) {
-        return new errors_1.ActionError('Invalid action input', 'Zod reported no issues but parsing failed.', 'Re-run with debug logging enabled.');
-    }
-    const field = typeof issue.path[0] === 'string' ? issue.path[0] : '';
-    switch (field) {
-        case 'apiToken':
-            return new errors_1.ActionError('RAILWAY_API_TOKEN is not set', 'api-token input was empty.', "Add 'api-token: ${{ secrets.RAILWAY_API_TOKEN }}' to your workflow.");
-        case 'environmentId': {
-            if (raw.environmentId === '') {
-                return new errors_1.ActionError('RAILWAY_ENV_ID is not set', 'environment-id input was empty.', "Add 'environment-id: <your-environment-uuid>' to your workflow.");
-            }
-            return new errors_1.ActionError('RAILWAY_ENV_ID is not a valid UUID', `Got: '${raw.environmentId}'`, 'Use the Railway environment UUID, e.g. 1234abcd-12ab-34cd-56ef-1234567890ab.');
-        }
-        case 'image': {
-            if (raw.image === '') {
-                return new errors_1.ActionError('IMAGE_TAG is not set', 'image input was empty.', "Add 'image: <registry>/<repo>:<tag>' to your workflow.");
-            }
-            return new errors_1.ActionError('image tag has an invalid format', `Got: '${raw.image}'`, 'Use a Docker image reference like ghcr.io/org/app:1.2.3 or ...@sha256:<hex>.');
-        }
-        case 'services':
-            return new errors_1.ActionError('SERVICES is not set', 'services input was empty.', "Provide a multiline list of 'label:service_id' pairs in your workflow.");
-        case 'waitSeconds':
-            return new errors_1.ActionError('wait-seconds must be a non-negative integer', `Got: '${raw.waitSeconds}'`, 'Set wait-seconds to 0 or a positive integer (default: 30).');
-        case 'tokenType':
-            return new errors_1.ActionError("token-type must be 'bearer' or 'project'", `Got: '${raw.tokenType}'`, "Set token-type: 'bearer' (default) or 'project'.");
-        case 'firstService':
-            return new errors_1.ActionError(`first-service '${raw.firstService}' not found in services list`, undefined, 'Set first-service to one of the labels in your services input.');
-        case 'registryUsername':
-            return new errors_1.ActionError('registry-username provided without registry-password', undefined, 'Provide both registry-username and registry-password, or neither.');
-        case 'registryPassword':
-            return new errors_1.ActionError('registry-password provided without registry-username', undefined, 'Provide both registry-username and registry-password, or neither.');
-        default:
-            return new errors_1.ActionError('Invalid action input', `${field || '(unknown)'}: ${issue.message}`, 'Check the action inputs against the README.');
-    }
-}
-function buildDetails(path, raw) {
-    const field = typeof path[0] === 'string' ? path[0] : '';
-    switch (field) {
-        case 'registryUsername':
-        case 'registryPassword':
-            return undefined;
-        case 'firstService':
-            return `first-service='${raw.firstService}', services labels=${listLabels(raw.services)}`;
-        default:
-            return undefined;
-    }
-}
-function hintFor(path) {
-    const field = typeof path[0] === 'string' ? path[0] : '';
-    switch (field) {
-        case 'registryUsername':
-        case 'registryPassword':
-            return 'Provide both registry-username and registry-password, or neither.';
-        case 'firstService':
-            return 'Set first-service to one of the labels in your services input.';
-        default:
-            return undefined;
-    }
-}
-function listLabels(servicesInput) {
-    const labels = [];
-    for (const rawLine of servicesInput.split('\n')) {
-        const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
-        if (line.trim() === '')
-            continue;
-        const colonIdx = line.indexOf(':');
-        const label = (colonIdx === -1 ? line : line.slice(0, colonIdx)).trim();
-        if (label !== '')
-            labels.push(label);
-    }
-    return `[${labels.join(', ')}]`;
+function zodErrorToActionError(err) {
+    const messages = err.issues.map((i) => i.message);
+    const headline = messages[0] ?? 'Invalid action input';
+    const details = messages.length > 1 ? messages.map((m) => `- ${m}`).join('\n') : undefined;
+    return new errors_1.ActionError(headline, details);
 }
 
 
@@ -61843,44 +61770,14 @@ exports.DEPLOY_MUTATION = 'mutation($sid:String!,$eid:String!){serviceInstanceDe
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.updateImage = updateImage;
 exports.redeploy = redeploy;
-const zod_1 = __nccwpck_require__(4809);
 const errors_1 = __nccwpck_require__(2576);
 const mutations_1 = __nccwpck_require__(7803);
 const retry_1 = __nccwpck_require__(7789);
 /**
- * Response schema for `serviceInstanceDeploy`. Railway returns one of:
- *  - a deployment-id string (happy path)
- *  - `null` (no deployment id available)
- *  - **`true`** (boolean — Railway's "deploy accepted, no id surfaced"
- *    response; observed in production, also handled by v0 bash via
- *    `[[ "$deploy_id" != "true" ]]`)
- *
- * The redeploy() function normalizes boolean to null so callers only see
- * the two cases that matter: `deploymentId: <string>` or `deploymentId: null`
- * (latter triggers the "unavailable — raw response: null" warning path).
- *
- * NOTE: graphql-request@7's `client.request()` returns the UNWRAPPED `data`
- * payload — not the full `{data, errors}` response envelope. So we validate
- * the inner shape only.
+ * Update the image source (and optional registry creds) on a Railway service.
+ * The response is intentionally discarded — HTTP 200 with no GraphQL
+ * `errors[]` is sufficient (graphql-request@7 would have thrown otherwise).
  */
-const DeployResponseSchema = zod_1.z.object({
-    serviceInstanceDeploy: zod_1.z.union([zod_1.z.string(), zod_1.z.boolean(), zod_1.z.null()]),
-});
-/**
- * Response schema for `serviceInstanceUpdate`. We don't consume the value —
- * just assert the field is PRESENT so API drift (e.g. Railway renaming the
- * mutation) fails loudly. `z.unknown()` accepts any value including
- * `undefined`, so we add a `.refine` to require the key actually exists.
- *
- * As with `DeployResponseSchema`, this validates the UNWRAPPED data, not the
- * full `{data, errors}` envelope.
- */
-const UpdateResponseSchema = zod_1.z
-    .object({ serviceInstanceUpdate: zod_1.z.unknown() })
-    .refine((o) => 'serviceInstanceUpdate' in o, {
-    message: "Response missing 'serviceInstanceUpdate' field",
-});
-/** Update the image source (and optional registry creds) on a Railway service. */
 async function updateImage(client, args) {
     const input = args.registryCredentials
         ? { source: { image: args.image }, registryCredentials: args.registryCredentials }
@@ -61891,10 +61788,9 @@ async function updateImage(client, args) {
         input,
     };
     try {
-        const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.UPDATE_IMAGE_MUTATION, variables, {
+        await (0, retry_1.withRetry)(() => client.request(mutations_1.UPDATE_IMAGE_MUTATION, variables, {
             operationName: 'updateImage',
         }));
-        UpdateResponseSchema.parse(raw);
     }
     catch (err) {
         const actionErr = (0, errors_1.mapToActionError)(err, 'updateImage');
@@ -61902,8 +61798,14 @@ async function updateImage(client, args) {
     }
 }
 /**
- * Trigger a redeploy on a Railway service instance. Returns the deployment ID
- * (or `null` when Railway can't surface one — v0 emits a warning in this case).
+ * Trigger a redeploy on a Railway service instance.
+ *
+ * On success the deploy is accepted server-side. We return both the parsed
+ * deployment-id (string) and the raw value Railway sent — `deploymentId`
+ * is `null` whenever `rawValue` is anything other than a non-empty string
+ * (commonly `true` or `null`; see `extractDeploymentId` for full coverage).
+ * The caller surfaces an "unavailable" warning in the null case but doesn't
+ * fail the deploy, because Railway already accepted it.
  */
 async function redeploy(client, args) {
     const variables = {
@@ -61914,16 +61816,41 @@ async function redeploy(client, args) {
         const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.DEPLOY_MUTATION, variables, {
             operationName: 'deployService',
         }));
-        const parsed = DeployResponseSchema.parse(raw);
-        // Normalize: only a string is a real deployment ID. `true` and `null` both
-        // mean "no id available" — caller surfaces the "unavailable" warning.
-        const value = parsed.serviceInstanceDeploy;
-        return { deploymentId: typeof value === 'string' ? value : null };
+        return {
+            deploymentId: extractDeploymentId(raw),
+            rawValue: extractRawValue(raw),
+        };
     }
     catch (err) {
         const actionErr = (0, errors_1.mapToActionError)(err, `deployService:${args.serviceLabel}`);
         throw actionErr;
     }
+}
+/** Pull the `serviceInstanceDeploy` field out as-is (no type filtering). */
+function extractRawValue(raw) {
+    if (typeof raw !== 'object' || raw === null)
+        return undefined;
+    return raw.serviceInstanceDeploy;
+}
+/**
+ * Pull the `serviceInstanceDeploy` field off Railway's response defensively.
+ * Returns the deployment-id string if it's a non-empty string, else `null`.
+ *
+ * Known wire-shapes Railway has returned in production:
+ *   - `{ serviceInstanceDeploy: "<id>" }`       — happy path
+ *   - `{ serviceInstanceDeploy: null }`         — no id available
+ *   - `{ serviceInstanceDeploy: true }`         — "deploy accepted" boolean
+ *
+ * Anything else (missing field, wrong type, nested wrapper, ...) is treated
+ * as "no id available" rather than thrown. Railway accepted the deploy by
+ * the time we get here; refusing to surface an id is the strictly worse
+ * failure mode.
+ */
+function extractDeploymentId(raw) {
+    if (typeof raw !== 'object' || raw === null)
+        return null;
+    const value = raw.serviceInstanceDeploy;
+    return typeof value === 'string' && value !== '' ? value : null;
 }
 
 
@@ -62197,7 +62124,7 @@ async function deployOrdered(client, inputs, state, image) {
         serviceLabel: firstLabel,
     });
     state.markDeployed(firstLabel);
-    recordDeploymentId(state, firstLabel, firstResult.deploymentId);
+    recordDeploymentId(state, firstLabel, firstResult);
     core.info(`  ⏳ Waiting ${inputs.waitSeconds}s for first service to stabilise...`);
     await sleep(inputs.waitSeconds * 1000);
     core.info('');
@@ -62225,7 +62152,7 @@ async function deployOrdered(client, inputs, state, image) {
             serviceLabel: label,
         });
         state.markDeployed(label);
-        recordDeploymentId(state, label, result.deploymentId);
+        recordDeploymentId(state, label, result);
     }
 }
 /** Parallel: 2 steps — update all, then redeploy all. */
@@ -62251,7 +62178,7 @@ async function deployParallel(client, inputs, state, image) {
             serviceLabel: label,
         });
         state.markDeployed(label);
-        recordDeploymentId(state, label, result.deploymentId);
+        recordDeploymentId(state, label, result);
     }
 }
 function buildCreds(inputs) {
@@ -62259,14 +62186,33 @@ function buildCreds(inputs) {
         ? { username: inputs.registryUsername, password: inputs.registryPassword }
         : undefined;
 }
-function recordDeploymentId(state, label, id) {
-    if (id !== null && id !== '') {
-        core.info(`[${label}] deployment-id: ${id}`);
-        state.attachDeploymentId(label, id);
+function recordDeploymentId(state, label, result) {
+    if (result.deploymentId !== null && result.deploymentId !== '') {
+        core.info(`[${label}] deployment-id: ${result.deploymentId}`);
+        state.attachDeploymentId(label, result.deploymentId);
     }
     else {
-        // Preserves v0's exact warning shape so consumer log-grepping keeps working.
-        core.warning(`[${label}] deployment-id: (unavailable — raw response: null)`);
+        core.warning(`[${label}] deployment-id: (unavailable — Railway returned: ${formatRaw(result.rawValue)})`);
+    }
+}
+/** Render a raw response value as a short string for the "unavailable" warning. */
+function formatRaw(value) {
+    if (value === undefined)
+        return 'undefined';
+    if (value === null)
+        return 'null';
+    if (typeof value === 'string')
+        return value === '' ? '(empty string)' : `"${value}"`;
+    if (typeof value === 'boolean' || typeof value === 'number')
+        return String(value);
+    // Object / array / anything else — JSON-stringify with a short truncation
+    // so we don't blow up the log on a surprise nested response.
+    try {
+        const s = JSON.stringify(value);
+        return s.length > 100 ? `${s.slice(0, 100)}…` : s;
+    }
+    catch {
+        return String(value);
     }
 }
 function sleep(ms) {

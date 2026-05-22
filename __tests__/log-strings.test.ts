@@ -143,15 +143,30 @@ describe('log strings — per-service progress lines', () => {
     expect(messages(vi.mocked(core.info))).toContain('[worker] deployment-id: abc123');
   });
 
-  it('emits "[label] deployment-id: (unavailable — raw response: null)" via core.warning when id is null', async () => {
+  it('emits "[label] deployment-id: (unavailable — Railway returned: null)" via core.warning when id is null', async () => {
     const inputs = makeInputs();
     const state = new DeployState(Array.from(inputs.services.keys()));
     await run({ client: happyClient(null), execFn: makeExecFn(), inputs, state });
     expect(messages(vi.mocked(core.warning))).toContain(
-      '[api] deployment-id: (unavailable — raw response: null)',
+      '[api] deployment-id: (unavailable — Railway returned: null)',
     );
     expect(messages(vi.mocked(core.warning))).toContain(
-      '[worker] deployment-id: (unavailable — raw response: null)',
+      '[worker] deployment-id: (unavailable — Railway returned: null)',
+    );
+  });
+
+  it('emits "[label] deployment-id: (unavailable — Railway returned: true)" when Railway sent the boolean', async () => {
+    // The real-production case captured from London staging run 26274637756:
+    // Railway returns the boolean `true` from serviceInstanceDeploy. v1
+    // surfaces the actual value in the warning, not a hardcoded "null".
+    const inputs = makeInputs();
+    const state = new DeployState(Array.from(inputs.services.keys()));
+    const c = new FakeRailwayClient();
+    c.setResponse('serviceInstanceUpdate', { response: { serviceInstanceUpdate: {} } });
+    c.setResponse('serviceInstanceDeploy', { response: { serviceInstanceDeploy: true } });
+    await run({ client: c, execFn: makeExecFn(), inputs, state });
+    expect(messages(vi.mocked(core.warning))).toContain(
+      '[api] deployment-id: (unavailable — Railway returned: true)',
     );
   });
 });

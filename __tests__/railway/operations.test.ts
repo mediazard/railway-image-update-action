@@ -99,11 +99,13 @@ describe('updateImage — error paths', () => {
     }
   });
 
-  it('throws ActionError when response shape mismatches schema (zod parse fail)', async () => {
+  it('does NOT throw on unexpected response shapes — HTTP 200 + no GraphQL errors is sufficient confirmation', async () => {
+    // We deliberately don't validate the update response. graphql-request@7
+    // would have thrown if Railway returned `errors[]` or a non-2xx status;
+    // anything that gets through is treated as success. Two prior production
+    // bugs (data-envelope, boolean serviceInstanceDeploy) came from being
+    // too strict here.
     const client = new FakeRailwayClient();
-    // `serviceInstanceUpdate` field is missing — UpdateResponseSchema requires it.
-    // (graphql-request@7 unwraps the outer `data` envelope, so our schema
-    // validates the inner payload.)
     client.setResponse('updateImage', { response: { somethingElse: true } });
 
     await expect(
@@ -112,7 +114,7 @@ describe('updateImage — error paths', () => {
         environmentId: ENV_ID,
         image: 'registry/repo:tag',
       }),
-    ).rejects.toBeInstanceOf(ActionError);
+    ).resolves.toBeUndefined();
   });
 });
 
@@ -128,7 +130,7 @@ describe('redeploy — happy path', () => {
       environmentId: ENV_ID,
       serviceLabel: 'api',
     });
-    expect(result).toEqual({ deploymentId: 'abc123' });
+    expect(result).toMatchObject({ deploymentId: 'abc123' });
   });
 
   it('returns { deploymentId: null } when API returns the boolean `true`', async () => {
@@ -148,7 +150,7 @@ describe('redeploy — happy path', () => {
       environmentId: ENV_ID,
       serviceLabel: 'api',
     });
-    expect(result).toEqual({ deploymentId: null });
+    expect(result).toMatchObject({ deploymentId: null });
   });
 
   it('returns { deploymentId: null } when API returns null', async () => {
@@ -162,7 +164,7 @@ describe('redeploy — happy path', () => {
       environmentId: ENV_ID,
       serviceLabel: 'api',
     });
-    expect(result).toEqual({ deploymentId: null });
+    expect(result).toMatchObject({ deploymentId: null });
   });
 
   it('passes operationName=deployService to the client', async () => {
@@ -194,17 +196,33 @@ describe('redeploy — error paths', () => {
     ).rejects.toBeInstanceOf(ActionError);
   });
 
-  it('throws ActionError when response shape mismatches (e.g. data.serviceInstanceDeploy missing)', async () => {
+  it('returns { deploymentId: null } on unexpected response shapes (defensive — Railway already accepted the deploy)', async () => {
+    // We don't throw on shape mismatch — the deploy already succeeded
+    // server-side. Returning null surfaces the existing "unavailable" warning
+    // path. Three real shapes verified by production: string, null, true.
     const client = new FakeRailwayClient();
     client.setResponse('deployService', { response: { data: {} } });
 
-    await expect(
-      redeploy(client, {
-        serviceId: SERVICE_ID,
-        environmentId: ENV_ID,
-        serviceLabel: 'api',
-      }),
-    ).rejects.toBeInstanceOf(ActionError);
+    const result = await redeploy(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+      serviceLabel: 'api',
+    });
+    expect(result).toMatchObject({ deploymentId: null });
+  });
+
+  it('returns { deploymentId: null } when serviceInstanceDeploy is an empty string', async () => {
+    // Edge case: empty string would technically pass `typeof === "string"`,
+    // but is useless. Treat as no-id.
+    const client = new FakeRailwayClient();
+    client.setResponse('deployService', { response: { serviceInstanceDeploy: '' } });
+
+    const result = await redeploy(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+      serviceLabel: 'api',
+    });
+    expect(result).toMatchObject({ deploymentId: null });
   });
 
   it('includes serviceLabel in the operation context when erroring', async () => {

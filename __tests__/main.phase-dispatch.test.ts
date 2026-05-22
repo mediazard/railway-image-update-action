@@ -188,7 +188,7 @@ describe('runPost', () => {
 
 describe('runMain — validation failure', () => {
   it('emits one error annotation, sets process.exitCode=1, still calls writeOutputs', async () => {
-    // Empty api-token → readInputs throws ActionError("RAILWAY_API_TOKEN is not set").
+    // Empty api-token → readInputs throws ActionError("api-token is required").
     vi.mocked(core.getState).mockReturnValue('');
     vi.mocked(core.getInput).mockImplementation((name: string): string => {
       if (name === 'api-token') return '';
@@ -206,7 +206,7 @@ describe('runMain — validation failure', () => {
 
     // emitToCore was called → core.error fired exactly once.
     expect(core.error).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(core.error).mock.calls[0]?.[0]).toBe('RAILWAY_API_TOKEN is not set');
+    expect(vi.mocked(core.error).mock.calls[0]?.[0]).toBe('api-token is required');
 
     // exitCode set to 1 (NOT via setFailed — that would double-emit).
     expect(process.exitCode).toBe(1);

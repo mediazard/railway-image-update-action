@@ -2,7 +2,6 @@ import {
   ActionInputsSchema,
   parseServicesString,
   zodErrorToActionError,
-  type RawInputsView,
 } from '../../src/inputs/schema';
 import { ActionError } from '../../src/errors';
 
@@ -13,27 +12,6 @@ const WORKER_UUID = '550e8400-e29b-41d4-a716-446655440002';
 const ZETA_UUID = '550e8400-e29b-41d4-a716-446655440003';
 const ALPHA_UUID = '550e8400-e29b-41d4-a716-446655440004';
 const MID_UUID = '550e8400-e29b-41d4-a716-446655440005';
-
-/**
- * Build a complete `RawInputsView` for use with `zodErrorToActionError`.
- * Override fields per-test.
- */
-function makeRawView(overrides: Partial<RawInputsView> = {}): RawInputsView {
-  return {
-    apiToken: 'token-abc',
-    tokenType: 'bearer',
-    environmentId: ENV_UUID,
-    image: 'ghcr.io/org/app:1.0.0',
-    services: `web:${WEB_UUID}\nworker:${WORKER_UUID}`,
-    firstService: '',
-    waitSeconds: '30',
-    registryUsername: '',
-    registryPassword: '',
-    resolveToDigest: true,
-    allowMutableTag: false,
-    ...overrides,
-  };
-}
 
 /**
  * Build a complete raw input record suitable for `ActionInputsSchema.safeParse`.
@@ -88,14 +66,13 @@ describe('parseServicesString', () => {
     expect(Array.from(map.keys())).toEqual(['web', 'worker']);
   });
 
-  it('throws ActionError("Service label is empty") on `:<uuid>` line', () => {
-    expect(() => parseServicesString(`:${WEB_UUID}`)).toThrowError(ActionError);
+  it('throws ActionError on an empty label (`:<uuid>` line)', () => {
     try {
       parseServicesString(`:${WEB_UUID}`);
       throw new Error('expected throw');
     } catch (err) {
       expect(err).toBeInstanceOf(ActionError);
-      expect((err as ActionError).message).toBe('Service label is empty');
+      expect((err as ActionError).message).toBe('services line has an empty label');
     }
   });
 
@@ -105,7 +82,9 @@ describe('parseServicesString', () => {
       throw new Error('expected throw');
     } catch (err) {
       expect(err).toBeInstanceOf(ActionError);
-      expect((err as ActionError).message).toBe('Service ID for [web] is not a valid UUID');
+      expect((err as ActionError).message).toBe(
+        "services: service ID for 'web' is not a valid UUID",
+      );
     }
   });
 });
@@ -183,104 +162,91 @@ describe('ActionInputsSchema — happy path and refines', () => {
   });
 });
 
-describe('zodErrorToActionError — v0-stable error strings (Appendix A)', () => {
-  /**
-   * Run the schema against `rawInputs`, expect failure, and map the resulting
-   * ZodError back to an ActionError via `zodErrorToActionError`.
-   */
-  function mapError(
-    rawInputs: Record<string, unknown>,
-    rawView: Partial<RawInputsView> = {},
-  ): ActionError {
+describe('zodErrorToActionError — action-input-name messages', () => {
+  function mapError(rawInputs: Record<string, unknown>): ActionError {
     const result = ActionInputsSchema.safeParse(rawInputs);
     if (result.success) {
       throw new Error('expected schema to fail; this test fixture is invalid');
     }
-    return zodErrorToActionError(result.error, makeRawView(rawView));
+    return zodErrorToActionError(result.error);
   }
 
-  it('missing api-token → "RAILWAY_API_TOKEN is not set"', () => {
-    const err = mapError(makeRawInputs({ apiToken: '' }), { apiToken: '' });
-    expect(err.message).toBe('RAILWAY_API_TOKEN is not set');
+  it('missing api-token → "api-token is required"', () => {
+    const err = mapError(makeRawInputs({ apiToken: '' }));
+    expect(err.message).toBe('api-token is required');
   });
 
-  it('missing environment-id → "RAILWAY_ENV_ID is not set"', () => {
-    const err = mapError(makeRawInputs({ environmentId: '' }), {
-      environmentId: '',
-    });
-    expect(err.message).toBe('RAILWAY_ENV_ID is not set');
+  it('missing environment-id → "environment-id must be a UUID"', () => {
+    // zod's regex check fires (empty string doesn't match UUID regex).
+    const err = mapError(makeRawInputs({ environmentId: '' }));
+    expect(err.message).toBe('environment-id must be a UUID');
   });
 
-  it('missing image → "IMAGE_TAG is not set"', () => {
-    const err = mapError(makeRawInputs({ image: '' }), { image: '' });
-    expect(err.message).toBe('IMAGE_TAG is not set');
+  it('missing image → "image is not a valid Docker image reference"', () => {
+    const err = mapError(makeRawInputs({ image: '' }));
+    expect(err.message).toBe('image is not a valid Docker image reference');
   });
 
-  it('missing services → "SERVICES is not set"', () => {
-    const err = mapError(makeRawInputs({ services: '' }), { services: '' });
-    expect(err.message).toBe('SERVICES is not set');
+  it('missing services → "services is required"', () => {
+    const err = mapError(makeRawInputs({ services: '' }));
+    expect(err.message).toBe('services is required');
   });
 
-  it('invalid environment-id → "RAILWAY_ENV_ID is not a valid UUID"', () => {
-    const err = mapError(makeRawInputs({ environmentId: 'not-a-uuid' }), {
-      environmentId: 'not-a-uuid',
-    });
-    expect(err.message).toBe('RAILWAY_ENV_ID is not a valid UUID');
+  it('invalid environment-id → "environment-id must be a UUID"', () => {
+    const err = mapError(makeRawInputs({ environmentId: 'not-a-uuid' }));
+    expect(err.message).toBe('environment-id must be a UUID');
   });
 
-  it('invalid image regex → "image tag has an invalid format"', () => {
-    const err = mapError(makeRawInputs({ image: 'NOT VALID IMAGE!' }), {
-      image: 'NOT VALID IMAGE!',
-    });
-    expect(err.message).toBe('image tag has an invalid format');
+  it('invalid image regex → "image is not a valid Docker image reference"', () => {
+    const err = mapError(makeRawInputs({ image: 'NOT VALID IMAGE!' }));
+    expect(err.message).toBe('image is not a valid Docker image reference');
   });
 
   it('non-integer wait-seconds → "wait-seconds must be a non-negative integer"', () => {
-    const err = mapError(makeRawInputs({ waitSeconds: 'abc' }), {
-      waitSeconds: 'abc',
-    });
+    const err = mapError(makeRawInputs({ waitSeconds: 'abc' }));
     expect(err.message).toBe('wait-seconds must be a non-negative integer');
   });
 
-  it('registry-username without password → stable message', () => {
-    const err = mapError(makeRawInputs({ registryUsername: 'user', registryPassword: '' }), {
-      registryUsername: 'user',
-      registryPassword: '',
-    });
+  it('wait-seconds over the 900 cap → max-bound message', () => {
+    const err = mapError(makeRawInputs({ waitSeconds: '9999' }));
+    expect(err.message).toBe('wait-seconds must not exceed 900 (15 min)');
+  });
+
+  it('registry-username without password → custom-refine message', () => {
+    const err = mapError(makeRawInputs({ registryUsername: 'user', registryPassword: '' }));
     expect(err.message).toBe('registry-username provided without registry-password');
   });
 
-  it('registry-password without username → stable message', () => {
-    const err = mapError(makeRawInputs({ registryUsername: '', registryPassword: 'pw' }), {
-      registryUsername: '',
-      registryPassword: 'pw',
-    });
+  it('registry-password without username → custom-refine message', () => {
+    const err = mapError(makeRawInputs({ registryUsername: '', registryPassword: 'pw' }));
     expect(err.message).toBe('registry-password provided without registry-username');
   });
 
-  it('invalid service UUID → ActionError propagated from parseServicesString .transform()', () => {
-    // The `.transform(parseServicesString)` throws synchronously when a
-    // service id fails the UUID check. zod's safeParse does NOT catch
-    // thrown non-ZodErrors — the throw propagates to the caller. That's
-    // the v0-stable contract: a single ActionError with the preserved
-    // string makes it back to `readInputs`.
-    expect(() =>
-      ActionInputsSchema.safeParse(makeRawInputs({ services: 'web:not-a-uuid' })),
-    ).toThrowError(ActionError);
+  it('first-service not in services list → custom-refine message', () => {
+    const err = mapError(makeRawInputs({ firstService: 'ghost' }));
+    expect(err.message).toBe("first-service 'ghost' not found in services list");
+  });
 
+  it('invalid service UUID → ActionError propagated from parseServicesString .transform()', () => {
+    // `.transform(parseServicesString)` throws synchronously when a service id
+    // fails the UUID check. zod's safeParse does NOT catch thrown non-ZodErrors
+    // — the throw propagates to the caller.
     try {
       ActionInputsSchema.safeParse(makeRawInputs({ services: 'web:not-a-uuid' }));
       throw new Error('expected safeParse to throw');
     } catch (err) {
       expect(err).toBeInstanceOf(ActionError);
-      expect((err as ActionError).message).toBe('Service ID for [web] is not a valid UUID');
+      expect((err as ActionError).message).toBe(
+        "services: service ID for 'web' is not a valid UUID",
+      );
     }
   });
 
-  it('first-service not in services list → stable message', () => {
-    const err = mapError(makeRawInputs({ firstService: 'ghost' }), {
-      firstService: 'ghost',
-    });
-    expect(err.message).toBe("first-service 'ghost' not found in services list");
+  it('multiple issues → all listed in details', () => {
+    const err = mapError(makeRawInputs({ apiToken: '', environmentId: '' }));
+    // First issue surfaces as headline; both appear in details.
+    expect(err.message).toBe('api-token is required');
+    expect(err.details).toContain('api-token is required');
+    expect(err.details).toContain('environment-id must be a UUID');
   });
 });

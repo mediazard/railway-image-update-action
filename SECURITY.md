@@ -2,11 +2,10 @@
 
 ## Supported versions
 
-| Version          | Status                                                    |
-|------------------|-----------------------------------------------------------|
-| `v1.x` (current) | Active development; security and bug fixes               |
-| `v0.x`           | Security patches only; EOL 12 months after v1.0.0 release |
-| older            | Unsupported                                              |
+| Version          | Status                                       |
+|------------------|----------------------------------------------|
+| `v1.x` (current) | Active development; security and bug fixes   |
+| older            | Unsupported                                  |
 
 ## Reporting a vulnerability
 

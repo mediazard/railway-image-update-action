@@ -152,3 +152,163 @@ describe('createRailwayClient — AbortController timeout', () => {
     expect(elapsed).toBeLessThan(5_000);
   }, 10_000);
 });
+
+/**
+ * Full-stack roundtrip: real graphql-request client → msw → real Railway
+ * response shapes (captured from production). These tests catch the class
+ * of bug that hit us twice on London staging: the FakeRailwayClient mocked
+ * what we ASSUMED Railway returns; only msw + real graphql-request exercises
+ * the actual envelope-unwrapping + response-shape contract.
+ *
+ * Fixture shapes are pinned here as canonical wire formats. Anything that
+ * Railway has actually returned to us in production goes in this file.
+ */
+describe('operations roundtrip — real graphql-request + msw', () => {
+  // We import the operations dynamically inside each test so the module
+  // gets the same client.ts/graphql-request that msw is intercepting.
+
+  it('updateImage succeeds on the full Railway wire shape ({data: {serviceInstanceUpdate: null}})', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ data: { serviceInstanceUpdate: null } }),
+      ),
+    );
+
+    const client = createRailwayClient({
+      token: 'tok',
+      tokenType: 'bearer',
+      requestTimeoutMs: 5_000,
+    });
+    const { updateImage } = await import('../../src/railway/operations');
+
+    await expect(
+      updateImage(client, {
+        serviceId: 'svc-uuid',
+        environmentId: 'env-uuid',
+        image: 'registry/repo:tag',
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('redeploy returns deployment-id string for {data: {serviceInstanceDeploy: "abc123"}}', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ data: { serviceInstanceDeploy: 'abc123' } }),
+      ),
+    );
+
+    const client = createRailwayClient({
+      token: 'tok',
+      tokenType: 'bearer',
+      requestTimeoutMs: 5_000,
+    });
+    const { redeploy } = await import('../../src/railway/operations');
+
+    const result = await redeploy(client, {
+      serviceId: 'svc-uuid',
+      environmentId: 'env-uuid',
+      serviceLabel: 'web',
+    });
+    expect(result).toMatchObject({ deploymentId: 'abc123' });
+  });
+
+  it('redeploy returns null for {data: {serviceInstanceDeploy: true}} — Railway "deploy accepted" boolean (caught in production at SHA d3e49af5)', async () => {
+    // Real Railway response captured from London staging deploy 26274637756.
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ data: { serviceInstanceDeploy: true } }),
+      ),
+    );
+
+    const client = createRailwayClient({
+      token: 'tok',
+      tokenType: 'bearer',
+      requestTimeoutMs: 5_000,
+    });
+    const { redeploy } = await import('../../src/railway/operations');
+
+    const result = await redeploy(client, {
+      serviceId: 'svc-uuid',
+      environmentId: 'env-uuid',
+      serviceLabel: 'web',
+    });
+    expect(result).toMatchObject({ deploymentId: null });
+  });
+
+  it('redeploy returns null for {data: {serviceInstanceDeploy: null}}', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ data: { serviceInstanceDeploy: null } }),
+      ),
+    );
+
+    const client = createRailwayClient({
+      token: 'tok',
+      tokenType: 'bearer',
+      requestTimeoutMs: 5_000,
+    });
+    const { redeploy } = await import('../../src/railway/operations');
+
+    const result = await redeploy(client, {
+      serviceId: 'svc-uuid',
+      environmentId: 'env-uuid',
+      serviceLabel: 'web',
+    });
+    expect(result).toMatchObject({ deploymentId: null });
+  });
+
+  it('updateImage throws ActionError on real GraphQL errors response ({data: null, errors: [...]})', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({
+          data: null,
+          errors: [{ message: 'Service not found' }],
+        }),
+      ),
+    );
+
+    const client = createRailwayClient({
+      token: 'tok',
+      tokenType: 'bearer',
+      requestTimeoutMs: 5_000,
+    });
+    const { updateImage } = await import('../../src/railway/operations');
+    const { ActionError } = await import('../../src/errors');
+
+    try {
+      await updateImage(client, {
+        serviceId: 'svc-uuid',
+        environmentId: 'env-uuid',
+        image: 'registry/repo:tag',
+      });
+      throw new Error('updateImage should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ActionError);
+      expect((err as Error).message).toContain('Railway GraphQL error');
+    }
+  });
+
+  it('redeploy throws ActionError on HTTP 401', async () => {
+    server.use(http.post(RAILWAY_API_URL, () => new HttpResponse(null, { status: 401 })));
+
+    const client = createRailwayClient({
+      token: 'tok',
+      tokenType: 'bearer',
+      requestTimeoutMs: 5_000,
+    });
+    const { redeploy } = await import('../../src/railway/operations');
+    const { ActionError } = await import('../../src/errors');
+
+    try {
+      await redeploy(client, {
+        serviceId: 'svc-uuid',
+        environmentId: 'env-uuid',
+        serviceLabel: 'web',
+      });
+      throw new Error('redeploy should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ActionError);
+      expect((err as Error).message.toLowerCase()).toContain('authentication failed');
+    }
+  });
+});

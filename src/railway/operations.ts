@@ -1,5 +1,3 @@
-import { z } from 'zod';
-
 import type { ActionError } from '../errors';
 import type { RegistryCredentials } from '../types';
 
@@ -15,39 +13,34 @@ import {
 import { withRetry } from './retry';
 
 /**
- * Response schema for `serviceInstanceDeploy`. Railway returns one of:
- *  - a deployment-id string (happy path)
- *  - `null` (no deployment id available)
- *  - **`true`** (boolean — Railway's "deploy accepted, no id surfaced"
- *    response; observed in production, also handled by v0 bash via
- *    `[[ "$deploy_id" != "true" ]]`)
+ * Why no zod schemas here?
  *
- * The redeploy() function normalizes boolean to null so callers only see
- * the two cases that matter: `deploymentId: <string>` or `deploymentId: null`
- * (latter triggers the "unavailable — raw response: null" warning path).
+ * We hit two production bugs in a row by being too strict about the response
+ * shape (both caught by London staging dogfood, neither caught by the unit
+ * tests):
  *
- * NOTE: graphql-request@7's `client.request()` returns the UNWRAPPED `data`
- * payload — not the full `{data, errors}` response envelope. So we validate
- * the inner shape only.
+ *   1. graphql-request@7 returns the UNWRAPPED `data` field, not the
+ *      `{data, errors}` envelope. Our schema required `data` at the top of
+ *      the result; production rejected the unwrapped shape.
+ *   2. Railway's `serviceInstanceDeploy` field can be a string, `null`, or
+ *      the boolean `true` ("deploy accepted, no id surfaced" — v0 bash
+ *      handled this explicitly via `[[ "$id" != "true" ]]`). Our schema
+ *      said `string | null`; production sent `true` and we threw.
+ *
+ * Pattern: every assumption we made in src/ was mirrored in the
+ * FakeRailwayClient's canned responses, so both sides agreed with each other
+ * and disagreed with reality.
+ *
+ * Fix: don't validate what we don't need. We don't *use* the update response
+ * at all (HTTP 200 + no GraphQL errors is sufficient confirmation), and we
+ * only extract one field from the deploy response. Use defensive narrowing
+ * on `unknown` for that single field. Anything surprising → degrade to
+ * `deploymentId: null` and surface the existing "unavailable" warning,
+ * rather than failing a deploy that Railway already accepted.
+ *
+ * Strict validation lives at module boundaries we control (inputs, where we
+ * use zod). For external APIs, defensive narrowing is more robust.
  */
-const DeployResponseSchema = z.object({
-  serviceInstanceDeploy: z.union([z.string(), z.boolean(), z.null()]),
-});
-
-/**
- * Response schema for `serviceInstanceUpdate`. We don't consume the value —
- * just assert the field is PRESENT so API drift (e.g. Railway renaming the
- * mutation) fails loudly. `z.unknown()` accepts any value including
- * `undefined`, so we add a `.refine` to require the key actually exists.
- *
- * As with `DeployResponseSchema`, this validates the UNWRAPPED data, not the
- * full `{data, errors}` envelope.
- */
-const UpdateResponseSchema = z
-  .object({ serviceInstanceUpdate: z.unknown() })
-  .refine((o) => 'serviceInstanceUpdate' in o, {
-    message: "Response missing 'serviceInstanceUpdate' field",
-  });
 
 /** Arguments accepted by `updateImage`. */
 export interface UpdateImageArgs {
@@ -64,7 +57,11 @@ export interface RedeployArgs {
   serviceLabel: string;
 }
 
-/** Update the image source (and optional registry creds) on a Railway service. */
+/**
+ * Update the image source (and optional registry creds) on a Railway service.
+ * The response is intentionally discarded — HTTP 200 with no GraphQL
+ * `errors[]` is sufficient (graphql-request@7 would have thrown otherwise).
+ */
 export async function updateImage(client: RailwayClient, args: UpdateImageArgs): Promise<void> {
   const input: ServiceInstanceUpdateInput = args.registryCredentials
     ? { source: { image: args.image }, registryCredentials: args.registryCredentials }
@@ -77,26 +74,40 @@ export async function updateImage(client: RailwayClient, args: UpdateImageArgs):
   };
 
   try {
-    const raw = await withRetry<unknown>(() =>
+    await withRetry<unknown>(() =>
       client.request<UpdateImageVariables, unknown>(UPDATE_IMAGE_MUTATION, variables, {
         operationName: 'updateImage',
       }),
     );
-    UpdateResponseSchema.parse(raw);
   } catch (err) {
     const actionErr: ActionError = mapToActionError(err, 'updateImage');
     throw actionErr;
   }
 }
 
+/** Result of a successful redeploy() call. */
+export interface RedeployResult {
+  /** Real deployment-id string Railway surfaced, or null if it didn't. */
+  deploymentId: string | null;
+  /**
+   * Whatever Railway put in `serviceInstanceDeploy`: a string, `null`, `true`,
+   * or anything else. Exposed so the caller can format an informative
+   * "unavailable" warning when `deploymentId` is null.
+   */
+  rawValue: unknown;
+}
+
 /**
- * Trigger a redeploy on a Railway service instance. Returns the deployment ID
- * (or `null` when Railway can't surface one — v0 emits a warning in this case).
+ * Trigger a redeploy on a Railway service instance.
+ *
+ * On success the deploy is accepted server-side. We return both the parsed
+ * deployment-id (string) and the raw value Railway sent — `deploymentId`
+ * is `null` whenever `rawValue` is anything other than a non-empty string
+ * (commonly `true` or `null`; see `extractDeploymentId` for full coverage).
+ * The caller surfaces an "unavailable" warning in the null case but doesn't
+ * fail the deploy, because Railway already accepted it.
  */
-export async function redeploy(
-  client: RailwayClient,
-  args: RedeployArgs,
-): Promise<{ deploymentId: string | null }> {
+export async function redeploy(client: RailwayClient, args: RedeployArgs): Promise<RedeployResult> {
   const variables: DeployVariables = {
     sid: args.serviceId,
     eid: args.environmentId,
@@ -108,13 +119,38 @@ export async function redeploy(
         operationName: 'deployService',
       }),
     );
-    const parsed = DeployResponseSchema.parse(raw);
-    // Normalize: only a string is a real deployment ID. `true` and `null` both
-    // mean "no id available" — caller surfaces the "unavailable" warning.
-    const value = parsed.serviceInstanceDeploy;
-    return { deploymentId: typeof value === 'string' ? value : null };
+    return {
+      deploymentId: extractDeploymentId(raw),
+      rawValue: extractRawValue(raw),
+    };
   } catch (err) {
     const actionErr: ActionError = mapToActionError(err, `deployService:${args.serviceLabel}`);
     throw actionErr;
   }
+}
+
+/** Pull the `serviceInstanceDeploy` field out as-is (no type filtering). */
+function extractRawValue(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  return (raw as Record<string, unknown>).serviceInstanceDeploy;
+}
+
+/**
+ * Pull the `serviceInstanceDeploy` field off Railway's response defensively.
+ * Returns the deployment-id string if it's a non-empty string, else `null`.
+ *
+ * Known wire-shapes Railway has returned in production:
+ *   - `{ serviceInstanceDeploy: "<id>" }`       — happy path
+ *   - `{ serviceInstanceDeploy: null }`         — no id available
+ *   - `{ serviceInstanceDeploy: true }`         — "deploy accepted" boolean
+ *
+ * Anything else (missing field, wrong type, nested wrapper, ...) is treated
+ * as "no id available" rather than thrown. Railway accepted the deploy by
+ * the time we get here; refusing to surface an id is the strictly worse
+ * failure mode.
+ */
+function extractDeploymentId(raw: unknown): string | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const value = (raw as Record<string, unknown>).serviceInstanceDeploy;
+  return typeof value === 'string' && value !== '' ? value : null;
 }

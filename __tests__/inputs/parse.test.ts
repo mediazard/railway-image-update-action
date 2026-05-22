@@ -176,12 +176,11 @@ describe('readInputs — masking happens BEFORE schema validation', () => {
       throw new Error('expected readInputs to throw');
     } catch (err) {
       expect(err).toBeInstanceOf(ActionError);
-      // The mapped v0-stable message:
-      expect((err as ActionError).message).toBe('image tag has an invalid format');
+      expect((err as ActionError).message).toBe('image is not a valid Docker image reference');
     }
   });
 
-  it('throws ActionError mapping missing api-token to "RAILWAY_API_TOKEN is not set"', () => {
+  it('throws ActionError mapping missing api-token to "api-token is required"', () => {
     installCoreMocks({ 'api-token': '' });
 
     try {
@@ -189,7 +188,7 @@ describe('readInputs — masking happens BEFORE schema validation', () => {
       throw new Error('expected readInputs to throw');
     } catch (err) {
       expect(err).toBeInstanceOf(ActionError);
-      expect((err as ActionError).message).toBe('RAILWAY_API_TOKEN is not set');
+      expect((err as ActionError).message).toBe('api-token is required');
     }
   });
 });

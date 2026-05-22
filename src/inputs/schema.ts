@@ -2,10 +2,7 @@ import { z, type ZodError } from 'zod';
 
 import { ActionError } from '../errors';
 
-/**
- * UUID v4-ish pattern used for both `environmentId` and every per-service ID.
- * Byte-for-byte identical to the v0 bash regex (Appendix A).
- */
+/** UUID pattern used for both `environmentId` and every per-service ID. */
 export const UUID_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
@@ -18,29 +15,31 @@ export const UUID_PATTERN =
  * - body characters limited to `[a-z0-9._/-]`
  * - optional tag or sha256 digest suffix
  *
- * Does NOT accept `localhost:5000/...` port forms. CHANGELOG documents the
- * trade-off.
+ * Does NOT accept `localhost:5000/...` port forms.
  */
 export const IMAGE_REF_PATTERN = /^[a-z0-9][a-z0-9._/-]*(:[a-zA-Z0-9._-]+|@sha256:[0-9a-f]{64})?$/;
 
 /**
+ * Inputs that may end up in `ActionError.details` (which is logged via
+ * core.info → raw stdout) MUST reject control chars + `%`. Otherwise an
+ * attacker who controls the input can inject GitHub Actions workflow
+ * commands (`::add-mask::secret`, `::error::...`) into the log stream.
+ */
+const NO_WORKFLOW_COMMAND_CHARS = /^[^\r\n%]*$/;
+
+/**
  * Parse the multiline `services` input into a `Map<label, serviceId>`.
  *
- * Contract (Appendix A):
- *  - Split on `\n`; strip trailing `\r` (CRLF tolerance).
- *  - Skip empty lines (after trimming).
- *  - For each line split on the FIRST `:`, trim both sides.
- *  - Empty label → throws `ActionError("Service label is empty", ...)`.
- *  - Non-UUID service ID → throws
- *    `ActionError("Service ID for [<label>] is not a valid UUID", ...)`.
- *  - Map insertion order is the public contract for deploy order — never sort.
+ * - Split on `\n`; strip trailing `\r` (CRLF tolerance).
+ * - Skip empty lines (after trimming).
+ * - For each line, split on the FIRST `:`, trim both sides.
+ * - Empty label or non-UUID service id → throws `ActionError`.
+ * - Map insertion order is the public contract for deploy order — never sort.
  */
 export function parseServicesString(input: string): Map<string, string> {
   const result = new Map<string, string>();
-  const lines = input.split('\n');
 
-  for (const rawLine of lines) {
-    // Strip trailing \r for CRLF tolerance.
+  for (const rawLine of input.split('\n')) {
     const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
     if (line.trim() === '') continue;
 
@@ -50,7 +49,7 @@ export function parseServicesString(input: string): Map<string, string> {
 
     if (label === '') {
       throw new ActionError(
-        'Service label is empty',
+        'services line has an empty label',
         `Offending line: '${rawLine}'`,
         "Each services line must be 'label:service_id' with a non-empty label.",
       );
@@ -58,7 +57,7 @@ export function parseServicesString(input: string): Map<string, string> {
 
     if (!UUID_PATTERN.test(serviceId)) {
       throw new ActionError(
-        `Service ID for [${label}] is not a valid UUID`,
+        `services: service ID for '${label}' is not a valid UUID`,
         `Got: '${serviceId}'`,
         'Use the Railway service UUID, e.g. 1234abcd-12ab-34cd-56ef-1234567890ab.',
       );
@@ -70,9 +69,7 @@ export function parseServicesString(input: string): Map<string, string> {
   return result;
 }
 
-/**
- * Both registry credentials must be present, or both absent. v0 parity.
- */
+/** Both registry credentials must be present, or both absent. */
 function refineCredentialPair(
   val: { registryUsername: string; registryPassword: string },
   ctx: z.RefinementCtx,
@@ -113,28 +110,38 @@ function refineFirstServiceExists(
 }
 
 /**
- * Inputs that may end up in `ActionError.details` (which is logged via
- * core.info → raw stdout) MUST reject control chars + `%`. Otherwise an
- * attacker who controls the input can inject GitHub Actions workflow
- * commands (`::add-mask::secret`, `::error::...`) into the log stream.
- */
-const NO_WORKFLOW_COMMAND_CHARS = /^[^\r\n%]*$/;
-
-/**
- * Zod schema for all 11 action inputs. Booleans use `z.boolean()` because the
- * parse step uses `core.getBooleanInput` (Appendix D) which already throws on
- * invalid values per the GitHub Actions YAML 1.2 boolean spec.
+ * Zod schema for all 11 action inputs. Per-field `.message` strings carry
+ * action-input-name phrasing so a `safeParse` failure surfaces a
+ * user-readable error without any external mapping layer.
  */
 export const ActionInputsSchema = z
   .object({
-    apiToken: z.string().min(1).regex(NO_WORKFLOW_COMMAND_CHARS),
-    tokenType: z.enum(['bearer', 'project']).default('bearer'),
-    environmentId: z.string().regex(UUID_PATTERN),
-    image: z.string().regex(IMAGE_REF_PATTERN),
-    services: z.string().min(1).transform(parseServicesString),
-    firstService: z.string().regex(NO_WORKFLOW_COMMAND_CHARS).default(''),
-    waitSeconds: z.coerce.number().int().nonnegative().max(900).default(30),
-    registryUsername: z.string().regex(NO_WORKFLOW_COMMAND_CHARS).default(''),
+    apiToken: z
+      .string()
+      .min(1, 'api-token is required')
+      .regex(NO_WORKFLOW_COMMAND_CHARS, 'api-token contains forbidden characters'),
+    tokenType: z
+      .enum(['bearer', 'project'], {
+        errorMap: () => ({ message: "token-type must be 'bearer' or 'project'" }),
+      })
+      .default('bearer'),
+    environmentId: z.string().regex(UUID_PATTERN, 'environment-id must be a UUID'),
+    image: z.string().regex(IMAGE_REF_PATTERN, 'image is not a valid Docker image reference'),
+    services: z.string().min(1, 'services is required').transform(parseServicesString),
+    firstService: z
+      .string()
+      .regex(NO_WORKFLOW_COMMAND_CHARS, 'first-service contains forbidden characters')
+      .default(''),
+    waitSeconds: z.coerce
+      .number({ invalid_type_error: 'wait-seconds must be a non-negative integer' })
+      .int('wait-seconds must be a non-negative integer')
+      .nonnegative('wait-seconds must be a non-negative integer')
+      .max(900, 'wait-seconds must not exceed 900 (15 min)')
+      .default(30),
+    registryUsername: z
+      .string()
+      .regex(NO_WORKFLOW_COMMAND_CHARS, 'registry-username contains forbidden characters')
+      .default(''),
     registryPassword: z.string().default(''),
     resolveToDigest: z.boolean().default(true),
     allowMutableTag: z.boolean().default(false),
@@ -146,185 +153,13 @@ export const ActionInputsSchema = z
 export type ActionInputs = z.infer<typeof ActionInputsSchema>;
 
 /**
- * Best-effort raw snapshot used by error mapping to surface offending values.
- * Structurally identical to `RawInputs` from `./parse`; re-aliased to avoid
- * a circular import between `schema.ts` and `parse.ts`.
+ * Convert a `ZodError` to an `ActionError`. Every zod issue in the schema
+ * carries a user-readable `.message` already, so this packager just surfaces
+ * the first one as the headline and lists all of them in `details`.
  */
-export interface RawInputsView {
-  apiToken: string;
-  tokenType: string;
-  environmentId: string;
-  image: string;
-  services: string;
-  firstService: string;
-  waitSeconds: string;
-  registryUsername: string;
-  registryPassword: string;
-  resolveToDigest: boolean;
-  allowMutableTag: boolean;
-}
-
-/**
- * Map a `ZodError` produced by `ActionInputsSchema.safeParse(raw)` back to the
- * v0-equivalent stable error messages from Appendix A.
- *
- * The mapping is keyed by `issue.path[0]` + `issue.code` so we can produce
- * messages that mention the v0 env-style names (`RAILWAY_API_TOKEN`) instead
- * of the new action input names (`api-token`) — preserving the existing user
- * mental model and any grep-based log assertions consumer scripts rely on.
- *
- * If a custom-issue message was set by one of our `.superRefine`s, that exact
- * message is used as-is (it's already v0-equivalent).
- *
- * On any unmapped issue we fall back to the zod-rendered message under a
- * generic `Invalid action input` header so we never silently swallow drift.
- */
-export function zodErrorToActionError(err: ZodError, raw: RawInputsView): ActionError {
-  // Custom issues (from our `.superRefine`s + `parseServicesString`) already
-  // carry the v0-stable message; surface the first one.
-  const customIssue = err.issues.find((i) => i.code === z.ZodIssueCode.custom);
-  if (customIssue) {
-    return new ActionError(
-      customIssue.message,
-      buildDetails(customIssue.path, raw),
-      hintFor(customIssue.path),
-    );
-  }
-
-  const issue = err.issues[0];
-  if (!issue) {
-    return new ActionError(
-      'Invalid action input',
-      'Zod reported no issues but parsing failed.',
-      'Re-run with debug logging enabled.',
-    );
-  }
-
-  const field = typeof issue.path[0] === 'string' ? issue.path[0] : '';
-
-  switch (field) {
-    case 'apiToken':
-      return new ActionError(
-        'RAILWAY_API_TOKEN is not set',
-        'api-token input was empty.',
-        "Add 'api-token: ${{ secrets.RAILWAY_API_TOKEN }}' to your workflow.",
-      );
-
-    case 'environmentId': {
-      if (raw.environmentId === '') {
-        return new ActionError(
-          'RAILWAY_ENV_ID is not set',
-          'environment-id input was empty.',
-          "Add 'environment-id: <your-environment-uuid>' to your workflow.",
-        );
-      }
-      return new ActionError(
-        'RAILWAY_ENV_ID is not a valid UUID',
-        `Got: '${raw.environmentId}'`,
-        'Use the Railway environment UUID, e.g. 1234abcd-12ab-34cd-56ef-1234567890ab.',
-      );
-    }
-
-    case 'image': {
-      if (raw.image === '') {
-        return new ActionError(
-          'IMAGE_TAG is not set',
-          'image input was empty.',
-          "Add 'image: <registry>/<repo>:<tag>' to your workflow.",
-        );
-      }
-      return new ActionError(
-        'image tag has an invalid format',
-        `Got: '${raw.image}'`,
-        'Use a Docker image reference like ghcr.io/org/app:1.2.3 or ...@sha256:<hex>.',
-      );
-    }
-
-    case 'services':
-      return new ActionError(
-        'SERVICES is not set',
-        'services input was empty.',
-        "Provide a multiline list of 'label:service_id' pairs in your workflow.",
-      );
-
-    case 'waitSeconds':
-      return new ActionError(
-        'wait-seconds must be a non-negative integer',
-        `Got: '${raw.waitSeconds}'`,
-        'Set wait-seconds to 0 or a positive integer (default: 30).',
-      );
-
-    case 'tokenType':
-      return new ActionError(
-        "token-type must be 'bearer' or 'project'",
-        `Got: '${raw.tokenType}'`,
-        "Set token-type: 'bearer' (default) or 'project'.",
-      );
-
-    case 'firstService':
-      return new ActionError(
-        `first-service '${raw.firstService}' not found in services list`,
-        undefined,
-        'Set first-service to one of the labels in your services input.',
-      );
-
-    case 'registryUsername':
-      return new ActionError(
-        'registry-username provided without registry-password',
-        undefined,
-        'Provide both registry-username and registry-password, or neither.',
-      );
-
-    case 'registryPassword':
-      return new ActionError(
-        'registry-password provided without registry-username',
-        undefined,
-        'Provide both registry-username and registry-password, or neither.',
-      );
-
-    default:
-      return new ActionError(
-        'Invalid action input',
-        `${field || '(unknown)'}: ${issue.message}`,
-        'Check the action inputs against the README.',
-      );
-  }
-}
-
-function buildDetails(path: ReadonlyArray<PropertyKey>, raw: RawInputsView): string | undefined {
-  const field = typeof path[0] === 'string' ? path[0] : '';
-  switch (field) {
-    case 'registryUsername':
-    case 'registryPassword':
-      return undefined;
-    case 'firstService':
-      return `first-service='${raw.firstService}', services labels=${listLabels(raw.services)}`;
-    default:
-      return undefined;
-  }
-}
-
-function hintFor(path: ReadonlyArray<PropertyKey>): string | undefined {
-  const field = typeof path[0] === 'string' ? path[0] : '';
-  switch (field) {
-    case 'registryUsername':
-    case 'registryPassword':
-      return 'Provide both registry-username and registry-password, or neither.';
-    case 'firstService':
-      return 'Set first-service to one of the labels in your services input.';
-    default:
-      return undefined;
-  }
-}
-
-function listLabels(servicesInput: string): string {
-  const labels: string[] = [];
-  for (const rawLine of servicesInput.split('\n')) {
-    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
-    if (line.trim() === '') continue;
-    const colonIdx = line.indexOf(':');
-    const label = (colonIdx === -1 ? line : line.slice(0, colonIdx)).trim();
-    if (label !== '') labels.push(label);
-  }
-  return `[${labels.join(', ')}]`;
+export function zodErrorToActionError(err: ZodError): ActionError {
+  const messages = err.issues.map((i) => i.message);
+  const headline = messages[0] ?? 'Invalid action input';
+  const details = messages.length > 1 ? messages.map((m) => `- ${m}`).join('\n') : undefined;
+  return new ActionError(headline, details);
 }

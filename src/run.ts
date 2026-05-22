@@ -140,7 +140,7 @@ async function deployOrdered(
     serviceLabel: firstLabel,
   });
   state.markDeployed(firstLabel);
-  recordDeploymentId(state, firstLabel, firstResult.deploymentId);
+  recordDeploymentId(state, firstLabel, firstResult);
 
   core.info(`  ⏳ Waiting ${inputs.waitSeconds}s for first service to stabilise...`);
   await sleep(inputs.waitSeconds * 1000);
@@ -169,7 +169,7 @@ async function deployOrdered(
       serviceLabel: label,
     });
     state.markDeployed(label);
-    recordDeploymentId(state, label, result.deploymentId);
+    recordDeploymentId(state, label, result);
   }
 }
 
@@ -203,7 +203,7 @@ async function deployParallel(
       serviceLabel: label,
     });
     state.markDeployed(label);
-    recordDeploymentId(state, label, result.deploymentId);
+    recordDeploymentId(state, label, result);
   }
 }
 
@@ -213,13 +213,34 @@ function buildCreds(inputs: ActionInputs): { username: string; password: string 
     : undefined;
 }
 
-function recordDeploymentId(state: DeployState, label: string, id: string | null): void {
-  if (id !== null && id !== '') {
-    core.info(`[${label}] deployment-id: ${id}`);
-    state.attachDeploymentId(label, id);
+function recordDeploymentId(
+  state: DeployState,
+  label: string,
+  result: { deploymentId: string | null; rawValue: unknown },
+): void {
+  if (result.deploymentId !== null && result.deploymentId !== '') {
+    core.info(`[${label}] deployment-id: ${result.deploymentId}`);
+    state.attachDeploymentId(label, result.deploymentId);
   } else {
-    // Preserves v0's exact warning shape so consumer log-grepping keeps working.
-    core.warning(`[${label}] deployment-id: (unavailable — raw response: null)`);
+    core.warning(
+      `[${label}] deployment-id: (unavailable — Railway returned: ${formatRaw(result.rawValue)})`,
+    );
+  }
+}
+
+/** Render a raw response value as a short string for the "unavailable" warning. */
+function formatRaw(value: unknown): string {
+  if (value === undefined) return 'undefined';
+  if (value === null) return 'null';
+  if (typeof value === 'string') return value === '' ? '(empty string)' : `"${value}"`;
+  if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+  // Object / array / anything else — JSON-stringify with a short truncation
+  // so we don't blow up the log on a surprise nested response.
+  try {
+    const s = JSON.stringify(value);
+    return s.length > 100 ? `${s.slice(0, 100)}…` : s;
+  } catch {
+    return String(value);
   }
 }
 

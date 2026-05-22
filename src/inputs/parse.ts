@@ -6,11 +6,7 @@ import { ActionInputsSchema, zodErrorToActionError, type ActionInputs } from './
 
 /**
  * String-typed snapshot of every `core.getInput` result, plus the two
- * `core.getBooleanInput` booleans (Appendix D). This is the input to the zod
- * schema. We keep raw values around so `zodErrorToActionError` can surface
- * the offending value verbatim — secrets have already been registered with
- * `core.setSecret` by `readRawFromCore`, so any log line that prints them
- * will be masked automatically by the runner.
+ * `core.getBooleanInput` booleans. This is the input to the zod schema.
  */
 export interface RawInputs {
   apiToken: string;
@@ -82,13 +78,14 @@ export function readRawFromCore(): RawInputs {
 
 /**
  * Read and validate every action input. Throws an `ActionError` with a
- * v0-equivalent stable message on any validation failure.
+ * user-readable message (per-field `.message` strings live inside the
+ * schema in `./schema.ts`) on any validation failure.
  */
 export function readInputs(): ActionInputs {
   const raw = readRawFromCore();
   const result = ActionInputsSchema.safeParse(raw);
   if (!result.success) {
-    throw zodErrorToActionError(result.error, raw);
+    throw zodErrorToActionError(result.error);
   }
   return result.data;
 }
