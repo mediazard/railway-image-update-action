@@ -131,6 +131,26 @@ describe('redeploy — happy path', () => {
     expect(result).toEqual({ deploymentId: 'abc123' });
   });
 
+  it('returns { deploymentId: null } when API returns the boolean `true`', async () => {
+    // Railway sometimes returns `serviceInstanceDeploy: true` instead of an id
+    // string (deploy accepted but no id surfaced). v0 bash handled this via
+    // `[[ "$deploy_id" != "true" ]]`. v1 normalizes boolean → null here so the
+    // caller's "unavailable" warning fires. Caught by a failed London staging
+    // deploy at SHA d3e49af5; without this normalization the zod schema
+    // rejected the response and the whole deploy failed.
+    const client = new FakeRailwayClient();
+    client.setResponse('deployService', {
+      response: { serviceInstanceDeploy: true },
+    });
+
+    const result = await redeploy(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+      serviceLabel: 'api',
+    });
+    expect(result).toEqual({ deploymentId: null });
+  });
+
   it('returns { deploymentId: null } when API returns null', async () => {
     const client = new FakeRailwayClient();
     client.setResponse('deployService', {

@@ -61848,15 +61848,23 @@ const errors_1 = __nccwpck_require__(2576);
 const mutations_1 = __nccwpck_require__(7803);
 const retry_1 = __nccwpck_require__(7789);
 /**
- * Response schema for `serviceInstanceDeploy`. The field can be `null` — v0
- * surfaces this as the "deployment-id: (unavailable)" warning path.
+ * Response schema for `serviceInstanceDeploy`. Railway returns one of:
+ *  - a deployment-id string (happy path)
+ *  - `null` (no deployment id available)
+ *  - **`true`** (boolean — Railway's "deploy accepted, no id surfaced"
+ *    response; observed in production, also handled by v0 bash via
+ *    `[[ "$deploy_id" != "true" ]]`)
+ *
+ * The redeploy() function normalizes boolean to null so callers only see
+ * the two cases that matter: `deploymentId: <string>` or `deploymentId: null`
+ * (latter triggers the "unavailable — raw response: null" warning path).
  *
  * NOTE: graphql-request@7's `client.request()` returns the UNWRAPPED `data`
  * payload — not the full `{data, errors}` response envelope. So we validate
  * the inner shape only.
  */
 const DeployResponseSchema = zod_1.z.object({
-    serviceInstanceDeploy: zod_1.z.string().nullable(),
+    serviceInstanceDeploy: zod_1.z.union([zod_1.z.string(), zod_1.z.boolean(), zod_1.z.null()]),
 });
 /**
  * Response schema for `serviceInstanceUpdate`. We don't consume the value —
@@ -61907,7 +61915,10 @@ async function redeploy(client, args) {
             operationName: 'deployService',
         }));
         const parsed = DeployResponseSchema.parse(raw);
-        return { deploymentId: parsed.serviceInstanceDeploy };
+        // Normalize: only a string is a real deployment ID. `true` and `null` both
+        // mean "no id available" — caller surfaces the "unavailable" warning.
+        const value = parsed.serviceInstanceDeploy;
+        return { deploymentId: typeof value === 'string' ? value : null };
     }
     catch (err) {
         const actionErr = (0, errors_1.mapToActionError)(err, `deployService:${args.serviceLabel}`);
