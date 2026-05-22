@@ -73,11 +73,14 @@ function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
 /** A success-canned client for run() so we exercise the full log path. */
 function happyClient(deployId: string | null = 'deploy-id-1'): FakeRailwayClient {
   const c = new FakeRailwayClient();
-  c.setResponse('serviceInstanceUpdate', {
-    response: { serviceInstanceUpdate: {} },
-  });
-  c.setResponse('serviceInstanceDeploy', {
-    response: { serviceInstanceDeploy: deployId },
+  c.setResponse('updateImage', { response: { serviceInstanceUpdate: {} } });
+  c.setResponse('deployService', { response: { serviceInstanceDeployV2: deployId } });
+  // Ordered path polls deployment status; the parallel-path tests also use
+  // this client but don't poll, so the canned response is harmless there.
+  c.setResponse('deploymentStatus', {
+    response: {
+      deployment: { id: 'd', status: 'SUCCESS', createdAt: '1970-01-01T00:00:00Z' },
+    },
   });
   return c;
 }
@@ -162,8 +165,8 @@ describe('log strings — per-service progress lines', () => {
     const inputs = makeInputs();
     const state = new DeployState(Array.from(inputs.services.keys()));
     const c = new FakeRailwayClient();
-    c.setResponse('serviceInstanceUpdate', { response: { serviceInstanceUpdate: {} } });
-    c.setResponse('serviceInstanceDeploy', { response: { serviceInstanceDeploy: true } });
+    c.setResponse('updateImage', { response: { serviceInstanceUpdate: {} } });
+    c.setResponse('deployService', { response: { serviceInstanceDeployV2: true } });
     await run({ client: c, execFn: makeExecFn(), inputs, state });
     expect(messages(vi.mocked(core.warning))).toContain(
       '[api] deployment-id: (unavailable — Railway returned: true)',

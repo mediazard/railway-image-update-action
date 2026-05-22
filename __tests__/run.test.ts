@@ -78,14 +78,19 @@ function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
   } as ActionInputs;
 }
 
-/** Configure the fake client with success canned responses for update + redeploy. */
+/** Configure the fake client with success canned responses for update + redeploy + status. */
 function happyClient(): FakeRailwayClient {
   const c = new FakeRailwayClient();
-  c.setResponse('serviceInstanceUpdate', {
-    response: { serviceInstanceUpdate: { id: 'u' } },
-  });
-  c.setResponse('serviceInstanceDeploy', {
-    response: { serviceInstanceDeploy: 'deploy-id-x' },
+  // FakeRailwayClient.setResponse matches by operationName first, then by
+  // substring of the document. We key by operationName for clarity.
+  c.setResponse('updateImage', { response: { serviceInstanceUpdate: { id: 'u' } } });
+  c.setResponse('deployService', { response: { serviceInstanceDeployV2: 'deploy-id-x' } });
+  // Ordered path polls `deployment(id)` after the first redeploy — return
+  // SUCCESS immediately so `waitForDeployment` exits on the first iteration.
+  c.setResponse('deploymentStatus', {
+    response: {
+      deployment: { id: 'deploy-id-x', status: 'SUCCESS', createdAt: '1970-01-01T00:00:00Z' },
+    },
   });
   return c;
 }
@@ -96,13 +101,16 @@ function happyClient(): FakeRailwayClient {
  */
 function callSequence(client: FakeRailwayClient): Array<[string, string]> {
   return client.calls.map((c) => {
-    const vars = c.variables as { sid?: string } | undefined;
-    const sid = vars?.sid ?? '';
+    const vars = c.variables as { sid?: string; id?: string } | undefined;
+    const sid = vars?.sid ?? vars?.id ?? '';
     const kind = c.document.includes('serviceInstanceUpdate')
       ? 'update'
-      : c.document.includes('serviceInstanceDeploy')
+      : c.document.includes('serviceInstanceDeployV2') ||
+          c.document.includes('serviceInstanceDeploy')
         ? 'deploy'
-        : 'unknown';
+        : c.document.includes('deployment(id:')
+          ? 'status'
+          : 'unknown';
     return [kind, sid];
   });
 }
@@ -150,12 +158,14 @@ describe('run — ordered path (first-service set)', () => {
 
     await run({ client, execFn: makeExecFn(), inputs, state });
 
-    // Per plan/Public Contract:
-    //   update(web), deploy(web), [wait], update(worker), update(clock),
-    //   deploy(worker), deploy(clock)
+    // Ordered flow: update(web), deploy(web), poll status until SUCCESS,
+    // then update(worker), update(clock), deploy(worker), deploy(clock).
+    // The status query has id=deploy-id-x (no sid), so its tuple is
+    // ['status', 'deploy-id-x'] from callSequence's vars.id fallback.
     expect(callSequence(client)).toEqual([
       ['update', A_UUID],
       ['deploy', A_UUID],
+      ['status', 'deploy-id-x'],
       ['update', B_UUID],
       ['update', C_UUID],
       ['deploy', B_UUID],
@@ -214,12 +224,8 @@ describe('run — partial-failure preservation (v0 trap semantic)', () => {
     // After deploy A completes (state.markDeployed('a')), redeploy B throws.
     // run() re-throws; state.deployedLabels() should still contain ['a'].
     const client = new FakeRailwayClient();
-    client.setResponse('serviceInstanceUpdate', {
-      response: { serviceInstanceUpdate: {} },
-    });
-    client.setResponse('serviceInstanceDeploy', {
-      response: { serviceInstanceDeploy: 'deploy-id-x' },
-    });
+    client.setResponse('updateImage', { response: { serviceInstanceUpdate: {} } });
+    client.setResponse('deployService', { response: { serviceInstanceDeployV2: 'deploy-id-x' } });
     // Custom dispatch for redeploy: succeed for A, throw for B, never reached for C.
     let deployCount = 0;
     const originalRequest = client.request.bind(client);
@@ -333,11 +339,14 @@ describe('run — sequential-iteration invariant (defense in depth)', () => {
     // the fake with manually overlapping calls to prove the overlap detection
     // actually works.
     const c = happyClient();
-    const p1 = c.request('serviceInstanceUpdate(...)', { sid: A_UUID }, {});
+    // Use the real operationName so the fake's canned-response lookup
+    // succeeds; otherwise the first call rejects with "no canned response"
+    // before the second call ever fires.
+    const p1 = c.request('any', { sid: A_UUID }, { operationName: 'updateImage' });
     // Don't await p1; start a second call concurrently.
-    await expect(c.request('serviceInstanceUpdate(...)', { sid: B_UUID }, {})).rejects.toThrow(
-      /concurrent request/,
-    );
+    await expect(
+      c.request('any', { sid: B_UUID }, { operationName: 'updateImage' }),
+    ).rejects.toThrow(/concurrent request/);
     await p1;
   });
 });

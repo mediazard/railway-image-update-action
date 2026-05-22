@@ -61026,10 +61026,7 @@ exports.ActionInputsSchema = zod_1.z
         .default('bearer'),
     environmentId: zod_1.z.string().regex(exports.UUID_PATTERN, 'environment-id must be a UUID'),
     image: zod_1.z.string().regex(exports.IMAGE_REF_PATTERN, 'image is not a valid Docker image reference'),
-    services: zod_1.z
-        .string()
-        .min(1, 'services is required')
-        .transform(parseServicesString),
+    services: zod_1.z.string().min(1, 'services is required').transform(parseServicesString),
     firstService: zod_1.z
         .string()
         .regex(NO_WORKFLOW_COMMAND_CHARS, 'first-service contains forbidden characters')
@@ -61535,13 +61532,42 @@ function createDryRunClient() {
             core.info(JSON.stringify({ query: document, variables: redactCreds(variables) }));
             // Return the UNWRAPPED data payload to match graphql-request@7's
             // behavior (it strips the {data, errors} envelope before returning).
-            // Each branch returns the shape `operations.ts`'s zod schemas expect.
+            // Each branch returns the shape `operations.ts` reads.
             let response;
-            if (document.includes('serviceInstanceDeploy')) {
+            if (document.includes('serviceInstanceDeployV2')) {
+                response = { serviceInstanceDeployV2: 'dry-run-deploy-id' };
+            }
+            else if (document.includes('serviceInstanceDeploy')) {
+                // Legacy V1 path — kept for any test that still references the old name.
                 response = { serviceInstanceDeploy: 'dry-run-deploy-id' };
             }
             else if (document.includes('serviceInstanceUpdate')) {
                 response = { serviceInstanceUpdate: { id: 'dry-run-update-id' } };
+            }
+            else if (document.includes('deployment(id:')) {
+                // DEPLOYMENT_STATUS_QUERY — pretend the deploy reached SUCCESS instantly.
+                response = {
+                    deployment: {
+                        id: 'dry-run-deploy-id',
+                        status: 'SUCCESS',
+                        createdAt: '1970-01-01T00:00:00Z',
+                    },
+                };
+            }
+            else if (document.includes('serviceInstance(serviceId:')) {
+                // SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY fallback.
+                response = {
+                    serviceInstance: {
+                        latestDeployment: {
+                            id: 'dry-run-deploy-id',
+                            status: 'SUCCESS',
+                            createdAt: '1970-01-01T00:00:00Z',
+                        },
+                    },
+                };
+            }
+            else if (document.includes('buildLogs(deploymentId:')) {
+                response = { buildLogs: [] };
             }
             else {
                 response = { dryRun: true };
@@ -61733,44 +61759,114 @@ function mapToActionError(err, operation) {
 "use strict";
 
 /**
- * Pinned GraphQL mutations and variables types for the Railway Backboard API.
+ * Pinned GraphQL operations for the Railway Backboard API.
  *
- * These literal strings are byte-for-byte from v0's bash refactor (Appendix A of
- * the plan). Do NOT reformat — Railway's API treats query strings opaquely, but
- * the rewritten bash smoke tests assert on exact body shape, and the
- * `client.roundtrip.test.ts` MSW interceptor compares the wire bytes.
+ * Mutation/query strings are pinned as compact one-liners so the
+ * `client.roundtrip.test.ts` MSW interceptor can assert on the exact wire
+ * bytes. Don't reformat.
  *
- * Variable name choices (`sid`, `eid`, `input`) mirror v0 too.
+ * Variable name choices (`sid`, `eid`, `input`) are short and intentional.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.DEPLOY_MUTATION = exports.UPDATE_IMAGE_MUTATION = exports.RAILWAY_API_URL = void 0;
-/** Railway Backboard GraphQL endpoint. v0 constant, preserved. */
+exports.BUILD_LOGS_QUERY = exports.SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY = exports.DEPLOYMENT_STATUS_QUERY = exports.DEPLOY_MUTATION = exports.UPDATE_IMAGE_MUTATION = exports.RAILWAY_API_URL = void 0;
+/** Railway Backboard GraphQL endpoint. */
 exports.RAILWAY_API_URL = 'https://backboard.railway.app/graphql/v2';
+// ─────────────────────────────────────────────────────────────────────────
+// Mutations
+// ─────────────────────────────────────────────────────────────────────────
 /**
- * Update a service instance's image source (and optionally registry credentials)
- * for a given environment. Returns the (unused) opaque `serviceInstanceUpdate`
- * field — we only care about whether the mutation succeeded.
+ * Update a service instance's image source (and optionally registry
+ * credentials) for a given environment. Per the Railway API docs, this
+ * returns an unused opaque value — we only care that the mutation succeeded
+ * (HTTP 200 + no GraphQL `errors[]`).
  */
 exports.UPDATE_IMAGE_MUTATION = 'mutation($sid:String!,$eid:String!,$input:ServiceInstanceUpdateInput!){serviceInstanceUpdate(serviceId:$sid,environmentId:$eid,input:$input)}';
 /**
- * Trigger a redeploy of an already-configured service instance in an environment.
- * Returns the new deployment ID (string) or null when Railway can't surface one
- * (parity with v0's "deployment-id: (unavailable)" warning path).
+ * Trigger a deploy of the service instance. Uses `serviceInstanceDeployV2`
+ * (not the legacy `serviceInstanceDeploy`) because V2 reliably returns the
+ * deployment-id string in `data.serviceInstanceDeployV2`. The V1 mutation
+ * sometimes returns the boolean `true` instead of a string — caught in
+ * London staging deploy 26274637756, and `[[ "$id" != "true" ]]` is in the
+ * v0 bash for the same reason.
  */
-exports.DEPLOY_MUTATION = 'mutation($sid:String!,$eid:String!){serviceInstanceDeploy(serviceId:$sid,environmentId:$eid)}';
+exports.DEPLOY_MUTATION = 'mutation($sid:String!,$eid:String!){serviceInstanceDeployV2(serviceId:$sid,environmentId:$eid)}';
+// ─────────────────────────────────────────────────────────────────────────
+// Queries (deployment observability)
+// ─────────────────────────────────────────────────────────────────────────
+/**
+ * Look up the current status of a deployment. Used by `waitForDeployment`
+ * to poll first-service deploys (when ordered mode is set) before letting
+ * the rest of the services roll forward.
+ *
+ * Status enum (from Railway docs): BUILDING / DEPLOYING / SUCCESS / FAILED
+ * / CRASHED / REMOVED / SLEEPING / SKIPPED / WAITING / QUEUED.
+ */
+exports.DEPLOYMENT_STATUS_QUERY = 'query($id:String!){deployment(id:$id){id,status,createdAt}}';
+/**
+ * Fallback query — look up the latest deployment for a service in an
+ * environment. Used when `serviceInstanceDeployV2` returns null/undefined
+ * (rare; defense-in-depth) so we can still poll without needing the
+ * project-id input.
+ */
+exports.SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY = 'query($sid:String!,$eid:String!){serviceInstance(serviceId:$sid,environmentId:$eid){latestDeployment{id,status,createdAt}}}';
+/**
+ * Fetch build logs for a deployment. Used only on FAILED/CRASHED to attach
+ * the actual build error to the `ActionError` we throw, so the consumer
+ * sees what went wrong instead of a generic "deploy failed" message.
+ */
+exports.BUILD_LOGS_QUERY = 'query($id:String!,$limit:Int){buildLogs(deploymentId:$id,limit:$limit){timestamp,message,severity}}';
 
 
 /***/ }),
 
 /***/ 6681:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
 
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.updateImage = updateImage;
 exports.redeploy = redeploy;
-const errors_1 = __nccwpck_require__(2576);
+exports.getDeploymentStatus = getDeploymentStatus;
+exports.getLatestDeploymentForService = getLatestDeploymentForService;
+exports.getBuildLogs = getBuildLogs;
+exports.waitForDeployment = waitForDeployment;
+const core = __importStar(__nccwpck_require__(7484));
+const errors_1 = __nccwpck_require__(3916);
+const errors_2 = __nccwpck_require__(2576);
 const mutations_1 = __nccwpck_require__(7803);
 const retry_1 = __nccwpck_require__(7789);
 /**
@@ -61793,7 +61889,7 @@ async function updateImage(client, args) {
         }));
     }
     catch (err) {
-        const actionErr = (0, errors_1.mapToActionError)(err, 'updateImage');
+        const actionErr = (0, errors_2.mapToActionError)(err, 'updateImage');
         throw actionErr;
     }
 }
@@ -61822,24 +61918,35 @@ async function redeploy(client, args) {
         };
     }
     catch (err) {
-        const actionErr = (0, errors_1.mapToActionError)(err, `deployService:${args.serviceLabel}`);
+        const actionErr = (0, errors_2.mapToActionError)(err, `deployService:${args.serviceLabel}`);
         throw actionErr;
     }
 }
-/** Pull the `serviceInstanceDeploy` field out as-is (no type filtering). */
+/**
+ * Pull the deployment-id field out as-is (no type filtering). Prefers V2's
+ * `serviceInstanceDeployV2` key; falls back to legacy `serviceInstanceDeploy`
+ * only when V2's key is ABSENT. Distinguishes "key present, value is null"
+ * (return null) from "key missing" (try legacy).
+ */
 function extractRawValue(raw) {
     if (typeof raw !== 'object' || raw === null)
         return undefined;
-    return raw.serviceInstanceDeploy;
+    const obj = raw;
+    if ('serviceInstanceDeployV2' in obj)
+        return obj.serviceInstanceDeployV2;
+    if ('serviceInstanceDeploy' in obj)
+        return obj.serviceInstanceDeploy;
+    return undefined;
 }
 /**
- * Pull the `serviceInstanceDeploy` field off Railway's response defensively.
- * Returns the deployment-id string if it's a non-empty string, else `null`.
+ * Pull the deployment-id off Railway's response defensively. Returns the
+ * deployment-id string if it's a non-empty string, else `null`.
  *
- * Known wire-shapes Railway has returned in production:
- *   - `{ serviceInstanceDeploy: "<id>" }`       — happy path
- *   - `{ serviceInstanceDeploy: null }`         — no id available
- *   - `{ serviceInstanceDeploy: true }`         — "deploy accepted" boolean
+ * Known wire-shapes Railway has returned:
+ *   - V2: `{ serviceInstanceDeployV2: "<id>" }`  — happy path
+ *   - V1: `{ serviceInstanceDeploy: "<id>" }`    — older accounts
+ *   - V1: `{ serviceInstanceDeploy: null }`      — no id available
+ *   - V1: `{ serviceInstanceDeploy: true }`      — "deploy accepted" boolean
  *
  * Anything else (missing field, wrong type, nested wrapper, ...) is treated
  * as "no id available" rather than thrown. Railway accepted the deploy by
@@ -61847,10 +61954,136 @@ function extractRawValue(raw) {
  * failure mode.
  */
 function extractDeploymentId(raw) {
+    const value = extractRawValue(raw);
+    return typeof value === 'string' && value !== '' ? value : null;
+}
+/** Look up a single deployment by id. */
+async function getDeploymentStatus(client, id) {
+    const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.DEPLOYMENT_STATUS_QUERY, { id }, { operationName: 'deploymentStatus' }));
+    return parseDeploymentSnapshot(raw, 'deployment');
+}
+/**
+ * Fallback for the rare case `serviceInstanceDeployV2` doesn't surface an id:
+ * look up the latest deployment for a service in this environment. Picks up
+ * the deployment we just triggered (Railway's deployment list is ordered by
+ * `createdAt` desc).
+ */
+async function getLatestDeploymentForService(client, args) {
+    const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY, { sid: args.serviceId, eid: args.environmentId }, { operationName: 'serviceInstanceLatestDeployment' }));
     if (typeof raw !== 'object' || raw === null)
         return null;
-    const value = raw.serviceInstanceDeploy;
-    return typeof value === 'string' && value !== '' ? value : null;
+    const serviceInstance = raw.serviceInstance;
+    if (typeof serviceInstance !== 'object' || serviceInstance === null)
+        return null;
+    const latest = serviceInstance.latestDeployment;
+    if (typeof latest !== 'object' || latest === null)
+        return null;
+    try {
+        return parseDeploymentSnapshot(latest, 'latestDeployment');
+    }
+    catch {
+        return null;
+    }
+}
+/** Get build logs for a failed deployment. Best-effort — swallows errors. */
+async function getBuildLogs(client, id, limit = 100) {
+    try {
+        const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.BUILD_LOGS_QUERY, { id, limit }, { operationName: 'buildLogs' }));
+        if (typeof raw !== 'object' || raw === null)
+            return '';
+        const logs = raw.buildLogs;
+        if (!Array.isArray(logs))
+            return '';
+        return logs
+            .map((entry) => {
+            if (typeof entry !== 'object' || entry === null)
+                return '';
+            const e = entry;
+            const ts = typeof e.timestamp === 'string' ? e.timestamp : '';
+            const sev = typeof e.severity === 'string' ? e.severity : '';
+            const msg = typeof e.message === 'string' ? e.message : '';
+            return `${ts} ${sev} ${msg}`.trim();
+        })
+            .filter((line) => line !== '')
+            .join('\n');
+    }
+    catch {
+        return '';
+    }
+}
+/** Set of terminal deployment statuses. Polling ends when we hit one. */
+const TERMINAL_STATUSES = new Set([
+    'SUCCESS',
+    'FAILED',
+    'CRASHED',
+    'REMOVED',
+    'SKIPPED',
+]);
+/** Set of statuses we treat as "success" — only SUCCESS qualifies. */
+const HEALTHY_STATUSES = new Set(['SUCCESS']);
+/**
+ * Poll `deployment(id)` until status enters a terminal state, then resolve
+ * (on SUCCESS) or throw an `ActionError` (on FAILED/CRASHED/REMOVED/SKIPPED).
+ * On timeout, throw an `ActionError` with the last observed status.
+ *
+ * Used by `run.ts deployOrdered` after the first-service redeploy so we
+ * confirm the deploy succeeded (and therefore release-phase migrations
+ * finished) before touching the remaining services.
+ */
+async function waitForDeployment(client, deploymentId, opts = {}) {
+    const timeoutMs = opts.timeoutMs ?? 60_000;
+    const pollIntervalMs = opts.pollIntervalMs ?? 5_000;
+    const now = opts.now ?? Date.now;
+    const sleep = opts.sleep ?? defaultSleep;
+    const onPoll = opts.onPoll ?? defaultOnPoll;
+    const started = now();
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+        const snapshot = await getDeploymentStatus(client, deploymentId);
+        onPoll(snapshot);
+        if (TERMINAL_STATUSES.has(snapshot.status)) {
+            if (HEALTHY_STATUSES.has(snapshot.status)) {
+                return snapshot;
+            }
+            // Terminal but not SUCCESS: fetch build logs and throw with context.
+            const logs = await getBuildLogs(client, deploymentId);
+            const detailsParts = [`Deployment: ${deploymentId}`, `Status: ${snapshot.status}`];
+            if (logs !== '')
+                detailsParts.push(`Build logs (last 100 lines):\n${logs}`);
+            throw new errors_1.ActionError(`Deployment ${deploymentId} ended in ${snapshot.status}`, detailsParts.join('\n'), 'Inspect the Railway dashboard for the full deployment log.');
+        }
+        if (now() - started >= timeoutMs) {
+            throw new errors_1.ActionError(`Deployment ${deploymentId} did not reach SUCCESS within ${timeoutMs}ms`, `Last status: ${snapshot.status} (after ${now() - started}ms)`, 'Increase wait-seconds, or check the Railway dashboard for the running deploy.');
+        }
+        await sleep(pollIntervalMs);
+    }
+}
+function parseDeploymentSnapshot(raw, contextKey) {
+    if (typeof raw !== 'object' || raw === null) {
+        throw new errors_1.ActionError(`Railway returned no ${contextKey} field`, `Got: ${typeof raw}`, 'The deployment status query did not return the expected shape.');
+    }
+    // raw is either the deployment object itself (when called from getDeploymentStatus,
+    // which receives graphql-request's unwrapped data) or the nested deployment object.
+    const obj = contextKey === 'deployment'
+        ? raw.deployment
+        : raw;
+    if (typeof obj !== 'object' || obj === null) {
+        throw new errors_1.ActionError(`Railway returned no ${contextKey} field`, `Got: ${JSON.stringify(raw).slice(0, 200)}`, 'The deployment status query did not return the expected shape.');
+    }
+    const o = obj;
+    const id = typeof o.id === 'string' ? o.id : null;
+    const status = typeof o.status === 'string' ? o.status : null;
+    const createdAt = typeof o.createdAt === 'string' ? o.createdAt : '';
+    if (id === null || status === null) {
+        throw new errors_1.ActionError(`Railway ${contextKey} response missing required fields`, `Got: ${JSON.stringify(o).slice(0, 200)}`, 'The deployment status query did not return the expected shape.');
+    }
+    return { id, status, createdAt };
+}
+function defaultSleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function defaultOnPoll(snapshot) {
+    core.info(`  ⏳ Deployment ${snapshot.id} status: ${snapshot.status}`);
 }
 
 
@@ -62123,10 +62356,34 @@ async function deployOrdered(client, inputs, state, image) {
         environmentId: inputs.environmentId,
         serviceLabel: firstLabel,
     });
-    state.markDeployed(firstLabel);
     recordDeploymentId(state, firstLabel, firstResult);
-    core.info(`  ⏳ Waiting ${inputs.waitSeconds}s for first service to stabilise...`);
-    await sleep(inputs.waitSeconds * 1000);
+    // Confirm SUCCESS before letting the remaining services roll forward.
+    // If first-service runs release-phase migrations, this is the gate that
+    // prevents worker/clock from starting against a half-migrated DB.
+    // `wait-seconds` defines the timeout (defaults to 30, London uses 60).
+    let deploymentId = firstResult.deploymentId;
+    if (deploymentId === null) {
+        // Rare under serviceInstanceDeployV2 (it reliably returns an id), but
+        // defense-in-depth: ask Railway for the latest deployment of this
+        // service in this environment. If we still can't find one, refuse to
+        // proceed — we'd rather fail loudly than deploy the rest against an
+        // unconfirmed primary.
+        const latest = await (0, operations_1.getLatestDeploymentForService)(client, {
+            serviceId: firstId,
+            environmentId: inputs.environmentId,
+        });
+        if (latest === null) {
+            throw new errors_1.ActionError(`Cannot confirm [${firstLabel}] deploy — Railway returned no deployment id`, `Railway returned: ${JSON.stringify(firstResult.rawValue)}`, 'Refusing to deploy the remaining services without confirmation. Check the Railway dashboard.');
+        }
+        deploymentId = latest.id;
+        core.info(`  ↪ Recovered deployment id via serviceInstance fallback: ${deploymentId}`);
+    }
+    core.info(`  ⏳ Waiting up to ${inputs.waitSeconds}s for [${firstLabel}] to reach SUCCESS...`);
+    await (0, operations_1.waitForDeployment)(client, deploymentId, {
+        timeoutMs: inputs.waitSeconds * 1000,
+    });
+    core.info(`  ✓ [${firstLabel}] deployment confirmed`);
+    state.markDeployed(firstLabel);
     core.info('');
     core.info('Step 2/3: Updating image source on remaining services');
     for (const [label, sid] of inputs.services) {
@@ -62214,9 +62471,6 @@ function formatRaw(value) {
     catch {
         return String(value);
     }
-}
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 

@@ -20,14 +20,14 @@ beforeEach(() => {
 });
 
 describe('createDryRunClient — canned responses', () => {
-  it('returns serviceInstanceDeploy id for DEPLOY_MUTATION', async () => {
+  it('returns serviceInstanceDeployV2 id for DEPLOY_MUTATION', async () => {
     const client = createDryRunClient();
     const result = await client.request<unknown, unknown>(
       DEPLOY_MUTATION,
       { sid: 's', eid: 'e' },
       { operationName: 'deployService' },
     );
-    expect(result).toEqual({ serviceInstanceDeploy: 'dry-run-deploy-id' });
+    expect(result).toEqual({ serviceInstanceDeployV2: 'dry-run-deploy-id' });
   });
 
   it('returns serviceInstanceUpdate stub for UPDATE_IMAGE_MUTATION', async () => {

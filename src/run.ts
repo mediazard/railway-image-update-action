@@ -5,7 +5,12 @@ import { resolveImageDigest, type ExecFn } from './image/digest';
 import { isMutableRef } from './image/mutable';
 import type { ActionInputs } from './inputs/schema';
 import type { RailwayClient } from './railway/client';
-import { redeploy, updateImage } from './railway/operations';
+import {
+  getLatestDeploymentForService,
+  redeploy,
+  updateImage,
+  waitForDeployment,
+} from './railway/operations';
 import type { DeployState } from './outputs/state';
 import { savedState } from './state/saved';
 
@@ -139,11 +144,40 @@ async function deployOrdered(
     environmentId: inputs.environmentId,
     serviceLabel: firstLabel,
   });
-  state.markDeployed(firstLabel);
   recordDeploymentId(state, firstLabel, firstResult);
 
-  core.info(`  ⏳ Waiting ${inputs.waitSeconds}s for first service to stabilise...`);
-  await sleep(inputs.waitSeconds * 1000);
+  // Confirm SUCCESS before letting the remaining services roll forward.
+  // If first-service runs release-phase migrations, this is the gate that
+  // prevents worker/clock from starting against a half-migrated DB.
+  // `wait-seconds` defines the timeout (defaults to 30, London uses 60).
+  let deploymentId = firstResult.deploymentId;
+  if (deploymentId === null) {
+    // Rare under serviceInstanceDeployV2 (it reliably returns an id), but
+    // defense-in-depth: ask Railway for the latest deployment of this
+    // service in this environment. If we still can't find one, refuse to
+    // proceed — we'd rather fail loudly than deploy the rest against an
+    // unconfirmed primary.
+    const latest = await getLatestDeploymentForService(client, {
+      serviceId: firstId,
+      environmentId: inputs.environmentId,
+    });
+    if (latest === null) {
+      throw new ActionError(
+        `Cannot confirm [${firstLabel}] deploy — Railway returned no deployment id`,
+        `Railway returned: ${JSON.stringify(firstResult.rawValue)}`,
+        'Refusing to deploy the remaining services without confirmation. Check the Railway dashboard.',
+      );
+    }
+    deploymentId = latest.id;
+    core.info(`  ↪ Recovered deployment id via serviceInstance fallback: ${deploymentId}`);
+  }
+
+  core.info(`  ⏳ Waiting up to ${inputs.waitSeconds}s for [${firstLabel}] to reach SUCCESS...`);
+  await waitForDeployment(client, deploymentId, {
+    timeoutMs: inputs.waitSeconds * 1000,
+  });
+  core.info(`  ✓ [${firstLabel}] deployment confirmed`);
+  state.markDeployed(firstLabel);
   core.info('');
 
   core.info('Step 2/3: Updating image source on remaining services');
@@ -242,8 +276,4 @@ function formatRaw(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

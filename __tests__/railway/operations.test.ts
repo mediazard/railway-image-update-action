@@ -2,7 +2,13 @@
 import { ClientError } from 'graphql-request';
 
 import { ActionError } from '../../src/errors';
-import { redeploy, updateImage } from '../../src/railway/operations';
+import {
+  getDeploymentStatus,
+  getLatestDeploymentForService,
+  redeploy,
+  updateImage,
+  waitForDeployment,
+} from '../../src/railway/operations';
 import { FakeRailwayClient } from '../fixtures/fake-client';
 
 // Silence retry's `core.info` retry-attempt log.
@@ -240,6 +246,173 @@ describe('redeploy — error paths', () => {
       // mapToActionError uses status mapping for 404 — message says "not found".
       expect(e).toBeInstanceOf(ActionError);
       expect((e as ActionError).message.toLowerCase()).toContain('not found');
+    }
+  });
+});
+
+describe('getDeploymentStatus', () => {
+  it('returns parsed snapshot from a Railway-shaped response', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('deploymentStatus', {
+      response: {
+        deployment: { id: 'd1', status: 'BUILDING', createdAt: '2026-01-01T00:00:00Z' },
+      },
+    });
+    const snapshot = await getDeploymentStatus(client, 'd1');
+    expect(snapshot).toEqual({ id: 'd1', status: 'BUILDING', createdAt: '2026-01-01T00:00:00Z' });
+  });
+});
+
+describe('getLatestDeploymentForService — V2 no-id fallback', () => {
+  it('returns the latest deployment when the service has one', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('serviceInstanceLatestDeployment', {
+      response: {
+        serviceInstance: {
+          latestDeployment: {
+            id: 'd-latest',
+            status: 'BUILDING',
+            createdAt: '2026-01-01T00:00:00Z',
+          },
+        },
+      },
+    });
+    const result = await getLatestDeploymentForService(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+    });
+    expect(result).toEqual({
+      id: 'd-latest',
+      status: 'BUILDING',
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+  });
+
+  it('returns null when serviceInstance is null (service not found)', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('serviceInstanceLatestDeployment', { response: { serviceInstance: null } });
+    const result = await getLatestDeploymentForService(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('returns null when there is no latest deployment yet', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('serviceInstanceLatestDeployment', {
+      response: { serviceInstance: { latestDeployment: null } },
+    });
+    const result = await getLatestDeploymentForService(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+    });
+    expect(result).toBeNull();
+  });
+});
+
+describe('waitForDeployment', () => {
+  /** Helper: client that returns the given status sequence on successive calls. */
+  function statusSequenceClient(
+    statuses: Array<'BUILDING' | 'DEPLOYING' | 'SUCCESS' | 'FAILED' | 'CRASHED' | 'QUEUED'>,
+  ): FakeRailwayClient {
+    const client = new FakeRailwayClient();
+    let i = 0;
+    const origRequest = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      document: string,
+      variables: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        const status = statuses[Math.min(i, statuses.length - 1)] ?? 'SUCCESS';
+        i += 1;
+        return {
+          deployment: { id: 'd1', status, createdAt: '2026-01-01T00:00:00Z' },
+        } as TResult;
+      }
+      if (opts?.operationName === 'buildLogs') {
+        return { buildLogs: [] } as TResult;
+      }
+      return origRequest<TVars, TResult>(document, variables, opts);
+    };
+    return client;
+  }
+
+  it('resolves with the SUCCESS snapshot when status is SUCCESS on first poll', async () => {
+    const client = statusSequenceClient(['SUCCESS']);
+    const snap = await waitForDeployment(client, 'd1', {
+      timeoutMs: 1000,
+      pollIntervalMs: 1,
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+    });
+    expect(snap.status).toBe('SUCCESS');
+  });
+
+  it('polls through non-terminal statuses until SUCCESS', async () => {
+    const client = statusSequenceClient(['QUEUED', 'BUILDING', 'DEPLOYING', 'SUCCESS']);
+    const snap = await waitForDeployment(client, 'd1', {
+      timeoutMs: 10_000,
+      pollIntervalMs: 1,
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+    });
+    expect(snap.status).toBe('SUCCESS');
+  });
+
+  it('throws ActionError on FAILED with status in message', async () => {
+    const client = statusSequenceClient(['BUILDING', 'FAILED']);
+    try {
+      await waitForDeployment(client, 'd1', {
+        timeoutMs: 10_000,
+        pollIntervalMs: 1,
+        onPoll: () => undefined,
+        sleep: () => Promise.resolve(),
+      });
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ActionError);
+      expect((err as ActionError).message).toContain('FAILED');
+    }
+  });
+
+  it('throws ActionError on CRASHED', async () => {
+    const client = statusSequenceClient(['DEPLOYING', 'CRASHED']);
+    try {
+      await waitForDeployment(client, 'd1', {
+        timeoutMs: 10_000,
+        pollIntervalMs: 1,
+        onPoll: () => undefined,
+        sleep: () => Promise.resolve(),
+      });
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ActionError);
+      expect((err as ActionError).message).toContain('CRASHED');
+    }
+  });
+
+  it('throws ActionError on timeout — never reaches a terminal state', async () => {
+    // Stuck BUILDING; injected clock advances past timeout instantly.
+    const client = statusSequenceClient(['BUILDING', 'BUILDING', 'BUILDING']);
+    let nowValue = 0;
+    try {
+      await waitForDeployment(client, 'd1', {
+        timeoutMs: 1000,
+        pollIntervalMs: 1,
+        onPoll: () => undefined,
+        sleep: () => Promise.resolve(),
+        now: () => {
+          const v = nowValue;
+          nowValue += 600; // jump 600ms per call — 2 polls + ≥1 elapsed check > 1000ms
+          return v;
+        },
+      });
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ActionError);
+      expect((err as ActionError).message).toContain('did not reach SUCCESS');
     }
   });
 });

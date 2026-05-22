@@ -32,12 +32,37 @@ export function createDryRunClient(): RailwayClient {
 
       // Return the UNWRAPPED data payload to match graphql-request@7's
       // behavior (it strips the {data, errors} envelope before returning).
-      // Each branch returns the shape `operations.ts`'s zod schemas expect.
+      // Each branch returns the shape `operations.ts` reads.
       let response: unknown;
-      if (document.includes('serviceInstanceDeploy')) {
+      if (document.includes('serviceInstanceDeployV2')) {
+        response = { serviceInstanceDeployV2: 'dry-run-deploy-id' };
+      } else if (document.includes('serviceInstanceDeploy')) {
+        // Legacy V1 path — kept for any test that still references the old name.
         response = { serviceInstanceDeploy: 'dry-run-deploy-id' };
       } else if (document.includes('serviceInstanceUpdate')) {
         response = { serviceInstanceUpdate: { id: 'dry-run-update-id' } };
+      } else if (document.includes('deployment(id:')) {
+        // DEPLOYMENT_STATUS_QUERY — pretend the deploy reached SUCCESS instantly.
+        response = {
+          deployment: {
+            id: 'dry-run-deploy-id',
+            status: 'SUCCESS',
+            createdAt: '1970-01-01T00:00:00Z',
+          },
+        };
+      } else if (document.includes('serviceInstance(serviceId:')) {
+        // SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY fallback.
+        response = {
+          serviceInstance: {
+            latestDeployment: {
+              id: 'dry-run-deploy-id',
+              status: 'SUCCESS',
+              createdAt: '1970-01-01T00:00:00Z',
+            },
+          },
+        };
+      } else if (document.includes('buildLogs(deploymentId:')) {
+        response = { buildLogs: [] };
       } else {
         response = { dryRun: true };
       }

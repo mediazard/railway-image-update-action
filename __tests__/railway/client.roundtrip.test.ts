@@ -311,4 +311,39 @@ describe('operations roundtrip — real graphql-request + msw', () => {
       expect((err as Error).message.toLowerCase()).toContain('authentication failed');
     }
   });
+
+  it('waitForDeployment polls deployment(id) and resolves on SUCCESS', async () => {
+    // Two responses: first BUILDING, then SUCCESS. Confirms the polling wire
+    // shape (`{data: {deployment: {id, status, createdAt}}}`) is what
+    // operations.ts's parseDeploymentSnapshot expects after graphql-request
+    // unwraps the envelope.
+    let call = 0;
+    server.use(
+      http.post(RAILWAY_API_URL, () => {
+        call += 1;
+        const status = call === 1 ? 'BUILDING' : 'SUCCESS';
+        return HttpResponse.json({
+          data: {
+            deployment: { id: 'real-d1', status, createdAt: '2026-01-01T00:00:00Z' },
+          },
+        });
+      }),
+    );
+
+    const client = createRailwayClient({
+      token: 'tok',
+      tokenType: 'bearer',
+      requestTimeoutMs: 5_000,
+    });
+    const { waitForDeployment } = await import('../../src/railway/operations');
+
+    const snap = await waitForDeployment(client, 'real-d1', {
+      timeoutMs: 5_000,
+      pollIntervalMs: 1,
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+    });
+    expect(snap.status).toBe('SUCCESS');
+    expect(call).toBe(2);
+  });
 });
