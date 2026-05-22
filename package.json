@@ -1,6 +1,6 @@
 {
   "name": "railway-image-update-action",
-  "version": "1.0.0-rc.1",
+  "version": "1.0.0",
   "private": true,
   "description": "Update Docker image source and redeploy services on Railway via GraphQL API",
   "author": "mediazard",
