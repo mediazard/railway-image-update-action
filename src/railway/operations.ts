@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 
 import { ActionError } from '../errors';
+import { sanitizeForLog } from '../log-sanitize';
 import type { RegistryCredentials } from '../types';
 
 import type { RailwayClient } from './client';
@@ -188,12 +189,13 @@ export interface DeploymentSnapshot {
 export async function getDeploymentStatus(
   client: RailwayClient,
   id: string,
+  signal?: AbortSignal,
 ): Promise<DeploymentSnapshot> {
   const raw = await withRetry<unknown>(() =>
     client.request<DeploymentStatusVariables, unknown>(
       DEPLOYMENT_STATUS_QUERY,
       { id },
-      { operationName: 'deploymentStatus' },
+      { operationName: 'deploymentStatus', signal },
     ),
   );
   return parseDeploymentSnapshot(raw, 'deployment');
@@ -208,12 +210,13 @@ export async function getDeploymentStatus(
 export async function getLatestDeploymentForService(
   client: RailwayClient,
   args: { serviceId: string; environmentId: string },
+  signal?: AbortSignal,
 ): Promise<DeploymentSnapshot | null> {
   const raw = await withRetry<unknown>(() =>
     client.request<ServiceInstanceLatestDeploymentVariables, unknown>(
       SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY,
       { sid: args.serviceId, eid: args.environmentId },
-      { operationName: 'serviceInstanceLatestDeployment' },
+      { operationName: 'serviceInstanceLatestDeployment', signal },
     ),
   );
   if (typeof raw !== 'object' || raw === null) return null;
@@ -228,34 +231,58 @@ export async function getLatestDeploymentForService(
   }
 }
 
-/** Get build logs for a failed deployment. Best-effort — swallows errors. */
+/**
+ * Cap on total build-log bytes returned. Build logs flow into
+ * `ActionError.details` → `core.info`, and GitHub Actions has a
+ * per-line/per-job log budget. A noisy or hostile build (which can also
+ * contain env-var dumps from failed CI scripts) shouldn't be able to push
+ * arbitrarily large output into our error payload.
+ */
+const BUILD_LOG_MAX_BYTES = 16 * 1024;
+
+/**
+ * Get build logs for a failed deployment. Best-effort — swallows request
+ * errors and returns `''` rather than throwing.
+ *
+ * Each line is sanitized for workflow-command injection (`::add-mask::` /
+ * `::set-output::` would otherwise be interpreted by the runner if logged
+ * via `core.info`), CRs are stripped, and the total joined output is
+ * truncated to `BUILD_LOG_MAX_BYTES`. The truncated portion is replaced
+ * by a clearly-marked elision marker so log readers can tell.
+ */
 export async function getBuildLogs(
   client: RailwayClient,
   id: string,
   limit = 100,
+  signal?: AbortSignal,
 ): Promise<string> {
   try {
     const raw = await withRetry<unknown>(() =>
       client.request<BuildLogsVariables, unknown>(
         BUILD_LOGS_QUERY,
         { id, limit },
-        { operationName: 'buildLogs' },
+        { operationName: 'buildLogs', signal },
       ),
     );
     if (typeof raw !== 'object' || raw === null) return '';
     const logs = (raw as Record<string, unknown>).buildLogs;
     if (!Array.isArray(logs)) return '';
-    return logs
+    const joined = logs
       .map((entry) => {
         if (typeof entry !== 'object' || entry === null) return '';
         const e = entry as Record<string, unknown>;
         const ts = typeof e.timestamp === 'string' ? e.timestamp : '';
         const sev = typeof e.severity === 'string' ? e.severity : '';
         const msg = typeof e.message === 'string' ? e.message : '';
-        return `${ts} ${sev} ${msg}`.trim();
+        // Sanitize WITHIN each entry so per-line CR/LF in `msg` can't
+        // smuggle a `\n::add-mask::SECRET` past the runner. Newlines BETWEEN
+        // entries (our own `\n` separator below) are preserved.
+        return sanitizeForLog(`${ts} ${sev} ${msg}`).trim();
       })
       .filter((line) => line !== '')
       .join('\n');
+    if (joined.length <= BUILD_LOG_MAX_BYTES) return joined;
+    return `${joined.slice(0, BUILD_LOG_MAX_BYTES)}\n…[truncated ${joined.length - BUILD_LOG_MAX_BYTES} bytes]`;
   } catch {
     return '';
   }
@@ -280,10 +307,21 @@ export interface WaitForDeploymentOptions {
   pollIntervalMs?: number;
   /** Logger for progress updates. Defaults to `core.info`. */
   onPoll?: (snapshot: DeploymentSnapshot) => void;
-  /** Injectable clock for tests. Defaults to `Date.now`. */
+  /**
+   * Injectable clock for tests. Defaults to `performance.now` — MONOTONIC,
+   * so an NTP backward wall-clock jump can't extend the loop past the
+   * configured `timeoutMs`, and a forward jump can't fire it early.
+   */
   now?: () => number;
   /** Injectable sleep for tests. Defaults to real `setTimeout`. */
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /**
+   * Cancellation. When the signal aborts, the polling loop exits at its
+   * next iteration (or wakes from `sleep`) and rethrows the abort reason.
+   * In-flight GraphQL requests are also cancelled (their `requestTimeoutMs`
+   * window is collapsed).
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -302,15 +340,17 @@ export async function waitForDeployment(
 ): Promise<DeploymentSnapshot> {
   const timeoutMs = opts.timeoutMs ?? 60_000;
   const pollIntervalMs = opts.pollIntervalMs ?? 5_000;
-  const now = opts.now ?? Date.now;
+  const now = opts.now ?? (() => performance.now());
   const sleep = opts.sleep ?? defaultSleep;
   const onPoll = opts.onPoll ?? defaultOnPoll;
+  const { signal } = opts;
 
   const started = now();
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const snapshot = await getDeploymentStatus(client, deploymentId);
+    signal?.throwIfAborted();
+    const snapshot = await getDeploymentStatus(client, deploymentId, signal);
     onPoll(snapshot);
 
     if (TERMINAL_STATUSES.has(snapshot.status)) {
@@ -318,7 +358,7 @@ export async function waitForDeployment(
         return snapshot;
       }
       // Terminal but not SUCCESS: fetch build logs and throw with context.
-      const logs = await getBuildLogs(client, deploymentId);
+      const logs = await getBuildLogs(client, deploymentId, 100, signal);
       const detailsParts = [`Deployment: ${deploymentId}`, `Status: ${snapshot.status}`];
       if (logs !== '') detailsParts.push(`Build logs (last 100 lines):\n${logs}`);
       throw new ActionError(
@@ -336,7 +376,7 @@ export async function waitForDeployment(
       );
     }
 
-    await sleep(pollIntervalMs);
+    await sleep(pollIntervalMs, signal);
   }
 }
 
@@ -357,7 +397,7 @@ function parseDeploymentSnapshot(raw: unknown, contextKey: string): DeploymentSn
   if (typeof obj !== 'object' || obj === null) {
     throw new ActionError(
       `Railway returned no ${contextKey} field`,
-      `Got: ${JSON.stringify(raw).slice(0, 200)}`,
+      `Got: ${sanitizeForLog(JSON.stringify(raw)).slice(0, 200)}`,
       'The deployment status query did not return the expected shape.',
     );
   }
@@ -368,15 +408,30 @@ function parseDeploymentSnapshot(raw: unknown, contextKey: string): DeploymentSn
   if (id === null || status === null) {
     throw new ActionError(
       `Railway ${contextKey} response missing required fields`,
-      `Got: ${JSON.stringify(o).slice(0, 200)}`,
+      `Got: ${sanitizeForLog(JSON.stringify(o)).slice(0, 200)}`,
       'The deployment status query did not return the expected shape.',
     );
   }
   return { id, status, createdAt };
 }
 
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error('Aborted'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(signal?.reason ?? new Error('Aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function defaultOnPoll(snapshot: DeploymentSnapshot): void {

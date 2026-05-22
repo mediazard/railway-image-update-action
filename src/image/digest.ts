@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 
 import { ActionError } from '../errors';
+import { sanitizeForLog } from '../log-sanitize';
 import type { RegistryCredentials } from '../types';
 
 /**
@@ -155,15 +156,4 @@ export async function resolveImageDigest(
 
   core.info(`  ✓ Resolved: ${resolved}`);
   return resolved;
-}
-
-/**
- * Defang attacker-controlled docker output before embedding in
- * `ActionError.details`. `core.info` writes details raw to stdout, so a
- * payload containing `\n::add-mask::SECRET` (from a hostile registry's
- * error message) would inject GitHub Actions workflow commands. Replace
- * any `::` with the U+2236 ratio glyph and drop CRs.
- */
-function sanitizeForLog(s: string): string {
-  return s.replace(/::/g, '∶∶').replace(/\r/g, '');
 }

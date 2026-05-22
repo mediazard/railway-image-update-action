@@ -415,4 +415,246 @@ describe('waitForDeployment', () => {
       expect((err as ActionError).message).toContain('did not reach SUCCESS');
     }
   });
+
+  it('throws when AbortSignal aborts before the first poll', async () => {
+    const client = statusSequenceClient(['BUILDING', 'SUCCESS']);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      waitForDeployment(client, 'd1', {
+        timeoutMs: 10_000,
+        pollIntervalMs: 1,
+        onPoll: () => undefined,
+        sleep: () => Promise.resolve(),
+        signal: controller.signal,
+      }),
+    ).rejects.toBeDefined();
+  });
+
+  it('AbortSignal cancels the sleep between polls', async () => {
+    const client = statusSequenceClient(['BUILDING', 'BUILDING', 'SUCCESS']);
+    const controller = new AbortController();
+    let sleepCalls = 0;
+    // Real-ish sleep: respects abort. Abort fires after the first sleep starts.
+    const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+      new Promise((resolve, reject) => {
+        sleepCalls += 1;
+        if (sleepCalls === 1) {
+          // Abort during the first sleep.
+          queueMicrotask(() => controller.abort());
+        }
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        const timer = setTimeout(resolve, ms);
+        signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        });
+      });
+
+    await expect(
+      waitForDeployment(client, 'd1', {
+        timeoutMs: 10_000,
+        pollIntervalMs: 10_000, // long — would hang without abort plumbing
+        onPoll: () => undefined,
+        sleep,
+        signal: controller.signal,
+      }),
+    ).rejects.toBeDefined();
+  });
+});
+
+describe('parseDeploymentSnapshot — error paths', () => {
+  it('throws ActionError when raw is not an object (covers null/string defense)', async () => {
+    const { getDeploymentStatus } = await import('../../src/railway/operations');
+    const client = new FakeRailwayClient();
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') return 'not-an-object' as TResult;
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+    await expect(getDeploymentStatus(client, 'd1')).rejects.toThrow(/Railway returned no/);
+  });
+
+  it('throws ActionError when deployment object is missing required fields', async () => {
+    const { getDeploymentStatus } = await import('../../src/railway/operations');
+    const client = new FakeRailwayClient();
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        return { deployment: { createdAt: '2026-01-01' } } as TResult; // no id or status
+      }
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+    await expect(getDeploymentStatus(client, 'd1')).rejects.toThrow(/missing required fields/);
+  });
+
+  it('sanitizes `::` in the JSON snippet embedded in parse error details', async () => {
+    const { getDeploymentStatus } = await import('../../src/railway/operations');
+    const client = new FakeRailwayClient();
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        // No `deployment` field → first error branch. The whole raw object is
+        // embedded in details via JSON.stringify; a `::` in a string value
+        // would otherwise inject a workflow command if the error is logged.
+        return { somethingElse: '::add-mask::SECRET' } as TResult;
+      }
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+    try {
+      await getDeploymentStatus(client, 'd1');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ActionError);
+      expect((err as ActionError).details).not.toContain('::add-mask::');
+      expect((err as ActionError).details).toContain('∶∶add-mask∶∶');
+    }
+  });
+});
+
+describe('waitForDeployment — real defaultSleep path', () => {
+  // Exercises the default (non-injected) sleep so coverage reaches the
+  // abort-aware setTimeout/clearTimeout branches.
+  function statusSeqRealSleep(statuses: Array<'BUILDING' | 'SUCCESS'>): FakeRailwayClient {
+    const client = new FakeRailwayClient();
+    let i = 0;
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        const s = statuses[Math.min(i, statuses.length - 1)] ?? 'SUCCESS';
+        i += 1;
+        return {
+          deployment: { id: 'd1', status: s, createdAt: '2026-01-01T00:00:00Z' },
+        } as TResult;
+      }
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+    return client;
+  }
+
+  it('resolves via real setTimeout-backed sleep when polling once between BUILDING and SUCCESS', async () => {
+    const { waitForDeployment } = await import('../../src/railway/operations');
+    const client = statusSeqRealSleep(['BUILDING', 'SUCCESS']);
+    const snap = await waitForDeployment(client, 'd1', {
+      timeoutMs: 5_000,
+      pollIntervalMs: 1, // 1ms — real setTimeout fires immediately
+      onPoll: () => undefined,
+      // NO sleep injection — exercises defaultSleep happy path
+    });
+    expect(snap.status).toBe('SUCCESS');
+  });
+
+  it('real defaultSleep rejects when AbortSignal is already aborted before sleep starts', async () => {
+    const { waitForDeployment } = await import('../../src/railway/operations');
+    const client = statusSeqRealSleep(['BUILDING', 'BUILDING', 'SUCCESS']);
+    const controller = new AbortController();
+    // Abort just after the first poll returns BUILDING, before the first sleep starts.
+    const onPoll = (): void => controller.abort();
+    await expect(
+      waitForDeployment(client, 'd1', {
+        timeoutMs: 5_000,
+        pollIntervalMs: 1,
+        onPoll, // aborts in-flight
+        signal: controller.signal,
+      }),
+    ).rejects.toBeDefined();
+  });
+
+  it('real defaultSleep cancels via abort event mid-sleep', async () => {
+    const { waitForDeployment } = await import('../../src/railway/operations');
+    const client = statusSeqRealSleep(['BUILDING', 'BUILDING', 'SUCCESS']);
+    const controller = new AbortController();
+    let polls = 0;
+    const onPoll = (): void => {
+      polls += 1;
+      if (polls === 1) {
+        // First sleep is 10s — abort after a microtask so the listener has
+        // registered. Without abort plumbing, this would hang the test.
+        setTimeout(() => controller.abort(), 10);
+      }
+    };
+    await expect(
+      waitForDeployment(client, 'd1', {
+        timeoutMs: 60_000,
+        pollIntervalMs: 10_000, // long enough that timeout won't fire first
+        onPoll,
+        signal: controller.signal,
+      }),
+    ).rejects.toBeDefined();
+  }, 5_000);
+});
+
+describe('getBuildLogs — sanitization + length cap', () => {
+  function buildLogsClient(
+    entries: Array<{ message?: unknown; timestamp?: unknown; severity?: unknown }>,
+  ): FakeRailwayClient {
+    const client = new FakeRailwayClient();
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      document: string,
+      variables: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'buildLogs') {
+        return { buildLogs: entries } as TResult;
+      }
+      return orig<TVars, TResult>(document, variables, opts);
+    };
+    return client;
+  }
+
+  it('sanitizes `::` workflow-command markers within each log message', async () => {
+    const { getBuildLogs } = await import('../../src/railway/operations');
+    const client = buildLogsClient([
+      { timestamp: '2026-01-01T00:00:00Z', severity: 'INFO', message: '::add-mask::SECRET' },
+      { timestamp: '2026-01-01T00:00:01Z', severity: 'INFO', message: 'normal line' },
+    ]);
+    const out = await getBuildLogs(client, 'd1');
+    expect(out).not.toContain('::add-mask::');
+    expect(out).toContain('∶∶add-mask∶∶');
+    expect(out).toContain('normal line');
+  });
+
+  it('strips CR from log messages (workflow-command continuation defense)', async () => {
+    const { getBuildLogs } = await import('../../src/railway/operations');
+    const client = buildLogsClient([
+      { timestamp: 't', severity: 's', message: 'line-with-cr\rsmuggled' },
+    ]);
+    const out = await getBuildLogs(client, 'd1');
+    expect(out).not.toContain('\r');
+  });
+
+  it('truncates output exceeding the 16 KB cap with a clear marker', async () => {
+    const { getBuildLogs } = await import('../../src/railway/operations');
+    const bigMessage = 'x'.repeat(500);
+    // 50 entries × ~530 bytes each = ~26 KB → exceeds the 16 KB cap.
+    const entries = Array.from({ length: 50 }, (_, i) => ({
+      timestamp: `2026-01-01T00:00:${String(i).padStart(2, '0')}Z`,
+      severity: 'INFO',
+      message: bigMessage,
+    }));
+    const client = buildLogsClient(entries);
+    const out = await getBuildLogs(client, 'd1');
+    expect(out.length).toBeLessThan(17 * 1024);
+    expect(out).toContain('[truncated');
+  });
 });

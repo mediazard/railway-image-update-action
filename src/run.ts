@@ -4,6 +4,7 @@ import { ActionError } from './errors';
 import { resolveImageDigest, type ExecFn } from './image/digest';
 import { isMutableRef } from './image/mutable';
 import type { ActionInputs } from './inputs/schema';
+import { sanitizeForLog } from './log-sanitize';
 import type { RailwayClient } from './railway/client';
 import {
   getLatestDeploymentForService,
@@ -164,7 +165,7 @@ async function deployOrdered(
     if (latest === null) {
       throw new ActionError(
         `Cannot confirm [${firstLabel}] deploy — Railway returned no deployment id`,
-        `Railway returned: ${JSON.stringify(firstResult.rawValue)}`,
+        `Railway returned: ${sanitizeForLog(JSON.stringify(firstResult.rawValue) ?? 'undefined')}`,
         'Refusing to deploy the remaining services without confirmation. Check the Railway dashboard.',
       );
     }

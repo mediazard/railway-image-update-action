@@ -60653,6 +60653,7 @@ exports.resolveImageDigest = resolveImageDigest;
 const core = __importStar(__nccwpck_require__(7484));
 const exec = __importStar(__nccwpck_require__(5236));
 const errors_1 = __nccwpck_require__(3916);
+const log_sanitize_1 = __nccwpck_require__(329);
 /**
  * Resolve a (possibly tag-pinned) image reference to its manifest digest,
  * returning a `repo@sha256:…` reference. Ports the bash v0 `resolve_image_digest`
@@ -60711,7 +60712,7 @@ async function resolveImageDigest(ref, opts, execFn) {
         // since ActionError.details is emitted via core.info (raw stdout, no
         // escaping), an attacker-controlled error payload would inject workflow
         // commands. Replace `::` with the U+2236 ratio glyph and strip CR.
-        `Image: ${ref}\nError: ${sanitizeForLog(inspect.stderr)}`, 'Check that the image exists, is accessible, and registry credentials are correct');
+        `Image: ${ref}\nError: ${(0, log_sanitize_1.sanitizeForLog)(inspect.stderr)}`, 'Check that the image exists, is accessible, and registry credentials are correct');
     }
     let parsed;
     try {
@@ -60721,7 +60722,7 @@ async function resolveImageDigest(ref, opts, execFn) {
         // Intentionally no { cause } — Node's default unhandled-rejection
         // printer walks .cause chains; the underlying SyntaxError can include
         // unmasked stdout fragments. details already includes the stdout.
-        throw new errors_1.ActionError('Failed to parse manifest JSON for image', `Image: ${ref}\nOutput: ${sanitizeForLog(inspect.stdout)}`, 'Ensure the image tag exists and the registry returns a valid manifest');
+        throw new errors_1.ActionError('Failed to parse manifest JSON for image', `Image: ${ref}\nOutput: ${(0, log_sanitize_1.sanitizeForLog)(inspect.stdout)}`, 'Ensure the image tag exists and the registry returns a valid manifest');
     }
     const digest = parsed.digest;
     if (!digest) {
@@ -60735,16 +60736,6 @@ async function resolveImageDigest(ref, opts, execFn) {
     const resolved = `${base}@${digest}`;
     core.info(`  ✓ Resolved: ${resolved}`);
     return resolved;
-}
-/**
- * Defang attacker-controlled docker output before embedding in
- * `ActionError.details`. `core.info` writes details raw to stdout, so a
- * payload containing `\n::add-mask::SECRET` (from a hostile registry's
- * error message) would inject GitHub Actions workflow commands. Replace
- * any `::` with the U+2236 ratio glyph and drop CRs.
- */
-function sanitizeForLog(s) {
-    return s.replace(/::/g, '∶∶').replace(/\r/g, '');
 }
 
 
@@ -61057,6 +61048,37 @@ function zodErrorToActionError(err) {
     const headline = messages[0] ?? 'Invalid action input';
     const details = messages.length > 1 ? messages.map((m) => `- ${m}`).join('\n') : undefined;
     return new errors_1.ActionError(headline, details);
+}
+
+
+/***/ }),
+
+/***/ 329:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.sanitizeForLog = sanitizeForLog;
+/**
+ * Defang attacker-controlled output before embedding in `ActionError.details`
+ * or any other string we hand to `core.info` / `core.error`. The GitHub
+ * Actions runner parses lines starting with `::` as workflow commands
+ * (`::add-mask::`, `::set-output::`, etc.), so a payload that originated
+ * from a hostile registry, a Railway build log, or a Railway GraphQL
+ * response could inject runner-level commands if we logged it raw.
+ *
+ * Used by:
+ *   - src/image/digest.ts (docker login/manifest-inspect stderr+stdout)
+ *   - src/railway/operations.ts (Railway buildLogs entries; raw response
+ *     fragments in deployment-status error details)
+ *   - src/run.ts (raw response fragment in the "deployment-id unavailable"
+ *     warning)
+ *
+ * Replace any `::` with the U+2236 ratio glyph and drop CRs.
+ */
+function sanitizeForLog(s) {
+    return s.replace(/::/g, '∶∶').replace(/\r/g, '');
 }
 
 
@@ -61866,6 +61888,7 @@ exports.getBuildLogs = getBuildLogs;
 exports.waitForDeployment = waitForDeployment;
 const core = __importStar(__nccwpck_require__(7484));
 const errors_1 = __nccwpck_require__(3916);
+const log_sanitize_1 = __nccwpck_require__(329);
 const errors_2 = __nccwpck_require__(2576);
 const mutations_1 = __nccwpck_require__(7803);
 const retry_1 = __nccwpck_require__(7789);
@@ -61958,8 +61981,8 @@ function extractDeploymentId(raw) {
     return typeof value === 'string' && value !== '' ? value : null;
 }
 /** Look up a single deployment by id. */
-async function getDeploymentStatus(client, id) {
-    const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.DEPLOYMENT_STATUS_QUERY, { id }, { operationName: 'deploymentStatus' }));
+async function getDeploymentStatus(client, id, signal) {
+    const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.DEPLOYMENT_STATUS_QUERY, { id }, { operationName: 'deploymentStatus', signal }));
     return parseDeploymentSnapshot(raw, 'deployment');
 }
 /**
@@ -61968,8 +61991,8 @@ async function getDeploymentStatus(client, id) {
  * the deployment we just triggered (Railway's deployment list is ordered by
  * `createdAt` desc).
  */
-async function getLatestDeploymentForService(client, args) {
-    const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY, { sid: args.serviceId, eid: args.environmentId }, { operationName: 'serviceInstanceLatestDeployment' }));
+async function getLatestDeploymentForService(client, args, signal) {
+    const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY, { sid: args.serviceId, eid: args.environmentId }, { operationName: 'serviceInstanceLatestDeployment', signal }));
     if (typeof raw !== 'object' || raw === null)
         return null;
     const serviceInstance = raw.serviceInstance;
@@ -61985,16 +62008,33 @@ async function getLatestDeploymentForService(client, args) {
         return null;
     }
 }
-/** Get build logs for a failed deployment. Best-effort — swallows errors. */
-async function getBuildLogs(client, id, limit = 100) {
+/**
+ * Cap on total build-log bytes returned. Build logs flow into
+ * `ActionError.details` → `core.info`, and GitHub Actions has a
+ * per-line/per-job log budget. A noisy or hostile build (which can also
+ * contain env-var dumps from failed CI scripts) shouldn't be able to push
+ * arbitrarily large output into our error payload.
+ */
+const BUILD_LOG_MAX_BYTES = 16 * 1024;
+/**
+ * Get build logs for a failed deployment. Best-effort — swallows request
+ * errors and returns `''` rather than throwing.
+ *
+ * Each line is sanitized for workflow-command injection (`::add-mask::` /
+ * `::set-output::` would otherwise be interpreted by the runner if logged
+ * via `core.info`), CRs are stripped, and the total joined output is
+ * truncated to `BUILD_LOG_MAX_BYTES`. The truncated portion is replaced
+ * by a clearly-marked elision marker so log readers can tell.
+ */
+async function getBuildLogs(client, id, limit = 100, signal) {
     try {
-        const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.BUILD_LOGS_QUERY, { id, limit }, { operationName: 'buildLogs' }));
+        const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.BUILD_LOGS_QUERY, { id, limit }, { operationName: 'buildLogs', signal }));
         if (typeof raw !== 'object' || raw === null)
             return '';
         const logs = raw.buildLogs;
         if (!Array.isArray(logs))
             return '';
-        return logs
+        const joined = logs
             .map((entry) => {
             if (typeof entry !== 'object' || entry === null)
                 return '';
@@ -62002,10 +62042,16 @@ async function getBuildLogs(client, id, limit = 100) {
             const ts = typeof e.timestamp === 'string' ? e.timestamp : '';
             const sev = typeof e.severity === 'string' ? e.severity : '';
             const msg = typeof e.message === 'string' ? e.message : '';
-            return `${ts} ${sev} ${msg}`.trim();
+            // Sanitize WITHIN each entry so per-line CR/LF in `msg` can't
+            // smuggle a `\n::add-mask::SECRET` past the runner. Newlines BETWEEN
+            // entries (our own `\n` separator below) are preserved.
+            return (0, log_sanitize_1.sanitizeForLog)(`${ts} ${sev} ${msg}`).trim();
         })
             .filter((line) => line !== '')
             .join('\n');
+        if (joined.length <= BUILD_LOG_MAX_BYTES)
+            return joined;
+        return `${joined.slice(0, BUILD_LOG_MAX_BYTES)}\n…[truncated ${joined.length - BUILD_LOG_MAX_BYTES} bytes]`;
     }
     catch {
         return '';
@@ -62033,20 +62079,22 @@ const HEALTHY_STATUSES = new Set(['SUCCESS']);
 async function waitForDeployment(client, deploymentId, opts = {}) {
     const timeoutMs = opts.timeoutMs ?? 60_000;
     const pollIntervalMs = opts.pollIntervalMs ?? 5_000;
-    const now = opts.now ?? Date.now;
+    const now = opts.now ?? (() => performance.now());
     const sleep = opts.sleep ?? defaultSleep;
     const onPoll = opts.onPoll ?? defaultOnPoll;
+    const { signal } = opts;
     const started = now();
     // eslint-disable-next-line no-constant-condition
     while (true) {
-        const snapshot = await getDeploymentStatus(client, deploymentId);
+        signal?.throwIfAborted();
+        const snapshot = await getDeploymentStatus(client, deploymentId, signal);
         onPoll(snapshot);
         if (TERMINAL_STATUSES.has(snapshot.status)) {
             if (HEALTHY_STATUSES.has(snapshot.status)) {
                 return snapshot;
             }
             // Terminal but not SUCCESS: fetch build logs and throw with context.
-            const logs = await getBuildLogs(client, deploymentId);
+            const logs = await getBuildLogs(client, deploymentId, 100, signal);
             const detailsParts = [`Deployment: ${deploymentId}`, `Status: ${snapshot.status}`];
             if (logs !== '')
                 detailsParts.push(`Build logs (last 100 lines):\n${logs}`);
@@ -62055,7 +62103,7 @@ async function waitForDeployment(client, deploymentId, opts = {}) {
         if (now() - started >= timeoutMs) {
             throw new errors_1.ActionError(`Deployment ${deploymentId} did not reach SUCCESS within ${timeoutMs}ms`, `Last status: ${snapshot.status} (after ${now() - started}ms)`, 'Increase wait-seconds, or check the Railway dashboard for the running deploy.');
         }
-        await sleep(pollIntervalMs);
+        await sleep(pollIntervalMs, signal);
     }
 }
 function parseDeploymentSnapshot(raw, contextKey) {
@@ -62068,19 +62116,34 @@ function parseDeploymentSnapshot(raw, contextKey) {
         ? raw.deployment
         : raw;
     if (typeof obj !== 'object' || obj === null) {
-        throw new errors_1.ActionError(`Railway returned no ${contextKey} field`, `Got: ${JSON.stringify(raw).slice(0, 200)}`, 'The deployment status query did not return the expected shape.');
+        throw new errors_1.ActionError(`Railway returned no ${contextKey} field`, `Got: ${(0, log_sanitize_1.sanitizeForLog)(JSON.stringify(raw)).slice(0, 200)}`, 'The deployment status query did not return the expected shape.');
     }
     const o = obj;
     const id = typeof o.id === 'string' ? o.id : null;
     const status = typeof o.status === 'string' ? o.status : null;
     const createdAt = typeof o.createdAt === 'string' ? o.createdAt : '';
     if (id === null || status === null) {
-        throw new errors_1.ActionError(`Railway ${contextKey} response missing required fields`, `Got: ${JSON.stringify(o).slice(0, 200)}`, 'The deployment status query did not return the expected shape.');
+        throw new errors_1.ActionError(`Railway ${contextKey} response missing required fields`, `Got: ${(0, log_sanitize_1.sanitizeForLog)(JSON.stringify(o)).slice(0, 200)}`, 'The deployment status query did not return the expected shape.');
     }
     return { id, status, createdAt };
 }
-function defaultSleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+function defaultSleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(signal.reason ?? new Error('Aborted'));
+            return;
+        }
+        const timer = setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+        }, ms);
+        const onAbort = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+            reject(signal?.reason ?? new Error('Aborted'));
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+    });
 }
 function defaultOnPoll(snapshot) {
     core.info(`  ⏳ Deployment ${snapshot.id} status: ${snapshot.status}`);
@@ -62268,6 +62331,7 @@ const core = __importStar(__nccwpck_require__(7484));
 const errors_1 = __nccwpck_require__(3916);
 const digest_1 = __nccwpck_require__(8033);
 const mutable_1 = __nccwpck_require__(7899);
+const log_sanitize_1 = __nccwpck_require__(329);
 const operations_1 = __nccwpck_require__(6681);
 const saved_1 = __nccwpck_require__(8762);
 /**
@@ -62373,7 +62437,7 @@ async function deployOrdered(client, inputs, state, image) {
             environmentId: inputs.environmentId,
         });
         if (latest === null) {
-            throw new errors_1.ActionError(`Cannot confirm [${firstLabel}] deploy — Railway returned no deployment id`, `Railway returned: ${JSON.stringify(firstResult.rawValue)}`, 'Refusing to deploy the remaining services without confirmation. Check the Railway dashboard.');
+            throw new errors_1.ActionError(`Cannot confirm [${firstLabel}] deploy — Railway returned no deployment id`, `Railway returned: ${(0, log_sanitize_1.sanitizeForLog)(JSON.stringify(firstResult.rawValue) ?? 'undefined')}`, 'Refusing to deploy the remaining services without confirmation. Check the Railway dashboard.');
         }
         deploymentId = latest.id;
         core.info(`  ↪ Recovered deployment id via serviceInstance fallback: ${deploymentId}`);
