@@ -20,7 +20,7 @@ import {
   type ServiceInstanceUpdateInput,
   type UpdateImageVariables,
 } from './mutations';
-import { withRetry, type RetryPolicy } from './retry';
+import { withRetry, isRetryableError, type RetryPolicy } from './retry';
 
 /**
  * Why no zod schemas here?
@@ -304,6 +304,13 @@ export const RAILWAY_HEALTHCHECK_DEFAULT_TIMEOUT_MS = 300_000;
  * deploy / platform hang). Set above Railway's 300s healthcheck window (+60s
  * headroom) so a legitimately slow INITIALIZING phase — one long no-transition
  * phase — isn't killed.
+ *
+ * Caveat: this bounds ANY progressing phase with an unchanged status, not just
+ * the healthcheck. A very large image over a slow registry can sit in
+ * BUILDING/INITIALIZING (status unchanged, build logs advancing) for a while;
+ * if that single phase exceeds 360s the gate false-fails a healthy deploy. Low
+ * risk here because we deploy pre-built images, but if it bites, raise this
+ * constant rather than disabling the stall — do NOT infer progress from logs.
  */
 export const GATE_STALL_TIMEOUT_MS = 360_000;
 
@@ -409,7 +416,33 @@ export async function waitForDeployment(
   while (true) {
     signal?.throwIfAborted();
     // One retry (not the default two): a single poll must not spend the budget.
-    const snapshot = await getDeploymentStatus(client, deploymentId, signal, { retries: 1 });
+    let snapshot: DeploymentSnapshot;
+    try {
+      snapshot = await getDeploymentStatus(client, deploymentId, signal, { retries: 1 });
+    } catch (err) {
+      // A transient status-query failure (a retryable HTTP/network error whose
+      // single in-poll retry also failed) must NOT abort the gate: the running
+      // deployment is independent of our ability to read its status, and the
+      // loop's own cadence would otherwise absorb the blip. Count the failed
+      // poll toward the total budget and re-poll. A permanent error (auth, 4xx,
+      // deployment-not-found) is NOT retryable and still aborts fast.
+      if (signal?.aborted || !isRetryableError(err)) throw err;
+      const elapsed = now() - started;
+      if (elapsed >= timeoutMs) {
+        throw await gateError(
+          client,
+          deploymentId,
+          `Deployment ${deploymentId} did not reach SUCCESS within ${elapsed}ms`,
+          `Last status: ${lastStatus ?? 'unknown'} (status polling kept failing, after ${elapsed}ms)`,
+          "The deploy's status could not be read before the cap. Check the Railway dashboard.",
+          signal,
+        );
+      }
+      core.info('  ⚠ Status poll failed transiently; retrying on the next poll interval');
+      core.debug(`  poll error: ${err instanceof Error ? err.message : String(err)}`);
+      await sleepClamped(sleep, pollIntervalMs, elapsed, timeoutMs, signal);
+      continue;
+    }
     onPoll(snapshot);
 
     if (snapshot.status !== lastStatus) {

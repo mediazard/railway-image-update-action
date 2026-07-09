@@ -2,7 +2,7 @@
 
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] — 2026-07-09
 
 ### Removed
 
@@ -12,6 +12,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 - The first-service gate now uses two internal constants instead of `wait-seconds`: a transition-based stall detector (~360s of no status progress) and a total wall-clock cap (~600s), both set **above Railway's default 300s healthcheck window**. Railway's own `SUCCESS`/`FAILED` verdict decides the normal case; the constants only guard against a platform-level hang. A first-service `FAILED`/`CRASHED` (including a failed pre-deploy migration) still aborts and does not deploy the rest.
 - Status polling reduces in-gate retries and clamps the inter-poll sleep so a single slow status request can't consume the budget. Non-`SUCCESS` terminal statuses (`SLEEPING`/`REMOVED`/`SKIPPED`) now fail fast; `INITIALIZING`/`REMOVING` are modeled explicitly.
+- The gate tolerates a transient status-query failure: if a poll's single retry also fails with a retryable HTTP/network error, it re-polls within the budget instead of aborting the whole ordered deploy. A permanent error (auth / `4xx` / deployment-not-found) still aborts immediately.
 - Constants assume Railway's default 300s healthcheck window — documented in `src/railway/operations.ts`.
 
 ## [1.0.0] — 2026-05-22

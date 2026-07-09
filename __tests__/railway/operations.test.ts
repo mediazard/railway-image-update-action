@@ -803,4 +803,63 @@ describe('waitForDeployment — constant gate behavior', () => {
     });
     expect(snap.status).toBe('SUCCESS');
   });
+
+  it('does not abort the gate on a transient status-poll failure — re-polls and resolves', async () => {
+    // First poll fails BOTH attempts (retryable 503) so getDeploymentStatus
+    // throws; the gate must treat it as a transient blip, re-poll, then see
+    // SUCCESS — a live deploy is independent of our ability to read its status.
+    const client = new FakeRailwayClient();
+    let statusCalls = 0;
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        statusCalls += 1;
+        if (statusCalls <= 2) throw makeClientError(503); // poll 1: both attempts fail
+        return { deployment: { id: 'd1', status: 'SUCCESS', createdAt: 't' } } as TResult;
+      }
+      if (opts?.operationName === 'buildLogs') return { buildLogs: [] } as TResult;
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+    const snap = await waitForDeployment(client, 'd1', {
+      timeoutMs: 100_000,
+      stallTimeoutMs: 0,
+      pollIntervalMs: 1,
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+    });
+    expect(snap.status).toBe('SUCCESS');
+    expect(statusCalls).toBe(3); // 2 failed attempts (poll 1) + 1 success (poll 2)
+  }, 10_000);
+
+  it('aborts fast on a permanent (non-retryable) status-poll error — no re-poll', async () => {
+    const client = new FakeRailwayClient();
+    let statusCalls = 0;
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        statusCalls += 1;
+        throw makeClientError(401); // non-retryable → must abort, not re-poll
+      }
+      if (opts?.operationName === 'buildLogs') return { buildLogs: [] } as TResult;
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+    await expect(
+      waitForDeployment(client, 'd1', {
+        timeoutMs: 100_000,
+        stallTimeoutMs: 0,
+        pollIntervalMs: 1,
+        onPoll: () => undefined,
+        sleep: () => Promise.resolve(),
+      }),
+    ).rejects.toBeInstanceOf(ClientError);
+    expect(statusCalls).toBe(1); // one attempt, no retry, no re-poll
+  });
 });
