@@ -60869,7 +60869,6 @@ function readRawFromCore() {
     const image = core.getInput('image');
     const services = core.getInput('services');
     const firstService = core.getInput('first-service');
-    const waitSeconds = core.getInput('wait-seconds');
     // NOT masked — see comment above.
     const registryUsername = core.getInput('registry-username');
     const resolveToDigest = core.getBooleanInput('resolve-to-digest');
@@ -60881,7 +60880,6 @@ function readRawFromCore() {
         image,
         services,
         firstService,
-        waitSeconds,
         registryUsername,
         registryPassword,
         resolveToDigest,
@@ -61000,7 +60998,7 @@ function refineFirstServiceExists(val, ctx) {
     }
 }
 /**
- * Zod schema for all 11 action inputs. Per-field `.message` strings carry
+ * Zod schema for all 10 action inputs. Per-field `.message` strings carry
  * action-input-name phrasing so a `safeParse` failure surfaces a
  * user-readable error without any external mapping layer.
  */
@@ -61022,12 +61020,6 @@ exports.ActionInputsSchema = zod_1.z
         .string()
         .regex(NO_WORKFLOW_COMMAND_CHARS, 'first-service contains forbidden characters')
         .default(''),
-    waitSeconds: zod_1.z.coerce
-        .number({ invalid_type_error: 'wait-seconds must be a non-negative integer' })
-        .int('wait-seconds must be a non-negative integer')
-        .nonnegative('wait-seconds must be a non-negative integer')
-        .max(900, 'wait-seconds must not exceed 900 (15 min)')
-        .default(30),
     registryUsername: zod_1.z
         .string()
         .regex(NO_WORKFLOW_COMMAND_CHARS, 'registry-username contains forbidden characters')
@@ -61880,11 +61872,13 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.GATE_TOTAL_TIMEOUT_MS = exports.GATE_STALL_TIMEOUT_MS = exports.RAILWAY_HEALTHCHECK_DEFAULT_TIMEOUT_MS = void 0;
 exports.updateImage = updateImage;
 exports.redeploy = redeploy;
 exports.getDeploymentStatus = getDeploymentStatus;
 exports.getLatestDeploymentForService = getLatestDeploymentForService;
 exports.getBuildLogs = getBuildLogs;
+exports.classifyStatus = classifyStatus;
 exports.waitForDeployment = waitForDeployment;
 const core = __importStar(__nccwpck_require__(7484));
 const errors_1 = __nccwpck_require__(3916);
@@ -61981,8 +61975,8 @@ function extractDeploymentId(raw) {
     return typeof value === 'string' && value !== '' ? value : null;
 }
 /** Look up a single deployment by id. */
-async function getDeploymentStatus(client, id, signal) {
-    const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.DEPLOYMENT_STATUS_QUERY, { id }, { operationName: 'deploymentStatus', signal }));
+async function getDeploymentStatus(client, id, signal, retryPolicy) {
+    const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.DEPLOYMENT_STATUS_QUERY, { id }, { operationName: 'deploymentStatus', signal }), retryPolicy);
     return parseDeploymentSnapshot(raw, 'deployment');
 }
 /**
@@ -62057,16 +62051,58 @@ async function getBuildLogs(client, id, limit = 100, signal) {
         return '';
     }
 }
-/** Set of terminal deployment statuses. Polling ends when we hit one. */
-const TERMINAL_STATUSES = new Set([
-    'SUCCESS',
-    'FAILED',
-    'CRASHED',
-    'REMOVED',
-    'SKIPPED',
-]);
-/** Set of statuses we treat as "success" — only SUCCESS qualifies. */
-const HEALTHY_STATUSES = new Set(['SUCCESS']);
+/**
+ * Railway's default healthcheck window (docs: 300s). Railway fails a deploy
+ * that doesn't serve 200 within this window, so it — not this action — is the
+ * authority on SUCCESS/FAILED. Our timeouts below sit ABOVE it and exist only
+ * so the GitHub job can't hang on a platform-level stall.
+ */
+exports.RAILWAY_HEALTHCHECK_DEFAULT_TIMEOUT_MS = 300_000;
+/**
+ * Fail fast if the deployment makes NO status progress for this long (a stuck
+ * deploy / platform hang). Set above Railway's 300s healthcheck window (+60s
+ * headroom) so a legitimately slow INITIALIZING phase — one long no-transition
+ * phase — isn't killed.
+ */
+exports.GATE_STALL_TIMEOUT_MS = 360_000;
+/**
+ * Absolute wall-clock ceiling for the first-service gate. Generous and
+ * NOT configurable — a normal deploy resolves to SUCCESS/FAILED via Railway
+ * well before this; it only fires if the deploy keeps flapping without ever
+ * reaching a terminal state.
+ */
+exports.GATE_TOTAL_TIMEOUT_MS = 600_000;
+/**
+ * Classify a Railway deployment status. Exhaustive and intentional: an
+ * unrecognized status is treated as `progressing` (keep polling) so a status
+ * Railway invents can never be silently misread as healthy. `SLEEPING`,
+ * `REMOVED`, and `SKIPPED` are terminal-but-not-success (`terminal-neutral`) —
+ * they'll never reach SUCCESS by polling, so we fail fast rather than burn the
+ * whole wait budget.
+ */
+function classifyStatus(status) {
+    switch (status) {
+        case 'SUCCESS':
+            return 'ready';
+        case 'FAILED':
+        case 'CRASHED':
+            return 'failed';
+        case 'REMOVED':
+        case 'SKIPPED':
+        case 'SLEEPING':
+            return 'terminal-neutral';
+        case 'BUILDING':
+        case 'DEPLOYING':
+        case 'INITIALIZING':
+        case 'WAITING':
+        case 'QUEUED':
+        case 'REMOVING':
+            return 'progressing';
+        default:
+            core.debug(`Unrecognized Railway deployment status '${status}' — treating as progressing`);
+            return 'progressing';
+    }
+}
 /**
  * Poll `deployment(id)` until status enters a terminal state, then resolve
  * (on SUCCESS) or throw an `ActionError` (on FAILED/CRASHED/REMOVED/SKIPPED).
@@ -62077,33 +62113,44 @@ const HEALTHY_STATUSES = new Set(['SUCCESS']);
  * finished) before touching the remaining services.
  */
 async function waitForDeployment(client, deploymentId, opts = {}) {
-    const timeoutMs = opts.timeoutMs ?? 60_000;
+    const timeoutMs = opts.timeoutMs ?? exports.GATE_TOTAL_TIMEOUT_MS;
+    const stallTimeoutMs = opts.stallTimeoutMs ?? exports.GATE_STALL_TIMEOUT_MS;
     const pollIntervalMs = opts.pollIntervalMs ?? 5_000;
     const now = opts.now ?? (() => performance.now());
     const sleep = opts.sleep ?? defaultSleep;
     const onPoll = opts.onPoll ?? defaultOnPoll;
     const { signal } = opts;
     const started = now();
+    let lastStatus = null;
+    let lastTransitionAt = started;
     // eslint-disable-next-line no-constant-condition
     while (true) {
         signal?.throwIfAborted();
-        const snapshot = await getDeploymentStatus(client, deploymentId, signal);
+        // One retry (not the default two): a single poll must not spend the budget.
+        const snapshot = await getDeploymentStatus(client, deploymentId, signal, { retries: 1 });
         onPoll(snapshot);
-        if (TERMINAL_STATUSES.has(snapshot.status)) {
-            if (HEALTHY_STATUSES.has(snapshot.status)) {
-                return snapshot;
-            }
-            // Terminal but not SUCCESS: fetch build logs and throw with context.
-            const logs = await getBuildLogs(client, deploymentId, 100, signal);
-            const detailsParts = [`Deployment: ${deploymentId}`, `Status: ${snapshot.status}`];
-            if (logs !== '')
-                detailsParts.push(`Build logs (last 100 lines):\n${logs}`);
-            throw new errors_1.ActionError(`Deployment ${deploymentId} ended in ${snapshot.status}`, detailsParts.join('\n'), 'Inspect the Railway dashboard for the full deployment log.');
+        if (snapshot.status !== lastStatus) {
+            lastStatus = snapshot.status;
+            lastTransitionAt = now();
         }
-        if (now() - started >= timeoutMs) {
-            throw new errors_1.ActionError(`Deployment ${deploymentId} did not reach SUCCESS within ${timeoutMs}ms`, `Last status: ${snapshot.status} (after ${now() - started}ms)`, 'Increase wait-seconds, or check the Railway dashboard for the running deploy.');
+        const klass = classifyStatus(snapshot.status);
+        if (klass === 'ready') {
+            return snapshot;
         }
-        await sleep(pollIntervalMs, signal);
+        if (klass !== 'progressing') {
+            // failed OR terminal-neutral — will never reach SUCCESS by polling.
+            throw await gateError(client, deploymentId, `Deployment ${deploymentId} ended in ${snapshot.status}`, `Status: ${snapshot.status}`, 'Inspect the Railway dashboard for the full deployment log.', signal);
+        }
+        // progressing — check stall (no status change) then the total cap.
+        const sinceTransition = now() - lastTransitionAt;
+        if (stallTimeoutMs > 0 && sinceTransition >= stallTimeoutMs) {
+            throw await gateError(client, deploymentId, `Deployment ${deploymentId} stalled in ${snapshot.status}`, `Status ${snapshot.status} unchanged for ${sinceTransition}ms`, 'The deployment made no progress. Check the Railway dashboard for the running deploy.', signal);
+        }
+        const elapsed = now() - started;
+        if (elapsed >= timeoutMs) {
+            throw await gateError(client, deploymentId, `Deployment ${deploymentId} did not reach SUCCESS within ${elapsed}ms`, `Last status: ${snapshot.status} (after ${elapsed}ms)`, "The deploy is stuck or the Railway platform is delayed (Railway's healthcheck window is 300s by default). Check the Railway dashboard.", signal);
+        }
+        await sleepClamped(sleep, pollIntervalMs, elapsed, timeoutMs, signal);
     }
 }
 function parseDeploymentSnapshot(raw, contextKey) {
@@ -62147,6 +62194,26 @@ function defaultSleep(ms, signal) {
 }
 function defaultOnPoll(snapshot) {
     core.info(`  ⏳ Deployment ${snapshot.id} status: ${snapshot.status}`);
+}
+/**
+ * Build an ActionError for a gate failure/timeout, attaching build logs
+ * (best-effort) so a deploy that failed server-side surfaces its logs.
+ */
+async function gateError(client, deploymentId, message, statusLine, hint, signal) {
+    const logs = await getBuildLogs(client, deploymentId, 100, signal);
+    const detailsParts = [`Deployment: ${deploymentId}`, statusLine];
+    if (logs !== '')
+        detailsParts.push(`Build logs (last 100 lines):\n${logs}`);
+    return new errors_1.ActionError(message, detailsParts.join('\n'), hint);
+}
+/**
+ * Sleep for the poll interval, clamped to the remaining budget so the loop
+ * never oversleeps past the deadline.
+ */
+function sleepClamped(sleep, pollIntervalMs, elapsedMs, timeoutMs, signal) {
+    const remaining = timeoutMs - elapsedMs;
+    const ms = remaining > 0 ? Math.min(pollIntervalMs, remaining) : 0;
+    return sleep(ms, signal);
 }
 
 
@@ -62422,9 +62489,12 @@ async function deployOrdered(client, inputs, state, image) {
     });
     recordDeploymentId(state, firstLabel, firstResult);
     // Confirm SUCCESS before letting the remaining services roll forward.
-    // If first-service runs release-phase migrations, this is the gate that
-    // prevents worker/clock from starting against a half-migrated DB.
-    // `wait-seconds` defines the timeout (defaults to 30, London uses 60).
+    // If first-service runs release-phase migrations (via Railway's pre-deploy
+    // command), a failed migration marks this deployment FAILED and we abort
+    // here — the remaining services are NOT deployed. The gate's timeouts are
+    // fixed constants (see GATE_STALL_TIMEOUT_MS / GATE_TOTAL_TIMEOUT_MS) that
+    // sit above Railway's 300s healthcheck window, so Railway's own
+    // SUCCESS/FAILED verdict decides the normal case.
     let deploymentId = firstResult.deploymentId;
     if (deploymentId === null) {
         // Rare under serviceInstanceDeployV2 (it reliably returns an id), but
@@ -62442,10 +62512,8 @@ async function deployOrdered(client, inputs, state, image) {
         deploymentId = latest.id;
         core.info(`  ↪ Recovered deployment id via serviceInstance fallback: ${deploymentId}`);
     }
-    core.info(`  ⏳ Waiting up to ${inputs.waitSeconds}s for [${firstLabel}] to reach SUCCESS...`);
-    await (0, operations_1.waitForDeployment)(client, deploymentId, {
-        timeoutMs: inputs.waitSeconds * 1000,
-    });
+    core.info(`  ⏳ Waiting for [${firstLabel}] to reach SUCCESS...`);
+    await (0, operations_1.waitForDeployment)(client, deploymentId);
     core.info(`  ✓ [${firstLabel}] deployment confirmed`);
     state.markDeployed(firstLabel);
     core.info('');
