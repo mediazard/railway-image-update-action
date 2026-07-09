@@ -71,6 +71,21 @@ function extractCode(err: unknown): string | undefined {
 }
 
 /**
+ * True if `err` is a transient failure worth retrying: a retryable HTTP status
+ * (429/5xx) or a retryable network code (DNS/connect/timeout). Everything else
+ * — 4xx, parse errors, unknown shapes — is permanent. Exported so callers that
+ * poll in their own loop (e.g. `waitForDeployment`) can tell a transient
+ * status-query blip apart from a hard failure without re-implementing the map.
+ */
+export function isRetryableError(err: unknown): boolean {
+  if (err instanceof ClientError) {
+    return RETRYABLE_HTTP_STATUSES.has(err.response.status);
+  }
+  const code = extractCode(err);
+  return code !== undefined && RETRYABLE_NETWORK_CODES.has(code);
+}
+
+/**
  * Decorator: wraps an async producer in `p-retry` with explicit error
  * dispatch. Retryable errors are re-thrown so `p-retry` retries; everything
  * else is wrapped in `AbortError` so the retry loop exits cleanly and the
@@ -92,16 +107,8 @@ export async function withRetry<T>(
       try {
         return await fn();
       } catch (err) {
-        if (err instanceof ClientError) {
-          const status = err.response.status;
-          if (RETRYABLE_HTTP_STATUSES.has(status)) {
-            throw err; // retry
-          }
-          throw new AbortError(err);
-        }
-        const code = extractCode(err);
-        if (code && RETRYABLE_NETWORK_CODES.has(code)) {
-          throw err instanceof Error ? err : new Error(String(err));
+        if (isRetryableError(err)) {
+          throw err instanceof Error ? err : new Error(String(err)); // let p-retry retry
         }
         throw new AbortError(err instanceof Error ? err : new Error(String(err)));
       }
