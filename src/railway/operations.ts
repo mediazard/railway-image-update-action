@@ -20,7 +20,7 @@ import {
   type ServiceInstanceUpdateInput,
   type UpdateImageVariables,
 } from './mutations';
-import { withRetry } from './retry';
+import { withRetry, type RetryPolicy } from './retry';
 
 /**
  * Why no zod schemas here?
@@ -190,13 +190,16 @@ export async function getDeploymentStatus(
   client: RailwayClient,
   id: string,
   signal?: AbortSignal,
+  retryPolicy?: Partial<RetryPolicy>,
 ): Promise<DeploymentSnapshot> {
-  const raw = await withRetry<unknown>(() =>
-    client.request<DeploymentStatusVariables, unknown>(
-      DEPLOYMENT_STATUS_QUERY,
-      { id },
-      { operationName: 'deploymentStatus', signal },
-    ),
+  const raw = await withRetry<unknown>(
+    () =>
+      client.request<DeploymentStatusVariables, unknown>(
+        DEPLOYMENT_STATUS_QUERY,
+        { id },
+        { operationName: 'deploymentStatus', signal },
+      ),
+    retryPolicy,
   );
   return parseDeploymentSnapshot(raw, 'deployment');
 }
@@ -288,17 +291,29 @@ export async function getBuildLogs(
   }
 }
 
-/** Set of terminal deployment statuses. Polling ends when we hit one. */
-const TERMINAL_STATUSES = new Set<DeploymentStatus>([
-  'SUCCESS',
-  'FAILED',
-  'CRASHED',
-  'REMOVED',
-  'SKIPPED',
-]);
+/**
+ * Railway's default healthcheck window (docs: 300s). Railway fails a deploy
+ * that doesn't serve 200 within this window, so it — not this action — is the
+ * authority on SUCCESS/FAILED. Our timeouts below sit ABOVE it and exist only
+ * so the GitHub job can't hang on a platform-level stall.
+ */
+export const RAILWAY_HEALTHCHECK_DEFAULT_TIMEOUT_MS = 300_000;
 
-/** Set of statuses we treat as "success" — only SUCCESS qualifies. */
-const HEALTHY_STATUSES = new Set<DeploymentStatus>(['SUCCESS']);
+/**
+ * Fail fast if the deployment makes NO status progress for this long (a stuck
+ * deploy / platform hang). Set above Railway's 300s healthcheck window (+60s
+ * headroom) so a legitimately slow INITIALIZING phase — one long no-transition
+ * phase — isn't killed.
+ */
+export const GATE_STALL_TIMEOUT_MS = 360_000;
+
+/**
+ * Absolute wall-clock ceiling for the first-service gate. Generous and
+ * NOT configurable — a normal deploy resolves to SUCCESS/FAILED via Railway
+ * well before this; it only fires if the deploy keeps flapping without ever
+ * reaching a terminal state.
+ */
+export const GATE_TOTAL_TIMEOUT_MS = 600_000;
 
 /** Bucket a Railway deployment status for the poll loop. */
 export type StatusClass = 'ready' | 'failed' | 'terminal-neutral' | 'progressing';
@@ -336,10 +351,15 @@ export function classifyStatus(status: string): StatusClass {
 }
 
 export interface WaitForDeploymentOptions {
-  /** Max total wait in ms. Defaults to 60_000 (matches London's `wait-seconds: 60`). */
+  /** Max total wait in ms. Defaults to GATE_TOTAL_TIMEOUT_MS (600s). */
   timeoutMs?: number;
   /** Poll interval in ms. Defaults to 5_000. */
   pollIntervalMs?: number;
+  /**
+   * Fail fast if the status doesn't change for this many ms while progressing.
+   * Defaults to GATE_STALL_TIMEOUT_MS (360s). Set 0 to disable (tests).
+   */
+  stallTimeoutMs?: number;
   /** Logger for progress updates. Defaults to `core.info`. */
   onPoll?: (snapshot: DeploymentSnapshot) => void;
   /**
@@ -373,7 +393,8 @@ export async function waitForDeployment(
   deploymentId: string,
   opts: WaitForDeploymentOptions = {},
 ): Promise<DeploymentSnapshot> {
-  const timeoutMs = opts.timeoutMs ?? 60_000;
+  const timeoutMs = opts.timeoutMs ?? GATE_TOTAL_TIMEOUT_MS;
+  const stallTimeoutMs = opts.stallTimeoutMs ?? GATE_STALL_TIMEOUT_MS;
   const pollIntervalMs = opts.pollIntervalMs ?? 5_000;
   const now = opts.now ?? (() => performance.now());
   const sleep = opts.sleep ?? defaultSleep;
@@ -381,37 +402,63 @@ export async function waitForDeployment(
   const { signal } = opts;
 
   const started = now();
+  let lastStatus: string | null = null;
+  let lastTransitionAt = started;
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
     signal?.throwIfAborted();
-    const snapshot = await getDeploymentStatus(client, deploymentId, signal);
+    // One retry (not the default two): a single poll must not spend the budget.
+    const snapshot = await getDeploymentStatus(client, deploymentId, signal, { retries: 1 });
     onPoll(snapshot);
 
-    if (TERMINAL_STATUSES.has(snapshot.status)) {
-      if (HEALTHY_STATUSES.has(snapshot.status)) {
-        return snapshot;
-      }
-      // Terminal but not SUCCESS: fetch build logs and throw with context.
-      const logs = await getBuildLogs(client, deploymentId, 100, signal);
-      const detailsParts = [`Deployment: ${deploymentId}`, `Status: ${snapshot.status}`];
-      if (logs !== '') detailsParts.push(`Build logs (last 100 lines):\n${logs}`);
-      throw new ActionError(
+    if (snapshot.status !== lastStatus) {
+      lastStatus = snapshot.status;
+      lastTransitionAt = now();
+    }
+
+    const klass = classifyStatus(snapshot.status);
+    if (klass === 'ready') {
+      return snapshot;
+    }
+    if (klass !== 'progressing') {
+      // failed OR terminal-neutral — will never reach SUCCESS by polling.
+      throw await gateError(
+        client,
+        deploymentId,
         `Deployment ${deploymentId} ended in ${snapshot.status}`,
-        detailsParts.join('\n'),
+        `Status: ${snapshot.status}`,
         'Inspect the Railway dashboard for the full deployment log.',
+        signal,
       );
     }
 
-    if (now() - started >= timeoutMs) {
-      throw new ActionError(
-        `Deployment ${deploymentId} did not reach SUCCESS within ${timeoutMs}ms`,
-        `Last status: ${snapshot.status} (after ${now() - started}ms)`,
-        'Increase wait-seconds, or check the Railway dashboard for the running deploy.',
+    // progressing — check stall (no status change) then the total cap.
+    const sinceTransition = now() - lastTransitionAt;
+    if (stallTimeoutMs > 0 && sinceTransition >= stallTimeoutMs) {
+      throw await gateError(
+        client,
+        deploymentId,
+        `Deployment ${deploymentId} stalled in ${snapshot.status}`,
+        `Status ${snapshot.status} unchanged for ${sinceTransition}ms`,
+        'The deployment made no progress. Check the Railway dashboard for the running deploy.',
+        signal,
       );
     }
 
-    await sleep(pollIntervalMs, signal);
+    const elapsed = now() - started;
+    if (elapsed >= timeoutMs) {
+      throw await gateError(
+        client,
+        deploymentId,
+        `Deployment ${deploymentId} did not reach SUCCESS within ${elapsed}ms`,
+        `Last status: ${snapshot.status} (after ${elapsed}ms)`,
+        "The deploy is stuck or the Railway platform is delayed (Railway's healthcheck window is 300s by default). Check the Railway dashboard.",
+        signal,
+      );
+    }
+
+    await sleepClamped(sleep, pollIntervalMs, elapsed, timeoutMs, signal);
   }
 }
 
@@ -471,4 +518,38 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 function defaultOnPoll(snapshot: DeploymentSnapshot): void {
   core.info(`  ⏳ Deployment ${snapshot.id} status: ${snapshot.status}`);
+}
+
+/**
+ * Build an ActionError for a gate failure/timeout, attaching build logs
+ * (best-effort) so a deploy that failed server-side surfaces its logs.
+ */
+async function gateError(
+  client: RailwayClient,
+  deploymentId: string,
+  message: string,
+  statusLine: string,
+  hint: string,
+  signal?: AbortSignal,
+): Promise<ActionError> {
+  const logs = await getBuildLogs(client, deploymentId, 100, signal);
+  const detailsParts = [`Deployment: ${deploymentId}`, statusLine];
+  if (logs !== '') detailsParts.push(`Build logs (last 100 lines):\n${logs}`);
+  return new ActionError(message, detailsParts.join('\n'), hint);
+}
+
+/**
+ * Sleep for the poll interval, clamped to the remaining budget so the loop
+ * never oversleeps past the deadline.
+ */
+function sleepClamped(
+  sleep: (ms: number, signal?: AbortSignal) => Promise<void>,
+  pollIntervalMs: number,
+  elapsedMs: number,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  const remaining = timeoutMs - elapsedMs;
+  const ms = remaining > 0 ? Math.min(pollIntervalMs, remaining) : 0;
+  return sleep(ms, signal);
 }
