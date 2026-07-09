@@ -658,3 +658,149 @@ describe('getBuildLogs — sanitization + length cap', () => {
     expect(out).toContain('[truncated');
   });
 });
+
+describe('classifyStatus', () => {
+  it('maps Railway statuses to the four buckets (incl. INITIALIZING/REMOVING)', async () => {
+    const { classifyStatus } = await import('../../src/railway/operations');
+    expect(classifyStatus('SUCCESS')).toBe('ready');
+    expect(classifyStatus('FAILED')).toBe('failed');
+    expect(classifyStatus('CRASHED')).toBe('failed');
+    expect(classifyStatus('REMOVED')).toBe('terminal-neutral');
+    expect(classifyStatus('SKIPPED')).toBe('terminal-neutral');
+    expect(classifyStatus('SLEEPING')).toBe('terminal-neutral');
+    expect(classifyStatus('BUILDING')).toBe('progressing');
+    expect(classifyStatus('DEPLOYING')).toBe('progressing');
+    expect(classifyStatus('INITIALIZING')).toBe('progressing');
+    expect(classifyStatus('WAITING')).toBe('progressing');
+    expect(classifyStatus('QUEUED')).toBe('progressing');
+    expect(classifyStatus('REMOVING')).toBe('progressing');
+  });
+
+  it('treats an unrecognized status as progressing (never misread as healthy)', async () => {
+    const { classifyStatus } = await import('../../src/railway/operations');
+    expect(classifyStatus('SOME_NEW_STATUS')).toBe('progressing');
+  });
+});
+
+describe('getDeploymentStatus — retry policy override', () => {
+  it('does not retry when the override sets retries: 0', async () => {
+    const client = new FakeRailwayClient();
+    let attempts = 0;
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        attempts += 1;
+        throw makeClientError(500); // retryable — would retry under the default policy
+      }
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+    await expect(
+      getDeploymentStatus(client, 'd1', undefined, { retries: 0 }),
+    ).rejects.toBeDefined();
+    expect(attempts).toBe(1);
+  });
+});
+
+describe('waitForDeployment — constant gate behavior', () => {
+  function stuckClient(status: string): FakeRailwayClient {
+    const client = new FakeRailwayClient();
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        return { deployment: { id: 'd1', status, createdAt: 't' } } as TResult;
+      }
+      if (opts?.operationName === 'buildLogs') {
+        return {
+          buildLogs: [{ timestamp: 't', severity: 'INFO', message: 'still booting' }],
+        } as TResult;
+      }
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+    return client;
+  }
+
+  it('throws ActionError with build logs on the total-cap timeout (still-progressing)', async () => {
+    const client = stuckClient('INITIALIZING');
+    let n = 0;
+    try {
+      await waitForDeployment(client, 'd1', {
+        timeoutMs: 1000,
+        stallTimeoutMs: 0, // disable stall so the total cap is what fires
+        pollIntervalMs: 1,
+        onPoll: () => undefined,
+        sleep: () => Promise.resolve(),
+        now: () => {
+          const v = n;
+          n += 600;
+          return v;
+        },
+      });
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ActionError);
+      expect((err as ActionError).message).toContain('did not reach SUCCESS');
+      expect((err as ActionError).details).toContain('still booting'); // build logs attached
+      expect((err as ActionError).details).toContain('INITIALIZING'); // last status
+    }
+  });
+
+  it('throws ActionError "stalled" when status is unchanged past stallTimeoutMs', async () => {
+    const client = stuckClient('BUILDING');
+    let n = 0;
+    try {
+      await waitForDeployment(client, 'd1', {
+        timeoutMs: 100_000, // large — stall must fire first
+        stallTimeoutMs: 1000,
+        pollIntervalMs: 1,
+        onPoll: () => undefined,
+        sleep: () => Promise.resolve(),
+        now: () => {
+          const v = n;
+          n += 600;
+          return v;
+        },
+      });
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ActionError);
+      expect((err as ActionError).message).toContain('stalled');
+      expect((err as ActionError).message).toContain('BUILDING');
+    }
+  });
+
+  it('does not stall while the deployment keeps transitioning, and resolves on SUCCESS', async () => {
+    const statuses = ['QUEUED', 'BUILDING', 'DEPLOYING', 'SUCCESS'];
+    let i = 0;
+    const client = new FakeRailwayClient();
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        const s = statuses[Math.min(i, statuses.length - 1)];
+        i += 1;
+        return { deployment: { id: 'd1', status: s, createdAt: 't' } } as TResult;
+      }
+      if (opts?.operationName === 'buildLogs') return { buildLogs: [] } as TResult;
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+    const snap = await waitForDeployment(client, 'd1', {
+      timeoutMs: 100_000,
+      stallTimeoutMs: 5000, // resets on each transition, so never trips here
+      pollIntervalMs: 1,
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+    });
+    expect(snap.status).toBe('SUCCESS');
+  });
+});

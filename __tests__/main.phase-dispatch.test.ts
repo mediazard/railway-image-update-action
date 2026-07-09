@@ -79,8 +79,6 @@ function installHappyInputs(): void {
         return `web:${WEB_UUID}`;
       case 'first-service':
         return '';
-      case 'wait-seconds':
-        return '30';
       case 'registry-username':
         return '';
       case 'registry-password':
@@ -197,7 +195,6 @@ describe('runMain — validation failure', () => {
       if (name === 'image') return 'ghcr.io/org/app:1.0.0';
       if (name === 'services') return `web:${WEB_UUID}`;
       if (name === 'first-service') return '';
-      if (name === 'wait-seconds') return '30';
       return '';
     });
     vi.mocked(core.getBooleanInput).mockReturnValue(false);

@@ -25,7 +25,6 @@ function makeRawInputs(overrides: Record<string, unknown> = {}): Record<string, 
     image: 'ghcr.io/org/app:1.0.0',
     services: `web:${WEB_UUID}\nworker:${WORKER_UUID}`,
     firstService: '',
-    waitSeconds: '30',
     registryUsername: '',
     registryPassword: '',
     resolveToDigest: true,
@@ -100,7 +99,6 @@ describe('ActionInputsSchema — happy path and refines', () => {
     expect(result.data.image).toBe('ghcr.io/org/app:1.0.0');
     expect(result.data.services).toBeInstanceOf(Map);
     expect(Array.from(result.data.services.keys())).toEqual(['web', 'worker']);
-    expect(result.data.waitSeconds).toBe(30);
     expect(result.data.resolveToDigest).toBe(true);
     expect(result.data.allowMutableTag).toBe(false);
   });
@@ -200,16 +198,6 @@ describe('zodErrorToActionError — action-input-name messages', () => {
   it('invalid image regex → "image is not a valid Docker image reference"', () => {
     const err = mapError(makeRawInputs({ image: 'NOT VALID IMAGE!' }));
     expect(err.message).toBe('image is not a valid Docker image reference');
-  });
-
-  it('non-integer wait-seconds → "wait-seconds must be a non-negative integer"', () => {
-    const err = mapError(makeRawInputs({ waitSeconds: 'abc' }));
-    expect(err.message).toBe('wait-seconds must be a non-negative integer');
-  });
-
-  it('wait-seconds over the 900 cap → max-bound message', () => {
-    const err = mapError(makeRawInputs({ waitSeconds: '9999' }));
-    expect(err.message).toBe('wait-seconds must not exceed 900 (15 min)');
   });
 
   it('registry-username without password → custom-refine message', () => {

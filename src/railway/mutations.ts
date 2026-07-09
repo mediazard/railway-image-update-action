@@ -120,10 +120,12 @@ export interface BuildLogsVariables {
 export type DeploymentStatus =
   | 'BUILDING'
   | 'DEPLOYING'
+  | 'INITIALIZING'
   | 'SUCCESS'
   | 'FAILED'
   | 'CRASHED'
   | 'REMOVED'
+  | 'REMOVING'
   | 'SLEEPING'
   | 'SKIPPED'
   | 'WAITING'

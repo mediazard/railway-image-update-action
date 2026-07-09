@@ -27,10 +27,6 @@ inputs:
     description: "Label of the service to redeploy before all others. Remaining services deploy after wait."
     required: false
     default: ""
-  wait-seconds:
-    description: "Seconds to wait after first-service redeploys before deploying the rest"
-    required: false
-    default: "30"
   registry-username:
     description: "Registry username for private image pull authentication"
     required: false
