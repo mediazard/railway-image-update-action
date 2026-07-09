@@ -61,7 +61,6 @@ function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
     image: DIGEST_IMAGE,
     services,
     firstService: '',
-    waitSeconds: 30,
     registryUsername: '',
     registryPassword: '',
     resolveToDigest: false,
@@ -114,7 +113,7 @@ describe('log strings — step headers (ordered path)', () => {
       ['web', A_UUID],
       ['worker', B_UUID],
     ]);
-    const inputs = makeInputs({ services, firstService: 'web', waitSeconds: 0 });
+    const inputs = makeInputs({ services, firstService: 'web' });
     const state = new DeployState(Array.from(inputs.services.keys()));
     await run({ client: happyClient(), execFn: makeExecFn(), inputs, state });
 

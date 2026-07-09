@@ -9,7 +9,7 @@
  *     a later call throws).
  *   - Mutable-tag refusal + digest resolution toggles.
  *   - first-service not in services Map runtime guard.
- *   - waitSeconds=0 doesn't actually block.
+ *   - first-service FAILED aborts and skips the rest.
  */
 
 vi.mock('@actions/core', () => ({
@@ -69,7 +69,6 @@ function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
     image: DIGEST_IMAGE,
     services,
     firstService: '',
-    waitSeconds: 30,
     registryUsername: '',
     registryPassword: '',
     resolveToDigest: false,
@@ -153,7 +152,7 @@ describe('run — ordered path (first-service set)', () => {
       ['clock', C_UUID],
     ]);
     const client = happyClient();
-    const inputs = makeInputs({ services, firstService: 'web', waitSeconds: 0 });
+    const inputs = makeInputs({ services, firstService: 'web' });
     const state = new DeployState(Array.from(inputs.services.keys()));
 
     await run({ client, execFn: makeExecFn(), inputs, state });
@@ -174,20 +173,25 @@ describe('run — ordered path (first-service set)', () => {
     expect(state.deployedLabels()).toEqual(['web', 'worker', 'clock']);
   });
 
-  it('waitSeconds=0 means the ordered path does not block measurably', async () => {
+  it('aborts and does NOT deploy the rest when first-service ends in FAILED', async () => {
     const services = new Map<string, string>([
       ['web', A_UUID],
       ['worker', B_UUID],
     ]);
-    const client = happyClient();
-    const inputs = makeInputs({ services, firstService: 'web', waitSeconds: 0 });
+    const c = new FakeRailwayClient();
+    c.setResponse('updateImage', { response: { serviceInstanceUpdate: { id: 'u' } } });
+    c.setResponse('deployService', { response: { serviceInstanceDeployV2: 'deploy-id-x' } });
+    c.setResponse('deploymentStatus', {
+      response: { deployment: { id: 'deploy-id-x', status: 'FAILED', createdAt: 't' } },
+    });
+    c.setResponse('buildLogs', { response: { buildLogs: [] } });
+    const inputs = makeInputs({ services, firstService: 'web' });
     const state = new DeployState(Array.from(inputs.services.keys()));
 
-    const start = Date.now();
-    await run({ client, execFn: makeExecFn(), inputs, state });
-    const elapsed = Date.now() - start;
-
-    expect(elapsed).toBeLessThan(500);
+    await expect(run({ client: c, execFn: makeExecFn(), inputs, state })).rejects.toBeInstanceOf(
+      ActionError,
+    );
+    expect(state.deployedLabels()).not.toContain('worker');
   });
 
   it('throws ActionError when first-service is not a key in services Map', async () => {
@@ -201,7 +205,6 @@ describe('run — ordered path (first-service set)', () => {
     const inputs = makeInputs({
       services,
       firstService: 'nope',
-      waitSeconds: 0,
     });
     const state = new DeployState(Array.from(inputs.services.keys()));
 

@@ -110,7 +110,7 @@ function refineFirstServiceExists(
 }
 
 /**
- * Zod schema for all 11 action inputs. Per-field `.message` strings carry
+ * Zod schema for all 10 action inputs. Per-field `.message` strings carry
  * action-input-name phrasing so a `safeParse` failure surfaces a
  * user-readable error without any external mapping layer.
  */
@@ -132,12 +132,6 @@ export const ActionInputsSchema = z
       .string()
       .regex(NO_WORKFLOW_COMMAND_CHARS, 'first-service contains forbidden characters')
       .default(''),
-    waitSeconds: z.coerce
-      .number({ invalid_type_error: 'wait-seconds must be a non-negative integer' })
-      .int('wait-seconds must be a non-negative integer')
-      .nonnegative('wait-seconds must be a non-negative integer')
-      .max(900, 'wait-seconds must not exceed 900 (15 min)')
-      .default(30),
     registryUsername: z
       .string()
       .regex(NO_WORKFLOW_COMMAND_CHARS, 'registry-username contains forbidden characters')

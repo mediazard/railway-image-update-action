@@ -15,7 +15,6 @@ export interface RawInputs {
   image: string;
   services: string;
   firstService: string;
-  waitSeconds: string;
   registryUsername: string;
   registryPassword: string;
   resolveToDigest: boolean;
@@ -53,7 +52,6 @@ export function readRawFromCore(): RawInputs {
   const image = core.getInput('image');
   const services = core.getInput('services');
   const firstService = core.getInput('first-service');
-  const waitSeconds = core.getInput('wait-seconds');
 
   // NOT masked — see comment above.
   const registryUsername = core.getInput('registry-username');
@@ -68,7 +66,6 @@ export function readRawFromCore(): RawInputs {
     image,
     services,
     firstService,
-    waitSeconds,
     registryUsername,
     registryPassword,
     resolveToDigest,

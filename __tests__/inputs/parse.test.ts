@@ -30,7 +30,6 @@ interface InputsBundle {
   image: string;
   services: string;
   'first-service': string;
-  'wait-seconds': string;
   'registry-username': string;
   'registry-password': string;
 }
@@ -55,7 +54,6 @@ function installCoreMocks(
     image: 'ghcr.io/org/app:1.0.0',
     services: `web:${WEB_UUID}\nworker:${WORKER_UUID}`,
     'first-service': '',
-    'wait-seconds': '30',
     'registry-username': '',
     'registry-password': '',
   };
@@ -97,7 +95,6 @@ describe('readInputs — happy path', () => {
     expect(inputs.services.get('web')).toBe(WEB_UUID);
     expect(inputs.services.get('worker')).toBe(WORKER_UUID);
     expect(inputs.firstService).toBe('');
-    expect(inputs.waitSeconds).toBe(30);
     expect(inputs.registryUsername).toBe('');
     expect(inputs.registryPassword).toBe('');
     expect(inputs.resolveToDigest).toBe(true);

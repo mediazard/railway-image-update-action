@@ -698,7 +698,9 @@ describe('getDeploymentStatus — retry policy override', () => {
       }
       return orig<TVars, TResult>(doc, vars, opts);
     };
-    await expect(getDeploymentStatus(client, 'd1', undefined, { retries: 0 })).rejects.toBeDefined();
+    await expect(
+      getDeploymentStatus(client, 'd1', undefined, { retries: 0 }),
+    ).rejects.toBeDefined();
     expect(attempts).toBe(1);
   });
 });

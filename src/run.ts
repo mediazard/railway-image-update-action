@@ -148,9 +148,12 @@ async function deployOrdered(
   recordDeploymentId(state, firstLabel, firstResult);
 
   // Confirm SUCCESS before letting the remaining services roll forward.
-  // If first-service runs release-phase migrations, this is the gate that
-  // prevents worker/clock from starting against a half-migrated DB.
-  // `wait-seconds` defines the timeout (defaults to 30, London uses 60).
+  // If first-service runs release-phase migrations (via Railway's pre-deploy
+  // command), a failed migration marks this deployment FAILED and we abort
+  // here — the remaining services are NOT deployed. The gate's timeouts are
+  // fixed constants (see GATE_STALL_TIMEOUT_MS / GATE_TOTAL_TIMEOUT_MS) that
+  // sit above Railway's 300s healthcheck window, so Railway's own
+  // SUCCESS/FAILED verdict decides the normal case.
   let deploymentId = firstResult.deploymentId;
   if (deploymentId === null) {
     // Rare under serviceInstanceDeployV2 (it reliably returns an id), but
@@ -173,10 +176,8 @@ async function deployOrdered(
     core.info(`  ↪ Recovered deployment id via serviceInstance fallback: ${deploymentId}`);
   }
 
-  core.info(`  ⏳ Waiting up to ${inputs.waitSeconds}s for [${firstLabel}] to reach SUCCESS...`);
-  await waitForDeployment(client, deploymentId, {
-    timeoutMs: inputs.waitSeconds * 1000,
-  });
+  core.info(`  ⏳ Waiting for [${firstLabel}] to reach SUCCESS...`);
+  await waitForDeployment(client, deploymentId);
   core.info(`  ✓ [${firstLabel}] deployment confirmed`);
   state.markDeployed(firstLabel);
   core.info('');
