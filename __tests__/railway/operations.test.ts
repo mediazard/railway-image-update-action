@@ -658,3 +658,26 @@ describe('getBuildLogs — sanitization + length cap', () => {
     expect(out).toContain('[truncated');
   });
 });
+
+describe('classifyStatus', () => {
+  it('maps Railway statuses to the four buckets (incl. INITIALIZING/REMOVING)', async () => {
+    const { classifyStatus } = await import('../../src/railway/operations');
+    expect(classifyStatus('SUCCESS')).toBe('ready');
+    expect(classifyStatus('FAILED')).toBe('failed');
+    expect(classifyStatus('CRASHED')).toBe('failed');
+    expect(classifyStatus('REMOVED')).toBe('terminal-neutral');
+    expect(classifyStatus('SKIPPED')).toBe('terminal-neutral');
+    expect(classifyStatus('SLEEPING')).toBe('terminal-neutral');
+    expect(classifyStatus('BUILDING')).toBe('progressing');
+    expect(classifyStatus('DEPLOYING')).toBe('progressing');
+    expect(classifyStatus('INITIALIZING')).toBe('progressing');
+    expect(classifyStatus('WAITING')).toBe('progressing');
+    expect(classifyStatus('QUEUED')).toBe('progressing');
+    expect(classifyStatus('REMOVING')).toBe('progressing');
+  });
+
+  it('treats an unrecognized status as progressing (never misread as healthy)', async () => {
+    const { classifyStatus } = await import('../../src/railway/operations');
+    expect(classifyStatus('SOME_NEW_STATUS')).toBe('progressing');
+  });
+});

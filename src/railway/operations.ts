@@ -300,6 +300,41 @@ const TERMINAL_STATUSES = new Set<DeploymentStatus>([
 /** Set of statuses we treat as "success" — only SUCCESS qualifies. */
 const HEALTHY_STATUSES = new Set<DeploymentStatus>(['SUCCESS']);
 
+/** Bucket a Railway deployment status for the poll loop. */
+export type StatusClass = 'ready' | 'failed' | 'terminal-neutral' | 'progressing';
+
+/**
+ * Classify a Railway deployment status. Exhaustive and intentional: an
+ * unrecognized status is treated as `progressing` (keep polling) so a status
+ * Railway invents can never be silently misread as healthy. `SLEEPING`,
+ * `REMOVED`, and `SKIPPED` are terminal-but-not-success (`terminal-neutral`) —
+ * they'll never reach SUCCESS by polling, so we fail fast rather than burn the
+ * whole wait budget.
+ */
+export function classifyStatus(status: string): StatusClass {
+  switch (status) {
+    case 'SUCCESS':
+      return 'ready';
+    case 'FAILED':
+    case 'CRASHED':
+      return 'failed';
+    case 'REMOVED':
+    case 'SKIPPED':
+    case 'SLEEPING':
+      return 'terminal-neutral';
+    case 'BUILDING':
+    case 'DEPLOYING':
+    case 'INITIALIZING':
+    case 'WAITING':
+    case 'QUEUED':
+    case 'REMOVING':
+      return 'progressing';
+    default:
+      core.debug(`Unrecognized Railway deployment status '${status}' — treating as progressing`);
+      return 'progressing';
+  }
+}
+
 export interface WaitForDeploymentOptions {
   /** Max total wait in ms. Defaults to 60_000 (matches London's `wait-seconds: 60`). */
   timeoutMs?: number;
