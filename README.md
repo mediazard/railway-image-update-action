@@ -56,7 +56,6 @@ The `image-tag` output contains the resolved digest ref (e.g. `ghcr.io/myorg/mya
       worker:${{ vars.RAILWAY_WORKER_SERVICE_ID }}
       clock:${{ vars.RAILWAY_CLOCK_SERVICE_ID }}
     first-service: web
-    wait-seconds: "60"
 ```
 
 ### Private registry authentication
@@ -100,8 +99,7 @@ Both `registry-username` and `registry-password` must be provided together. Stor
 | `environment-id` | Yes | — | Railway environment ID (UUID) |
 | `image` | Yes | — | Full Docker image URI with tag or digest |
 | `services` | Yes | — | Multiline `label:service_id` pairs. Labels are for logging only. |
-| `first-service` | No | `""` | Label of service to deploy first. Others deploy after wait. |
-| `wait-seconds` | No | `30` | Seconds to wait after first-service before deploying remaining |
+| `first-service` | No | `""` | Label of service to deploy first. Others deploy only after it reaches `SUCCESS`. |
 | `registry-username` | No | `""` | Username for private registry (requires registry-password) |
 | `registry-password` | No | `""` | Password/token for private registry (requires registry-username) |
 | `resolve-to-digest` | No | `true` | Resolve the image tag to a content-addressed digest before deploying |
@@ -128,7 +126,7 @@ Services are processed sequentially in input order. Sequential iteration is an i
 ### With `first-service` (3-step flow)
 
 1. **Step 1/3** — Update + redeploy `first-service`
-2. Wait `wait-seconds`
+2. Wait for `first-service` to reach `SUCCESS` (Railway's own verdict). A `FAILED`/`CRASHED` deploy — including a failed pre-deploy migration — aborts here and the remaining services are NOT deployed. The wait is bounded by internal constants (≈360s no-progress stall / ≈600s total), set above Railway's 300s healthcheck window; they only trip on a stuck deploy or platform delay.
 3. **Step 2/3** — Update image source on remaining services
 4. **Step 3/3** — Redeploy remaining services
 
@@ -170,6 +168,7 @@ See [SECURITY.md](SECURITY.md) for the full policy.
 | `Railway API authentication failed` | Invalid or expired token | Regenerate token in Railway dashboard |
 | `Railway API rejected the request (forbidden)` | Token lacks permissions | Use a token with access to the target project |
 | `first-service '...' not found` | Label doesn't match any service | Check spelling matches a label in `services` |
+| `did not reach SUCCESS within Nms` / `stalled in <status>` | first-service didn't reach a terminal state before the internal cap (stuck deploy or Railway platform delay) | Check the Railway dashboard. If a service legitimately needs >300s to pass its healthcheck, raise `RAILWAY_HEALTHCHECK_TIMEOUT_SEC` on the service and revisit the gate constants in `src/railway/operations.ts` |
 | `Refusing to deploy mutable tag` | `resolve-to-digest: false` + mutable tag + `allow-mutable-tag: false` | Use immutable tag, enable `resolve-to-digest: true`, or set `allow-mutable-tag: true` |
 | `Failed to resolve manifest digest` | Registry unreachable or image not found | Check registry credentials, image existence, network access |
 

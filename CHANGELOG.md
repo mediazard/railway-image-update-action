@@ -4,6 +4,16 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Removed
+
+- **`wait-seconds` input.** The first-service gate is no longer configurable. Remove `wait-seconds:` from your workflow — a leftover value is ignored with a harmless GitHub "unexpected input" warning. Shipped as a minor (1.1.0) by maintainer decision.
+
+### Changed
+
+- The first-service gate now uses two internal constants instead of `wait-seconds`: a transition-based stall detector (~360s of no status progress) and a total wall-clock cap (~600s), both set **above Railway's default 300s healthcheck window**. Railway's own `SUCCESS`/`FAILED` verdict decides the normal case; the constants only guard against a platform-level hang. A first-service `FAILED`/`CRASHED` (including a failed pre-deploy migration) still aborts and does not deploy the rest.
+- Status polling reduces in-gate retries and clamps the inter-poll sleep so a single slow status request can't consume the budget. Non-`SUCCESS` terminal statuses (`SLEEPING`/`REMOVED`/`SKIPPED`) now fail fast; `INITIALIZING`/`REMOVING` are modeled explicitly.
+- Constants assume Railway's default 300s healthcheck window — documented in `src/railway/operations.ts`.
+
 ## [1.0.0] — 2026-05-22
 
 First release of the TypeScript implementation. The action is bundled to a single committed `dist/index.js` via `@vercel/ncc` and runs on `node20`.
