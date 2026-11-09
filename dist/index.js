@@ -61435,18 +61435,23 @@ function chainSignals(controller, external) {
  * `registryCredentials.password`. Anything downstream that logs
  * `err.message` (the retry log, the gate's debug line, `main.ts`) would print
  * it, and JSON escaping can defeat the runner's secret mask. Redacting here,
- * where the error enters our code, covers every current and future log site.
+ * where the error enters our code, removes our own request material (the
+ * variables we sent) from every current and future log site. Text that
+ * Railway itself returns in `response.errors` is not scrubbed here.
  *
- * The same instance is returned so `instanceof ClientError`,
- * `response.status` and `response.errors` keep working for retry
- * classification and `mapToActionError`.
+ * Mutated in place (not rebuilt) on purpose: a new `ClientError` would re-run
+ * its constructor and bake the JSON back in, and the same instance must keep
+ * `instanceof ClientError`, `response.status` and `response.errors` working
+ * for retry classification and `mapToActionError`.
  */
 function redactClientError(err) {
     // Mirrors ClientError.extractMessage (private in graphql-request's typings).
     err.message =
         err.response.errors?.[0]?.message ?? `GraphQL Error (Code: ${String(err.response.status)})`;
     err.request = { query: err.request.query };
-    err.stack = `ClientError: ${err.message}`;
+    // Keep the stack frames, drop the JSON-bearing header lines.
+    const frames = (err.stack ?? '').split('\n').filter((line) => /^\s+at /.test(line));
+    err.stack = [`ClientError: ${err.message}`, ...frames].join('\n');
     return err;
 }
 /**
