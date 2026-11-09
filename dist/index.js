@@ -60562,6 +60562,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ActionError = void 0;
 exports.emitToCore = emitToCore;
 const core = __importStar(__nccwpck_require__(7484));
+const log_sanitize_1 = __nccwpck_require__(329);
 /**
  * Action-level error carrying a human-friendly message, optional detail block,
  * and a hint. Mirrors the bash `die "msg" "details" "hint"` triplet.
@@ -60588,21 +60589,28 @@ exports.ActionError = ActionError;
  * this — `setFailed` re-emits `::error::` and would double-log.
  */
 async function emitToCore(err) {
-    core.error(err.message);
-    if (err.details) {
+    // Chokepoint B: everything an ActionError carries passes through
+    // sanitizeForLog once. `core.info` writes raw stdout, so details are the
+    // channel that matters; message/hint go through escaped commands but are
+    // sanitized too so the summary matches.
+    const message = (0, log_sanitize_1.sanitizeForLog)(err.message);
+    const details = err.details ? (0, log_sanitize_1.sanitizeForLog)(err.details) : undefined;
+    const hint = err.hint ? (0, log_sanitize_1.sanitizeForLog)(err.hint) : undefined;
+    core.error(message);
+    if (details) {
         core.startGroup('Details');
-        core.info(err.details);
+        core.info(details);
         core.endGroup();
     }
-    if (err.hint) {
-        core.notice(err.hint, { title: 'Hint' });
+    if (hint) {
+        core.notice(hint, { title: 'Hint' });
     }
-    core.summary.addHeading(err.message, 3);
-    if (err.details) {
-        core.summary.addRaw('\n```\n' + err.details + '\n```\n');
+    core.summary.addHeading(message, 3);
+    if (details) {
+        core.summary.addRaw('\n```\n' + details + '\n```\n');
     }
-    if (err.hint) {
-        core.summary.addQuote('💡 ' + err.hint);
+    if (hint) {
+        core.summary.addQuote('💡 ' + hint);
     }
     await core.summary.write();
 }
@@ -60654,6 +60662,9 @@ const core = __importStar(__nccwpck_require__(7484));
 const exec = __importStar(__nccwpck_require__(5236));
 const errors_1 = __nccwpck_require__(3916);
 const log_sanitize_1 = __nccwpck_require__(329);
+/** Shape of the JSON returned by `docker buildx imagetools inspect --format '{{json .Manifest}}'`. */
+/** A content-addressed image digest, as written into the pinned ref. */
+const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 /**
  * Resolve a (possibly tag-pinned) image reference to its manifest digest,
  * returning a `repo@sha256:…` reference. Ports the bash v0 `resolve_image_digest`
@@ -60727,6 +60738,9 @@ async function resolveImageDigest(ref, opts, execFn) {
     const digest = parsed.digest;
     if (!digest) {
         throw new errors_1.ActionError('Manifest digest resolution returned empty result', `Image: ${ref}\nReturned digest: (empty)`, 'Ensure the image tag exists and the registry is reachable');
+    }
+    if (typeof digest !== 'string' || !SHA256_DIGEST_PATTERN.test(digest)) {
+        throw new errors_1.ActionError('Manifest digest resolution returned an invalid digest', `Image: ${ref}\nReturned digest: ${(0, log_sanitize_1.sanitizeForLog)(String(digest)).slice(0, 200)}`, 'Expected sha256:<64 lowercase hex>. Check the registry and the docker buildx version.');
     }
     // 6. Build the digest-pinned ref. Only strip the tag if the LAST path
     //    segment contains a `:`, so registry ports remain intact.
@@ -60936,6 +60950,24 @@ exports.IMAGE_REF_PATTERN = /^[a-z0-9][a-z0-9._/-]*(:[a-zA-Z0-9._-]+|@sha256:[0-
  */
 const NO_WORKFLOW_COMMAND_CHARS = /^[^\r\n%]*$/;
 /**
+ * Characters a service label may not contain (a denylist, so spaces, `/` and
+ * unicode keep working). Labels are printed in many `core.info` progress
+ * lines and joined into the comma-separated outputs:
+ *   - any control character (`\p{Cc}`): an embedded `\r` is a runner line break
+ *   - U+2028 / U+2029: line separators, banned for hygiene
+ *   - `[` / `]`: block the legacy `##[` command form; labels print inside `[...]`
+ *   - `,`: would corrupt `deployed-services` / `failed-services`
+ * `:` can never appear (the line is split on the first one).
+ */
+const LABEL_FORBIDDEN_CHARS = /[\p{Cc}\u2028\u2029,[\]]/u;
+/** `first-service` follows the label rule, plus `:` and `%`. */
+const FIRST_SERVICE_FORBIDDEN_CHARS = /[\p{Cc}\u2028\u2029,[\]:%]/u;
+function isSafeFirstService(value) {
+    return !FIRST_SERVICE_FORBIDDEN_CHARS.test(value);
+}
+/** `registry-username`: no CR/LF/`%`, and no `[`/`]` (blocks `##[` in the dry-run body). */
+const REGISTRY_USERNAME_ALLOWED = /^[^\r\n%[\]]*$/;
+/**
  * Parse the multiline `services` input into a `Map<label, serviceId>`.
  *
  * - Split on `\n`; strip trailing `\r` (CRLF tolerance).
@@ -60955,6 +60987,9 @@ function parseServicesString(input) {
         const serviceId = (colonIdx === -1 ? '' : line.slice(colonIdx + 1)).trim();
         if (label === '') {
             throw new errors_1.ActionError('services line has an empty label', `Offending line: '${rawLine}'`, "Each services line must be 'label:service_id' with a non-empty label.");
+        }
+        if (LABEL_FORBIDDEN_CHARS.test(label)) {
+            throw new errors_1.ActionError('services: label contains forbidden characters', `Offending line: '${rawLine}'`, 'Labels may not contain control characters, line separators, commas or square brackets.');
         }
         if (!exports.UUID_PATTERN.test(serviceId)) {
             throw new errors_1.ActionError(`services: service ID for '${label}' is not a valid UUID`, `Got: '${serviceId}'`, 'Use the Railway service UUID, e.g. 1234abcd-12ab-34cd-56ef-1234567890ab.');
@@ -60984,10 +61019,14 @@ function refineCredentialPair(val, ctx) {
 }
 /**
  * If `firstService` is non-empty, it must be a label present in the parsed
- * services Map. The error message intentionally includes the offending name.
+ * services Map. The error message includes the offending name, which is safe
+ * because values failing the character rule return early and are never echoed.
  */
 function refineFirstServiceExists(val, ctx) {
     if (val.firstService === '')
+        return;
+    // A value failing the character rule already has its own issue; never echo it.
+    if (!isSafeFirstService(val.firstService))
         return;
     if (!val.services.has(val.firstService)) {
         ctx.addIssue({
@@ -61018,11 +61057,11 @@ exports.ActionInputsSchema = zod_1.z
     services: zod_1.z.string().min(1, 'services is required').transform(parseServicesString),
     firstService: zod_1.z
         .string()
-        .regex(NO_WORKFLOW_COMMAND_CHARS, 'first-service contains forbidden characters')
+        .refine(isSafeFirstService, 'first-service contains forbidden characters')
         .default(''),
     registryUsername: zod_1.z
         .string()
-        .regex(NO_WORKFLOW_COMMAND_CHARS, 'registry-username contains forbidden characters')
+        .regex(REGISTRY_USERNAME_ALLOWED, 'registry-username contains forbidden characters')
         .default(''),
     registryPassword: zod_1.z.string().default(''),
     resolveToDigest: zod_1.z.boolean().default(true),
@@ -61052,25 +61091,55 @@ function zodErrorToActionError(err) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.sanitizeForLog = sanitizeForLog;
+exports.scrubSecrets = scrubSecrets;
 /**
- * Defang attacker-controlled output before embedding in `ActionError.details`
- * or any other string we hand to `core.info` / `core.error`. The GitHub
- * Actions runner parses lines starting with `::` as workflow commands
- * (`::add-mask::`, `::set-output::`, etc.), so a payload that originated
- * from a hostile registry, a Railway build log, or a Railway GraphQL
- * response could inject runner-level commands if we logged it raw.
+ * Defang attacker-controlled output before it reaches `core.info` (raw
+ * stdout, no escaping) or any other string the runner parses.
  *
- * Used by:
- *   - src/image/digest.ts (docker login/manifest-inspect stderr+stdout)
- *   - src/railway/operations.ts (Railway buildLogs entries; raw response
- *     fragments in deployment-status error details)
- *   - src/run.ts (raw response fragment in the "deployment-id unavailable"
- *     warning)
+ * The runner splits our stdout into lines on `\n`, a lone `\r`, or `\r\n`,
+ * and tries two command parsers on each line:
+ *   - V2: the line, after leading whitespace, starts with `::`
+ *     (`::add-mask::x`, `::error::x`, ...)
+ *   - legacy: the line contains `##[` ANYWHERE (`foo ##[add-mask]x`), followed
+ *     by a registered command name
+ * A payload from a hostile registry, a Railway build log or a Railway GraphQL
+ * response could inject runner-level commands if logged raw.
  *
- * Replace any `::` with the U+2236 ratio glyph and drop CRs.
+ * This function:
+ *   1. strips every `\r` (a lone CR is a runner line break) — FIRST, so that
+ *      stripping can't join `:\r:` into `::` or `#\r#[` into `##[`;
+ *   2. replaces every `::` with the U+2236 ratio glyph, so no line starts with `::`;
+ *   3. replaces every `##[` with `##［` (U+FF3B fullwidth bracket).
+ * `\n` is kept, so multi-line details still read as multi-line. Idempotent.
+ *
+ * Applied at the two chokepoints — `emitToCore` (src/errors.ts) and the
+ * Railway client's `ClientError` redaction (src/railway/client.ts) — and at a
+ * few older call sites that embed raw output in `ActionError.details`.
  */
 function sanitizeForLog(s) {
-    return s.replace(/::/g, '∶∶').replace(/\r/g, '');
+    return s.replace(/\r/g, '').replace(/::/g, '∶∶').replace(/##\[/g, '##［');
+}
+/** Replacement for a scrubbed secret. */
+const SCRUBBED = '***';
+/**
+ * Replace each non-empty secret in `text` with `***`, in both its raw form and
+ * its JSON-escaped form (`JSON.stringify(s).slice(1, -1)`, as graphql-js
+ * renders string values in validation messages). Longer secrets are replaced
+ * first so overlapping secrets are fully covered.
+ *
+ * Other encodings (URL, base64, truncation) are NOT covered; the runner's
+ * mask is the second layer.
+ */
+function scrubSecrets(text, secrets) {
+    const unique = Array.from(new Set(secrets.filter((s) => s !== ''))).sort((a, b) => b.length - a.length);
+    let out = text;
+    for (const secret of unique) {
+        const escaped = JSON.stringify(secret).slice(1, -1);
+        if (escaped !== secret)
+            out = out.split(escaped).join(SCRUBBED);
+        out = out.split(secret).join(SCRUBBED);
+    }
+    return out;
 }
 
 
@@ -61378,6 +61447,7 @@ exports.DEFAULT_REQUEST_TIMEOUT_MS = exports.PER_ATTEMPT_REQUEST_TIMEOUT_MS = vo
 exports.createRailwayClient = createRailwayClient;
 const core = __importStar(__nccwpck_require__(7484));
 const graphql_request_1 = __nccwpck_require__(8984);
+const log_sanitize_1 = __nccwpck_require__(329);
 const mutations_1 = __nccwpck_require__(7803);
 /**
  * Default per-ATTEMPT timeout in milliseconds. **Important**: this is the cap
@@ -61426,25 +61496,60 @@ function chainSignals(controller, external) {
         external.removeEventListener('abort', onAbort);
     };
 }
+/** Variable keys whose string values are treated as secrets. */
+const SECRET_KEY = /password|token/i;
 /**
- * Strip request material from a graphql-request `ClientError`, in place.
+ * Collect every string found under a `password`/`token`-named key anywhere in
+ * the request variables (e.g. `input.registryCredentials.password`).
+ */
+function collectSecretValues(value, out = []) {
+    if (Array.isArray(value)) {
+        for (const v of value)
+            collectSecretValues(v, out);
+    }
+    else if (typeof value === 'object' && value !== null) {
+        for (const [key, v] of Object.entries(value)) {
+            if (typeof v === 'string' && SECRET_KEY.test(key))
+                out.push(v);
+            else
+                collectSecretValues(v, out);
+        }
+    }
+    return out;
+}
+/**
+ * Strip request material from a graphql-request `ClientError`, and make the
+ * Railway text it carries safe to log, in place.
  *
  * `ClientError`'s constructor bakes `JSON.stringify({ response, request })`
  * into `message` (and, via `captureStackTrace`, into `stack`); `request`
  * carries `variables`, which for `updateImage` include
  * `registryCredentials.password`. Anything downstream that logs
  * `err.message` (the retry log, the gate's debug line, `main.ts`) would print
- * it, and JSON escaping can defeat the runner's secret mask. Redacting here,
- * where the error enters our code, removes our own request material (the
- * variables we sent) from every current and future log site. Text that
- * Railway itself returns in `response.errors` is not scrubbed here.
+ * it, and JSON escaping can defeat the runner's secret mask.
+ *
+ * Railway's own `response.errors[].message` text is also untrusted: a GraphQL
+ * validation message can echo submitted variables (JSON-escaped), and any
+ * text can carry workflow commands. Chokepoint A: each message has CRs
+ * stripped, then `secrets` (the token plus every password/token-named
+ * variable) scrubbed in raw and JSON-escaped form, then passes through
+ * `sanitizeForLog`. This happens
+ * BEFORE `message` and `stack` are rebuilt from it.
  *
  * Mutated in place (not rebuilt) on purpose: a new `ClientError` would re-run
  * its constructor and bake the JSON back in, and the same instance must keep
  * `instanceof ClientError`, `response.status` and `response.errors` working
  * for retry classification and `mapToActionError`.
  */
-function redactClientError(err) {
+function redactClientError(err, secrets) {
+    // Strip CR before scrubbing: sanitizeForLog drops CRs, which would otherwise
+    // reassemble a secret Railway echoed split by `\r` after the scrub missed it.
+    const clean = (text) => (0, log_sanitize_1.sanitizeForLog)((0, log_sanitize_1.scrubSecrets)(text.replace(/\r/g, ''), secrets));
+    for (const gqlError of err.response.errors ?? []) {
+        const mutable = gqlError;
+        if (typeof mutable.message === 'string')
+            mutable.message = clean(mutable.message);
+    }
     // Mirrors ClientError.extractMessage (private in graphql-request's typings).
     err.message =
         err.response.errors?.[0]?.message ?? `GraphQL Error (Code: ${String(err.response.status)})`;
@@ -61498,8 +61603,9 @@ function createRailwayClient(opts) {
                 });
             }
             catch (err) {
-                if (err instanceof graphql_request_1.ClientError)
-                    throw redactClientError(err);
+                if (err instanceof graphql_request_1.ClientError) {
+                    throw redactClientError(err, [opts.token, ...collectSecretValues(variables)]);
+                }
                 throw err;
             }
             finally {
@@ -61909,7 +62015,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.GATE_TOTAL_TIMEOUT_MS = exports.GATE_STALL_TIMEOUT_MS = exports.RAILWAY_HEALTHCHECK_DEFAULT_TIMEOUT_MS = void 0;
+exports.GATE_TOTAL_TIMEOUT_MS = exports.GATE_STALL_TIMEOUT_MS = exports.RAILWAY_HEALTHCHECK_DEFAULT_TIMEOUT_MS = exports.DEPLOYMENT_STATUS_PATTERN = exports.DEPLOYMENT_ID_PATTERN = void 0;
 exports.updateImage = updateImage;
 exports.redeploy = redeploy;
 exports.getDeploymentStatus = getDeploymentStatus;
@@ -61952,8 +62058,9 @@ async function updateImage(client, args) {
  *
  * On success the deploy is accepted server-side. We return both the parsed
  * deployment-id (string) and the raw value Railway sent — `deploymentId`
- * is `null` whenever `rawValue` is anything other than a non-empty string
- * (commonly `true` or `null`; see `extractDeploymentId` for full coverage).
+ * is `null` whenever `rawValue` is anything other than a string matching
+ * `DEPLOYMENT_ID_PATTERN` (commonly `true` or `null`; see
+ * `extractDeploymentId` for full coverage).
  * The caller surfaces an "unavailable" warning in the null case but doesn't
  * fail the deploy, because Railway already accepted it.
  */
@@ -61994,7 +62101,7 @@ function extractRawValue(raw) {
 }
 /**
  * Pull the deployment-id off Railway's response defensively. Returns the
- * deployment-id string if it's a non-empty string, else `null`.
+ * deployment-id string if it matches `DEPLOYMENT_ID_PATTERN`, else `null`.
  *
  * Known wire-shapes Railway has returned:
  *   - V2: `{ serviceInstanceDeployV2: "<id>" }`  — happy path
@@ -62009,8 +62116,22 @@ function extractRawValue(raw) {
  */
 function extractDeploymentId(raw) {
     const value = extractRawValue(raw);
-    return typeof value === 'string' && value !== '' ? value : null;
+    return typeof value === 'string' && exports.DEPLOYMENT_ID_PATTERN.test(value) ? value : null;
 }
+/**
+ * Shape of a Railway deployment id as we accept it: a token, not a UUID
+ * (fixtures and dry-run use `d1`, `dry-run-deploy-id`), leaving room for
+ * Railway id-format changes. The id is logged via `core.info` and written to
+ * the newline-separated `deployment-ids` output, so anything with control
+ * chars, `:`, `#` or `[` is refused here.
+ */
+exports.DEPLOYMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+/**
+ * Shape of a GraphQL enum value as Railway sends it. A non-matching status is
+ * a broken response; the gate fails closed on it. A well-formed but unknown
+ * status still classifies as `progressing`.
+ */
+exports.DEPLOYMENT_STATUS_PATTERN = /^[A-Z][A-Z_]{0,31}$/;
 /** Look up a single deployment by id. */
 async function getDeploymentStatus(client, id, signal, retryPolicy) {
     const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.DEPLOYMENT_STATUS_QUERY, { id }, { operationName: 'deploymentStatus', signal }), retryPolicy);
@@ -62241,8 +62362,10 @@ function parseDeploymentSnapshot(raw, contextKey) {
         throw new errors_1.ActionError(`Railway returned no ${contextKey} field`, `Got: ${(0, log_sanitize_1.sanitizeForLog)(JSON.stringify(raw)).slice(0, 200)}`, 'The deployment status query did not return the expected shape.');
     }
     const o = obj;
-    const id = typeof o.id === 'string' ? o.id : null;
-    const status = typeof o.status === 'string' ? o.status : null;
+    const id = typeof o.id === 'string' && exports.DEPLOYMENT_ID_PATTERN.test(o.id) ? o.id : null;
+    const status = typeof o.status === 'string' && exports.DEPLOYMENT_STATUS_PATTERN.test(o.status)
+        ? o.status
+        : null;
     const createdAt = typeof o.createdAt === 'string' ? o.createdAt : '';
     if (id === null || status === null) {
         throw new errors_1.ActionError(`Railway ${contextKey} response missing required fields`, `Got: ${(0, log_sanitize_1.sanitizeForLog)(JSON.stringify(o)).slice(0, 200)}`, 'The deployment status query did not return the expected shape.');

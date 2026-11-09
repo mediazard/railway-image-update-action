@@ -36,7 +36,10 @@ import { run } from '../src/run';
 import { ActionError } from '../src/errors';
 import { DeployState } from '../src/outputs/state';
 import type { ActionInputs } from '../src/inputs/schema';
+import * as core from '@actions/core';
+
 import { FakeRailwayClient } from './fixtures/fake-client';
+import { expectNoWorkflowCommands } from './fixtures/log-assert';
 
 const ENV_UUID = '550e8400-e29b-41d4-a716-446655440000';
 const A_UUID = '550e8400-e29b-41d4-a716-446655440001';
@@ -351,5 +354,24 @@ describe('run — sequential-iteration invariant (defense in depth)', () => {
       c.request('any', { sid: B_UUID }, { operationName: 'updateImage' }),
     ).rejects.toThrow(/concurrent request/);
     await p1;
+  });
+});
+
+describe('run — a deployment id carrying a command (parallel path)', () => {
+  it('logs no command, records no id for that label and warns instead', async () => {
+    const services = new Map<string, string>([['web', A_UUID]]);
+    const c = new FakeRailwayClient();
+    c.setResponse('updateImage', { response: { serviceInstanceUpdate: { id: 'u' } } });
+    c.setResponse('deployService', {
+      response: { serviceInstanceDeployV2: 'abc\n::add-mask::x' },
+    });
+    const inputs = makeInputs({ services });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    await run({ client: c, execFn: makeExecFn(), inputs, state });
+
+    expectNoWorkflowCommands(vi.mocked(core.info).mock.calls.flat());
+    expect(state.ids().find((e) => e.label === 'web')).toBeUndefined();
+    expect(vi.mocked(core.warning)).toHaveBeenCalled();
   });
 });

@@ -241,3 +241,18 @@ describe('resolveImageDigest', () => {
     expect(result).toBe(`localhost:5000/foo@${FAKE_DIGEST}`);
   });
 });
+
+describe('resolveImageDigest — digest shape check', () => {
+  it.each([
+    ['a digest carrying a command', '{"digest":"sha256:abc\\n::add-mask::x"}'],
+    ['a non-string digest', '{"digest":123}'],
+    ['an upper-case algorithm', `{"digest":"SHA256:${DIGEST_HEX}"}`],
+  ])('rejects %s with ActionError', async (_name, stdout) => {
+    await expect(
+      resolveImageDigest('ghcr.io/org/app:v1', { registry: 'ghcr.io' }, mockExecOk(stdout)),
+    ).rejects.toThrow('Manifest digest resolution returned an invalid digest');
+    await expect(
+      resolveImageDigest('ghcr.io/org/app:v1', { registry: 'ghcr.io' }, mockExecOk(stdout)),
+    ).rejects.toBeInstanceOf(ActionError);
+  });
+});

@@ -35,6 +35,7 @@ import { ActionError, emitToCore } from '../src/errors';
 import { DeployState } from '../src/outputs/state';
 import type { ActionInputs } from '../src/inputs/schema';
 import { FakeRailwayClient } from './fixtures/fake-client';
+import { expectNoWorkflowCommands } from './fixtures/log-assert';
 
 const ENV_UUID = '550e8400-e29b-41d4-a716-446655440000';
 const A_UUID = '550e8400-e29b-41d4-a716-446655440001';
@@ -44,7 +45,11 @@ const DIGEST_IMAGE =
   'ghcr.io/org/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 function makeExecFn() {
-  return vi.fn(async () => ({ stdout: '{"digest":"sha256:f00"}', stderr: '', exitCode: 0 }));
+  return vi.fn(async () => ({
+    stdout: '{"digest":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}',
+    stderr: '',
+    exitCode: 0,
+  }));
 }
 
 function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
@@ -290,5 +295,18 @@ describe('log strings — error annotations', () => {
     // for emitToCore's "Details" wrapping.
     expect(vi.mocked(core.startGroup)).not.toHaveBeenCalled();
     expect(vi.mocked(core.endGroup)).not.toHaveBeenCalled();
+  });
+});
+
+describe('log strings — emitToCore sanitizes details (chokepoint B)', () => {
+  it('details carrying V2 and legacy commands never reach core.info as commands', async () => {
+    await emitToCore(
+      new ActionError('m', 'ok\n::add-mask::P1\nfoo ##[add-mask]P2\rbar::error::P3'),
+    );
+    const infos = vi.mocked(core.info).mock.calls.flat();
+    expect(infos.length).toBeGreaterThan(0);
+    expectNoWorkflowCommands(infos);
+    const raw = vi.mocked(core.summary.addRaw).mock.calls.flat();
+    expectNoWorkflowCommands(raw);
   });
 });

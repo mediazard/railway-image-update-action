@@ -7,6 +7,8 @@ import { setupServer } from 'msw/node';
 import { createRailwayClient } from '../../src/railway/client';
 import { RAILWAY_API_URL, UPDATE_IMAGE_MUTATION } from '../../src/railway/mutations';
 import { withRetry } from '../../src/railway/retry';
+import { mapToActionError } from '../../src/railway/errors';
+import { expectNoWorkflowCommands, hasWorkflowCommand } from '../fixtures/log-assert';
 
 vi.mock('@actions/core', () => ({
   info: vi.fn(),
@@ -224,6 +226,125 @@ describe('createRailwayClient — ClientError redaction', () => {
       expect(line).not.toContain('variables');
       expect(line).toContain('GraphQL Error (Code: 503)');
     }
+  });
+});
+
+describe('createRailwayClient — Railway-echoed secrets and commands (chokepoint A)', () => {
+  const PASSWORD = 'pa"ss\\word-SECRET';
+  const TOKEN = 'tok-SECRET2';
+  const ECHO =
+    'Variable "$input" got invalid value { registryCredentials: { password: "pa\\"ss\\\\word-SECRET" } }\n::add-mask::X';
+  const vars = {
+    sid: 'svc',
+    eid: 'env',
+    input: {
+      source: { image: 'registry/repo:tag' },
+      registryCredentials: { username: 'user', password: PASSWORD },
+    },
+  };
+  const FAST_POLICY = { retries: 2, minTimeoutMs: 1, maxTimeoutMs: 1, factor: 1, randomize: false };
+
+  function makeClient() {
+    return createRailwayClient({ token: TOKEN, tokenType: 'bearer', requestTimeoutMs: 5_000 });
+  }
+
+  it('the fake echoes the JSON-escaped password verbatim (guards the test itself)', () => {
+    expect(ECHO).toContain(JSON.stringify(PASSWORD).slice(1, -1));
+  });
+
+  it('200 errors[] echoing a secret: message, errors[0].message and mapped details are scrubbed', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ data: null, errors: [{ message: ECHO }, { message: `t=${TOKEN}` }] }),
+      ),
+    );
+    const err = (await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, vars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      )) as ClientError;
+
+    expect(err).toBeInstanceOf(ClientError);
+    const mapped = mapToActionError(err, 'updateImage');
+    const texts = [
+      err.message,
+      err.stack ?? '',
+      err.response.errors?.[0]?.message ?? '',
+      err.response.errors?.[1]?.message ?? '',
+      mapped.message,
+      mapped.details ?? '',
+    ];
+    for (const text of texts) {
+      expect(text).not.toContain('SECRET');
+      expect(hasWorkflowCommand(text)).toBe(false);
+    }
+    expect(err.response.errors?.[0]?.message).toContain('***');
+  });
+
+  it('a secret split by CR in the echo cannot be reassembled after CR stripping', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ data: null, errors: [{ message: 'bad token tok-SEC\rRET2 given' }] }),
+      ),
+    );
+    const err = (await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, vars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      )) as ClientError;
+    expect(err).toBeInstanceOf(ClientError);
+    for (const text of [err.message, err.stack ?? '', err.response.errors?.[0]?.message ?? '']) {
+      expect(text).not.toContain(TOKEN);
+      expect(text).not.toContain('SECRET2');
+    }
+  });
+
+  it('a single 503 attempt with a JSON errors[] body carries the dangerous text into the error', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ errors: [{ message: ECHO }] }, { status: 503 }),
+      ),
+    );
+    const err = (await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, vars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      )) as ClientError;
+    expect(err).toBeInstanceOf(ClientError);
+    expect(err.response.status).toBe(503);
+    // The fake really delivered Railway text (not the constant 'GraphQL Error (Code: 503)').
+    expect(err.response.errors?.[0]?.message).toContain('Variable "$input"');
+  });
+
+  it('withRetry over a 503 echoing a secret then 200: retry log has no secret and no command', async () => {
+    vi.mocked(core.info).mockClear();
+    let calls = 0;
+    server.use(
+      http.post(RAILWAY_API_URL, () => {
+        calls += 1;
+        if (calls === 1) return HttpResponse.json({ errors: [{ message: ECHO }] }, { status: 503 });
+        return HttpResponse.json({ data: { serviceInstanceUpdate: null } });
+      }),
+    );
+    const client = makeClient();
+    await expect(
+      withRetry(() => client.request(UPDATE_IMAGE_MUTATION, vars), FAST_POLICY),
+    ).resolves.toEqual({ serviceInstanceUpdate: null });
+
+    expect(calls).toBe(2);
+    const logged = vi.mocked(core.info).mock.calls.flat();
+    expect(logged).toHaveLength(1);
+    for (const line of logged) expect(String(line)).not.toContain('SECRET');
+    expectNoWorkflowCommands(logged);
   });
 });
 

@@ -9,7 +9,10 @@ import {
   updateImage,
   waitForDeployment,
 } from '../../src/railway/operations';
+import * as core from '@actions/core';
+
 import { FakeRailwayClient } from '../fixtures/fake-client';
+import { expectNoWorkflowCommands } from '../fixtures/log-assert';
 
 // Silence retry's `core.info` retry-attempt log.
 vi.mock('@actions/core', () => ({
@@ -951,5 +954,68 @@ describe('waitForDeployment — constant gate behavior', () => {
       }),
     ).rejects.toBe(reason);
     expect(statusCalls).toBe(1);
+  });
+});
+
+describe('Railway values are shape-checked before use (injection hardening)', () => {
+  it('redeploy: a deployment id carrying a command is treated as unavailable; d1 still accepted', async () => {
+    const bad = new FakeRailwayClient();
+    bad.setResponse('deployService', {
+      response: { serviceInstanceDeployV2: 'abc\n##[add-mask]x' },
+    });
+    const r1 = await redeploy(bad, { serviceId: SERVICE_ID, environmentId: ENV_ID });
+    expect(r1.deploymentId).toBeNull();
+
+    const good = new FakeRailwayClient();
+    good.setResponse('deployService', { response: { serviceInstanceDeployV2: 'd1' } });
+    const r2 = await redeploy(good, { serviceId: SERVICE_ID, environmentId: ENV_ID });
+    expect(r2.deploymentId).toBe('d1');
+  });
+
+  it('getDeploymentStatus: a malformed status rejects with "missing required fields"', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('deploymentStatus', {
+      response: { deployment: { id: 'd1', status: 'BUILDING\r::add-mask::x', createdAt: 't' } },
+    });
+    await expect(getDeploymentStatus(client, 'd1')).rejects.toThrow(/missing required fields/);
+    await expect(getDeploymentStatus(client, 'd1')).rejects.toBeInstanceOf(ActionError);
+  });
+
+  it('getDeploymentStatus: a malformed id rejects with "missing required fields"', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('deploymentStatus', {
+      response: { deployment: { id: 'd1\n::x', status: 'SUCCESS', createdAt: 't' } },
+    });
+    await expect(getDeploymentStatus(client, 'd1')).rejects.toThrow(/missing required fields/);
+  });
+
+  it('waitForDeployment (default onPoll): a malformed status fails closed and logs no command', async () => {
+    vi.mocked(core.info).mockClear();
+    const client = new FakeRailwayClient();
+    client.setResponse('deploymentStatus', {
+      response: { deployment: { id: 'd1', status: 'BUILDING\r::add-mask::x', createdAt: 't' } },
+    });
+    await expect(
+      waitForDeployment(client, 'd1', {
+        timeoutMs: 1000,
+        pollIntervalMs: 1,
+        sleep: () => Promise.resolve(),
+      }),
+    ).rejects.toThrow(/missing required fields/);
+    expectNoWorkflowCommands(vi.mocked(core.info).mock.calls.flat());
+  });
+
+  it('getLatestDeploymentForService: a malformed id returns null', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('serviceInstanceLatestDeployment', {
+      response: {
+        serviceInstance: { latestDeployment: { id: 'x\ry', status: 'SUCCESS', createdAt: 't' } },
+      },
+    });
+    const snap = await getLatestDeploymentForService(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+    });
+    expect(snap).toBeNull();
   });
 });

@@ -28,6 +28,28 @@ export const IMAGE_REF_PATTERN = /^[a-z0-9][a-z0-9._/-]*(:[a-zA-Z0-9._-]+|@sha25
 const NO_WORKFLOW_COMMAND_CHARS = /^[^\r\n%]*$/;
 
 /**
+ * Characters a service label may not contain (a denylist, so spaces, `/` and
+ * unicode keep working). Labels are printed in many `core.info` progress
+ * lines and joined into the comma-separated outputs:
+ *   - any control character (`\p{Cc}`): an embedded `\r` is a runner line break
+ *   - U+2028 / U+2029: line separators, banned for hygiene
+ *   - `[` / `]`: block the legacy `##[` command form; labels print inside `[...]`
+ *   - `,`: would corrupt `deployed-services` / `failed-services`
+ * `:` can never appear (the line is split on the first one).
+ */
+const LABEL_FORBIDDEN_CHARS = /[\p{Cc}\u2028\u2029,[\]]/u;
+
+/** `first-service` follows the label rule, plus `:` and `%`. */
+const FIRST_SERVICE_FORBIDDEN_CHARS = /[\p{Cc}\u2028\u2029,[\]:%]/u;
+
+function isSafeFirstService(value: string): boolean {
+  return !FIRST_SERVICE_FORBIDDEN_CHARS.test(value);
+}
+
+/** `registry-username`: no CR/LF/`%`, and no `[`/`]` (blocks `##[` in the dry-run body). */
+const REGISTRY_USERNAME_ALLOWED = /^[^\r\n%[\]]*$/;
+
+/**
  * Parse the multiline `services` input into a `Map<label, serviceId>`.
  *
  * - Split on `\n`; strip trailing `\r` (CRLF tolerance).
@@ -52,6 +74,14 @@ export function parseServicesString(input: string): Map<string, string> {
         'services line has an empty label',
         `Offending line: '${rawLine}'`,
         "Each services line must be 'label:service_id' with a non-empty label.",
+      );
+    }
+
+    if (LABEL_FORBIDDEN_CHARS.test(label)) {
+      throw new ActionError(
+        'services: label contains forbidden characters',
+        `Offending line: '${rawLine}'`,
+        'Labels may not contain control characters, line separators, commas or square brackets.',
       );
     }
 
@@ -93,13 +123,16 @@ function refineCredentialPair(
 
 /**
  * If `firstService` is non-empty, it must be a label present in the parsed
- * services Map. The error message intentionally includes the offending name.
+ * services Map. The error message includes the offending name, which is safe
+ * because values failing the character rule return early and are never echoed.
  */
 function refineFirstServiceExists(
   val: { firstService: string; services: Map<string, string> },
   ctx: z.RefinementCtx,
 ): void {
   if (val.firstService === '') return;
+  // A value failing the character rule already has its own issue; never echo it.
+  if (!isSafeFirstService(val.firstService)) return;
   if (!val.services.has(val.firstService)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -130,11 +163,11 @@ export const ActionInputsSchema = z
     services: z.string().min(1, 'services is required').transform(parseServicesString),
     firstService: z
       .string()
-      .regex(NO_WORKFLOW_COMMAND_CHARS, 'first-service contains forbidden characters')
+      .refine(isSafeFirstService, 'first-service contains forbidden characters')
       .default(''),
     registryUsername: z
       .string()
-      .regex(NO_WORKFLOW_COMMAND_CHARS, 'registry-username contains forbidden characters')
+      .regex(REGISTRY_USERNAME_ALLOWED, 'registry-username contains forbidden characters')
       .default(''),
     registryPassword: z.string().default(''),
     resolveToDigest: z.boolean().default(true),
