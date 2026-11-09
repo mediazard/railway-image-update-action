@@ -32,7 +32,10 @@ vi.mock('@actions/core', () => ({
   },
 }));
 
+import { ClientError } from 'graphql-request';
+
 import { run } from '../src/run';
+import { FALLBACK_LOOKUP_ATTEMPTS } from '../src/railway/operations';
 import { ActionError } from '../src/errors';
 import { DeployState } from '../src/outputs/state';
 import type { ActionInputs } from '../src/inputs/schema';
@@ -112,7 +115,9 @@ function callSequence(client: FakeRailwayClient): Array<[string, string]> {
         ? 'deploy'
         : c.document.includes('deployment(id:')
           ? 'status'
-          : 'unknown';
+          : c.document.includes('serviceInstance(')
+            ? 'latest'
+            : 'unknown';
     return [kind, sid];
   });
 }
@@ -160,12 +165,15 @@ describe('run — ordered path (first-service set)', () => {
 
     await run({ client, execFn: makeExecFn(), inputs, state });
 
-    // Ordered flow: update(web), deploy(web), poll status until SUCCESS,
-    // then update(worker), update(clock), deploy(worker), deploy(clock).
-    // The status query has id=deploy-id-x (no sid), so its tuple is
-    // ['status', 'deploy-id-x'] from callSequence's vars.id fallback.
+    // Ordered flow: update(web), read the baseline latest deployment of web,
+    // deploy(web), poll status until SUCCESS, then update(worker),
+    // update(clock), deploy(worker), deploy(clock). The status query has
+    // id=deploy-id-x (no sid), so its tuple is ['status', 'deploy-id-x'] from
+    // callSequence's vars.id fallback. The baseline read has no canned
+    // response here; it is swallowed and never consulted on this path.
     expect(callSequence(client)).toEqual([
       ['update', A_UUID],
+      ['latest', A_UUID],
       ['deploy', A_UUID],
       ['status', 'deploy-id-x'],
       ['update', B_UUID],
@@ -373,5 +381,127 @@ describe('run — a deployment id carrying a command (parallel path)', () => {
     expectNoWorkflowCommands(vi.mocked(core.info).mock.calls.flat());
     expect(state.ids().find((e) => e.label === 'web')).toBeUndefined();
     expect(vi.mocked(core.warning)).toHaveBeenCalled();
+  });
+});
+
+function makeClientError(status: number): ClientError {
+  return new ClientError(
+    { status, headers: new Headers(), body: '', errors: [] } as never,
+    { query: '' } as never,
+  );
+}
+
+const WEB_WORKER = (): Map<string, string> =>
+  new Map<string, string>([
+    ['web', A_UUID],
+    ['worker', B_UUID],
+  ]);
+
+/**
+ * Ordered-path client whose deploy returns no id (`true`) and whose
+ * latest-deployment lookups answer from `latest` in call order (the last entry
+ * repeats). Each entry is either a deployment id or an error to throw.
+ */
+function noIdClient(latest: Array<string | Error>, statusId: string): FakeRailwayClient {
+  const c = new FakeRailwayClient();
+  c.setResponse('updateImage', { response: { serviceInstanceUpdate: { id: 'u' } } });
+  c.setResponse('deployService', { response: { serviceInstanceDeployV2: true } });
+  c.setResponse('deploymentStatus', {
+    response: { deployment: { id: statusId, status: 'SUCCESS', createdAt: 't' } },
+  });
+  c.setResponse('buildLogs', { response: { buildLogs: [] } });
+  let n = 0;
+  const orig = c.request.bind(c);
+  c.request = async function <TVars, TResult>(
+    doc: string,
+    vars: TVars,
+    opts?: { signal?: AbortSignal; operationName?: string },
+  ): Promise<TResult> {
+    if (opts?.operationName === 'serviceInstanceLatestDeployment') {
+      const next = latest[Math.min(n, latest.length - 1)]!;
+      n += 1;
+      c.setResponse(
+        'serviceInstanceLatestDeployment',
+        typeof next === 'string'
+          ? {
+              response: {
+                serviceInstance: {
+                  latestDeployment: { id: next, status: 'SUCCESS', createdAt: 't' },
+                },
+              },
+            }
+          : { error: next },
+      );
+    }
+    return orig<TVars, TResult>(doc, vars, opts);
+  };
+  return c;
+}
+
+describe('run — ordered path, deploy returned no id (fallback must find OUR deployment)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('refuses to adopt the pre-existing deployment: fails "Cannot confirm" and deploys nothing else', async () => {
+    vi.useFakeTimers();
+    const client = noIdClient(['old'], 'old');
+    const inputs = makeInputs({ services: WEB_WORKER(), firstService: 'web' });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    const settled = run({ client, execFn: makeExecFn(), inputs, state }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const err = await settled;
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).message).toContain('Cannot confirm [web]');
+    expect((err as ActionError).details).toContain(
+      `No deployment newer than old appeared after ${FALLBACK_LOOKUP_ATTEMPTS} lookups`,
+    );
+    expect(state.deployedLabels()).not.toContain('web');
+    expect(callSequence(client)).not.toContainEqual(['update', B_UUID]);
+  });
+
+  it('adopts the deployment newer than the baseline and gates on it', async () => {
+    const client = noIdClient(['old', 'new'], 'new');
+    const inputs = makeInputs({ services: WEB_WORKER(), firstService: 'web' });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    await run({ client, execFn: makeExecFn(), inputs, state });
+
+    const polled = callSequence(client).filter(([kind]) => kind === 'status');
+    expect(polled.length).toBeGreaterThan(0);
+    expect(polled.every(([, id]) => id === 'new')).toBe(true);
+    expect(state.deployedLabels()).toEqual(['web', 'worker']);
+    // The recovered id reaches the deployment-ids output.
+    expect(state.ids()).toContainEqual({ label: 'web', id: 'new' });
+  });
+
+  it('fails "Cannot confirm" when no baseline could be read, even if a deployment shows later', async () => {
+    const client = noIdClient([makeClientError(403), 'new'], 'new');
+    const inputs = makeInputs({ services: WEB_WORKER(), firstService: 'web' });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    const err = await run({ client, execFn: makeExecFn(), inputs, state }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).message).toContain('Cannot confirm [web]');
+    expect(state.deployedLabels()).not.toContain('worker');
+  });
+
+  // PIN (passes before this story too): the baseline read must never fail a
+  // normal run where the deploy returned an id.
+  it('pin: a failing baseline read does not fail a run whose deploy returned an id', async () => {
+    vi.useFakeTimers();
+    const client = happyClient();
+    client.setResponse('serviceInstanceLatestDeployment', { error: makeClientError(500) });
+    const inputs = makeInputs({ services: WEB_WORKER(), firstService: 'web' });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    const settled = run({ client, execFn: makeExecFn(), inputs, state });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settled;
+
+    expect(state.deployedLabels()).toEqual(['web', 'worker']);
   });
 });

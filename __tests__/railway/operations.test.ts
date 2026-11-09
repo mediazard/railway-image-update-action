@@ -3,6 +3,10 @@ import { ClientError } from 'graphql-request';
 
 import { ActionError } from '../../src/errors';
 import {
+  FALLBACK_LOOKUP_ATTEMPTS,
+  REDEPLOY_OUTCOME_UNKNOWN_HINT,
+  findDeploymentStartedAfter,
+  getBaselineDeploymentId,
   getDeploymentStatus,
   getLatestDeploymentForService,
   redeploy,
@@ -1017,5 +1021,246 @@ describe('Railway values are shape-checked before use (injection hardening)', ()
       environmentId: ENV_ID,
     });
     expect(snap).toBeNull();
+  });
+});
+
+describe('redeploy is sent at most once (non-idempotent)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not resend on HTTP 503 and says the deploy may have started', async () => {
+    vi.useFakeTimers();
+    const client = new FakeRailwayClient();
+    client.setResponse('deployService', { error: makeClientError(503) });
+
+    const settled = redeploy(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+      serviceLabel: 'web',
+    }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const err = await settled;
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).hint).toContain('may have reached Railway');
+    expect(client.calls).toHaveLength(1);
+  });
+
+  // PIN (passes before this story too): 429 is rejected unprocessed, so it's resent.
+  it('pin: resends after HTTP 429 and resolves with the id', async () => {
+    vi.useFakeTimers();
+    const client = new FakeRailwayClient();
+    let deployCalls = 0;
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      deployCalls += 1;
+      client.setResponse(
+        'deployService',
+        deployCalls === 1
+          ? { error: makeClientError(429) }
+          : { response: { serviceInstanceDeployV2: 'd1' } },
+      );
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+
+    const settled = redeploy(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+      serviceLabel: 'web',
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await expect(settled).resolves.toMatchObject({ deploymentId: 'd1' });
+    expect(client.calls).toHaveLength(2);
+  });
+});
+
+describe('waitForDeployment — only judges the deployment it asked for', () => {
+  it('fails closed when Railway returns a different deployment id', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('deploymentStatus', {
+      response: { deployment: { id: 'd-other', status: 'SUCCESS', createdAt: 't' } },
+    });
+    client.setResponse('buildLogs', { response: { buildLogs: [] } });
+
+    const err = await waitForDeployment(client, 'd1', {
+      timeoutMs: 1000,
+      pollIntervalMs: 1,
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).message).toContain('different deployment');
+    expect((err as ActionError).details).toContain('d-other');
+    expect(client.calls.some((c) => c.operationName === 'buildLogs')).toBe(false);
+  });
+});
+
+/** Client whose latest-deployment lookups return the given ids in order (last one repeats). */
+function latestSequenceClient(ids: string[]): { client: FakeRailwayClient; lookups: () => number } {
+  const client = new FakeRailwayClient();
+  let n = 0;
+  client.request = async function <_TVars, TResult>(): Promise<TResult> {
+    const id = ids[Math.min(n, ids.length - 1)];
+    n += 1;
+    return {
+      serviceInstance: { latestDeployment: { id, status: 'BUILDING', createdAt: 't' } },
+    } as TResult;
+  };
+  return { client, lookups: () => n };
+}
+
+describe('findDeploymentStartedAfter — bounded search for the new deployment', () => {
+  it('returns the first latest deployment whose id differs from the baseline', async () => {
+    const { client, lookups } = latestSequenceClient(['old', 'old', 'new']);
+    const sleep = vi.fn(() => Promise.resolve());
+
+    const found = await findDeploymentStartedAfter(
+      client,
+      { serviceId: SERVICE_ID, environmentId: ENV_ID },
+      'old',
+      { sleep },
+    );
+
+    expect(found?.id).toBe('new');
+    expect(lookups()).toBe(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns null after FALLBACK_LOOKUP_ATTEMPTS lookups when only the baseline shows', async () => {
+    const { client, lookups } = latestSequenceClient(['old']);
+    const sleep = vi.fn(() => Promise.resolve());
+
+    const found = await findDeploymentStartedAfter(
+      client,
+      { serviceId: SERVICE_ID, environmentId: ENV_ID },
+      'old',
+      { sleep },
+    );
+
+    expect(found).toBeNull();
+    expect(lookups()).toBe(FALLBACK_LOOKUP_ATTEMPTS);
+  });
+});
+
+describe('getBaselineDeploymentId', () => {
+  it('returns the latest deployment id', async () => {
+    const { client } = latestSequenceClient(['base']);
+    await expect(
+      getBaselineDeploymentId(client, { serviceId: SERVICE_ID, environmentId: ENV_ID }),
+    ).resolves.toBe('base');
+  });
+
+  it('returns null (never throws) when the lookup fails', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('serviceInstanceLatestDeployment', { error: makeClientError(403) });
+    await expect(
+      getBaselineDeploymentId(client, { serviceId: SERVICE_ID, environmentId: ENV_ID }),
+    ).resolves.toBeNull();
+  });
+
+  it('re-throws the abort reason when the signal is aborted', async () => {
+    const client = new FakeRailwayClient();
+    const controller = new AbortController();
+    const reason = new Error('cancelled');
+    client.request = async function <_TVars, TResult>(): Promise<TResult> {
+      controller.abort(reason);
+      throw reason;
+    };
+    await expect(
+      getBaselineDeploymentId(
+        client,
+        { serviceId: SERVICE_ID, environmentId: ENV_ID },
+        controller.signal,
+      ),
+    ).rejects.toBe(reason);
+  });
+});
+
+describe('redeploy — outcome-unknown hint on every failure that is not a definitive rejection', () => {
+  async function redeployError(error: unknown): Promise<ActionError> {
+    const client = new FakeRailwayClient();
+    client.setResponse('deployService', { error });
+    const err = await redeploy(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+      serviceLabel: 'web',
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ActionError);
+    expect(client.calls).toHaveLength(1);
+    return err as ActionError;
+  }
+
+  it('our own 30s request timeout (plain Error, no code) → outcome-unknown hint', async () => {
+    const err = await redeployError(new Error('Request timed out after 30000ms'));
+    expect(err.hint).toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  it('an unlisted network code (EPIPE on cause.code) → outcome-unknown hint', async () => {
+    const err = await redeployError(
+      Object.assign(new Error('fetch failed'), { cause: { code: 'EPIPE' } }),
+    );
+    expect(err.hint).toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  // PIN (passes before this change too).
+  it('pin: ECONNRESET on cause.code → outcome-unknown hint', async () => {
+    const err = await redeployError(
+      Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNRESET' } }),
+    );
+    expect(err.hint).toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  // PIN: a definitive server rejection keeps the mapped hint.
+  it('pin: HTTP 403 keeps the generic mapped hint', async () => {
+    const err = await redeployError(makeClientError(403));
+    expect(err.message).toBe('Railway API rejected the request (forbidden)');
+    expect(err.hint).not.toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  // PIN: GraphQL errors[] means Railway processed and refused the mutation.
+  it('pin: GraphQL errors[] keep the generic mapped hint', async () => {
+    const gqlError = new ClientError(
+      {
+        status: 200,
+        headers: new Headers(),
+        body: '',
+        errors: [{ message: 'Service not found' }],
+      } as any,
+      { query: '' } as any,
+    );
+    const err = await redeployError(gqlError);
+    expect(err.message).toContain('Railway GraphQL error');
+    expect(err.hint).not.toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+});
+
+describe('findDeploymentStartedAfter — stays near its bound on a flaky lookup', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('retries each lookup at most once (2 attempts), then propagates', async () => {
+    vi.useFakeTimers();
+    const client = new FakeRailwayClient();
+    client.setResponse('serviceInstanceLatestDeployment', { error: makeClientError(503) });
+
+    const settled = findDeploymentStartedAfter(
+      client,
+      { serviceId: SERVICE_ID, environmentId: ENV_ID },
+      'old',
+      { sleep: () => Promise.resolve() },
+    ).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const err = await settled;
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect(client.calls).toHaveLength(2);
   });
 });

@@ -20,7 +20,7 @@ import {
   type ServiceInstanceUpdateInput,
   type UpdateImageVariables,
 } from './mutations';
-import { withRetry, isRetryableError, type RetryPolicy } from './retry';
+import { withRetry, isDefinitiveRejection, isRetryableError, type RetryPolicy } from './retry';
 
 /**
  * Why no zod schemas here?
@@ -108,6 +108,14 @@ export interface RedeployResult {
 }
 
 /**
+ * Hint for a redeploy whose outcome is unknown: the request failed in any way
+ * other than a definitive rejection (5xx, connection reset, timeout, unknown
+ * error), which can happen after Railway already created the deployment.
+ */
+export const REDEPLOY_OUTCOME_UNKNOWN_HINT =
+  "The redeploy request may have reached Railway before the request failed. Check the service's deployments in the Railway dashboard before re-running; it was not retried, to avoid a duplicate deployment.";
+
+/**
  * Trigger a redeploy on a Railway service instance.
  *
  * On success the deploy is accepted server-side. We return both the parsed
@@ -117,6 +125,10 @@ export interface RedeployResult {
  * `extractDeploymentId` for full coverage).
  * The caller surfaces an "unavailable" warning in the null case but doesn't
  * fail the deploy, because Railway already accepted it.
+ *
+ * Sent at most once unless the failure proves Railway never got it (429,
+ * connect/DNS failure): each accepted call creates a deployment, and a resend
+ * after an ambiguous failure could start a second one.
  */
 export async function redeploy(client: RailwayClient, args: RedeployArgs): Promise<RedeployResult> {
   const variables: DeployVariables = {
@@ -125,10 +137,12 @@ export async function redeploy(client: RailwayClient, args: RedeployArgs): Promi
   };
 
   try {
-    const raw = await withRetry<unknown>(() =>
-      client.request<DeployVariables, unknown>(DEPLOY_MUTATION, variables, {
-        operationName: 'deployService',
-      }),
+    const raw = await withRetry<unknown>(
+      () =>
+        client.request<DeployVariables, unknown>(DEPLOY_MUTATION, variables, {
+          operationName: 'deployService',
+        }),
+      { idempotent: false },
     );
     return {
       deploymentId: extractDeploymentId(raw),
@@ -136,6 +150,11 @@ export async function redeploy(client: RailwayClient, args: RedeployArgs): Promi
     };
   } catch (err) {
     const actionErr: ActionError = mapToActionError(err, `deployService:${args.serviceLabel}`);
+    // Classify the ORIGINAL error (p-retry rejects with it), not the mapped one.
+    // Only a definitive server rejection rules out a started deployment.
+    if (!isDefinitiveRejection(err)) {
+      throw new ActionError(actionErr.message, actionErr.details, REDEPLOY_OUTCOME_UNKNOWN_HINT);
+    }
     throw actionErr;
   }
 }
@@ -222,24 +241,28 @@ export async function getDeploymentStatus(
 }
 
 /**
- * Fallback for the rare case `serviceInstanceDeployV2` doesn't surface an id:
- * look up the latest deployment for a service in this environment. Picks up
- * the deployment we just triggered (Railway's deployment list is ordered by
- * `createdAt` desc).
+ * Look up the latest deployment for a service in this environment. Used for the
+ * pre-redeploy baseline and by the no-id fallback, which only adopts a result
+ * whose id differs from that baseline: Railway doesn't document whether
+ * `latestDeployment` is the newest created or the latest active one, so the
+ * result alone can't be trusted to be the deployment we just triggered.
  */
 export async function getLatestDeploymentForService(
   client: RailwayClient,
   args: { serviceId: string; environmentId: string },
   signal?: AbortSignal,
+  retryPolicy?: Partial<RetryPolicy>,
 ): Promise<DeploymentSnapshot | null> {
   let raw: unknown;
   try {
-    raw = await withRetry<unknown>(() =>
-      client.request<ServiceInstanceLatestDeploymentVariables, unknown>(
-        SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY,
-        { sid: args.serviceId, eid: args.environmentId },
-        { operationName: 'serviceInstanceLatestDeployment', signal },
-      ),
+    raw = await withRetry<unknown>(
+      () =>
+        client.request<ServiceInstanceLatestDeploymentVariables, unknown>(
+          SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY,
+          { sid: args.serviceId, eid: args.environmentId },
+          { operationName: 'serviceInstanceLatestDeployment', signal },
+        ),
+      retryPolicy,
     );
   } catch (err) {
     if (signal?.aborted) throw err;
@@ -255,6 +278,75 @@ export async function getLatestDeploymentForService(
   } catch {
     return null;
   }
+}
+
+/**
+ * Read the service's latest deployment id BEFORE redeploying, so the no-id
+ * fallback can tell the deployment this run started apart from an older one.
+ *
+ * Never fails the run: on any non-abort error it returns `null`. `null` means
+ * "no usable baseline" (lookup failed, unparseable shape, or no deployment
+ * yet), and the fallback then fails closed. One retry, not two, so a flaky
+ * read endpoint can't add much to every ordered run.
+ */
+export async function getBaselineDeploymentId(
+  client: RailwayClient,
+  args: { serviceId: string; environmentId: string },
+  signal?: AbortSignal,
+): Promise<string | null> {
+  try {
+    const latest = await getLatestDeploymentForService(client, args, signal, { retries: 1 });
+    return latest?.id ?? null;
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    core.debug(
+      `Baseline deployment lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+}
+
+/** Reads of the latest deployment the no-id fallback makes before giving up. */
+export const FALLBACK_LOOKUP_ATTEMPTS = 6;
+
+/**
+ * Gap between those reads (~10s of waiting in total). Railway's list can lag a
+ * just-created deployment; the ~10s window is an estimate, not a measured or
+ * documented Railway figure.
+ */
+export const FALLBACK_LOOKUP_INTERVAL_MS = 2_000;
+
+export interface FindDeploymentOptions {
+  /** Injectable sleep for tests. Defaults to real `setTimeout`. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  signal?: AbortSignal;
+}
+
+/**
+ * Bounded search for the deployment a redeploy started when Railway returned
+ * no id: the first latest deployment whose id differs from `baselineId`.
+ * Returns `null` if none appears within `FALLBACK_LOOKUP_ATTEMPTS` reads.
+ * Each read retries at most once, so a flaky endpoint keeps the search near
+ * its bound. Lookup errors propagate (already mapped to `ActionError`).
+ *
+ * An id different from the baseline proves a newer deployment exists, not that
+ * this run created it (a concurrent run could have started one).
+ */
+export async function findDeploymentStartedAfter(
+  client: RailwayClient,
+  args: { serviceId: string; environmentId: string },
+  baselineId: string,
+  opts: FindDeploymentOptions = {},
+): Promise<DeploymentSnapshot | null> {
+  const sleep = opts.sleep ?? defaultSleep;
+  const { signal } = opts;
+  for (let attempt = 1; attempt <= FALLBACK_LOOKUP_ATTEMPTS; attempt += 1) {
+    signal?.throwIfAborted();
+    const latest = await getLatestDeploymentForService(client, args, signal, { retries: 1 });
+    if (latest !== null && latest.id !== baselineId) return latest;
+    if (attempt < FALLBACK_LOOKUP_ATTEMPTS) await sleep(FALLBACK_LOOKUP_INTERVAL_MS, signal);
+  }
+  return null;
 }
 
 /**
@@ -466,6 +558,15 @@ export async function waitForDeployment(
       core.debug(`  poll error: ${err instanceof Error ? err.message : String(err)}`);
       await sleepClamped(sleep, pollIntervalMs, elapsed, timeoutMs, signal);
       continue;
+    }
+    // Only ever judge the deployment we asked for. Both ids passed
+    // DEPLOYMENT_ID_PATTERN, so they are safe to log.
+    if (snapshot.id !== deploymentId) {
+      throw new ActionError(
+        'Railway returned a different deployment than requested',
+        `Requested: ${deploymentId}\nGot: ${snapshot.id}`,
+        'Refusing to judge the deploy on another deployment. Check the Railway dashboard.',
+      );
     }
     onPoll(snapshot);
 
