@@ -170,8 +170,24 @@ function extractRawValue(raw: unknown): unknown {
  */
 function extractDeploymentId(raw: unknown): string | null {
   const value = extractRawValue(raw);
-  return typeof value === 'string' && value !== '' ? value : null;
+  return typeof value === 'string' && DEPLOYMENT_ID_PATTERN.test(value) ? value : null;
 }
+
+/**
+ * Shape of a Railway deployment id as we accept it: a token, not a UUID
+ * (fixtures and dry-run use `d1`, `dry-run-deploy-id`), leaving room for
+ * Railway id-format changes. The id is logged via `core.info` and written to
+ * the newline-separated `deployment-ids` output, so anything with control
+ * chars, `:`, `#` or `[` is refused here.
+ */
+export const DEPLOYMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+/**
+ * Shape of a GraphQL enum value as Railway sends it. A non-matching status is
+ * a broken response; the gate fails closed on it. A well-formed but unknown
+ * status still classifies as `progressing`.
+ */
+export const DEPLOYMENT_STATUS_PATTERN = /^[A-Z][A-Z_]{0,31}$/;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Deployment observability — used by run.ts deployOrdered's first-service
@@ -524,8 +540,11 @@ function parseDeploymentSnapshot(raw: unknown, contextKey: string): DeploymentSn
     );
   }
   const o = obj as Record<string, unknown>;
-  const id = typeof o.id === 'string' ? o.id : null;
-  const status = typeof o.status === 'string' ? (o.status as DeploymentStatus) : null;
+  const id = typeof o.id === 'string' && DEPLOYMENT_ID_PATTERN.test(o.id) ? o.id : null;
+  const status =
+    typeof o.status === 'string' && DEPLOYMENT_STATUS_PATTERN.test(o.status)
+      ? (o.status as DeploymentStatus)
+      : null;
   const createdAt = typeof o.createdAt === 'string' ? o.createdAt : '';
   if (id === null || status === null) {
     throw new ActionError(

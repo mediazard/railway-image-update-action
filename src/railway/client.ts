@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import { ClientError, GraphQLClient } from 'graphql-request';
 
+import { sanitizeForLog, scrubSecrets } from '../log-sanitize';
 import type { TokenType } from '../types';
 
 import { RAILWAY_API_URL } from './mutations';
@@ -79,25 +80,54 @@ function chainSignals(controller: AbortController, external: AbortSignal | undef
   };
 }
 
+/** Variable keys whose string values are treated as secrets. */
+const SECRET_KEY = /password|token/i;
+
 /**
- * Strip request material from a graphql-request `ClientError`, in place.
+ * Collect every string found under a `password`/`token`-named key anywhere in
+ * the request variables (e.g. `input.registryCredentials.password`).
+ */
+function collectSecretValues(value: unknown, out: string[] = []): string[] {
+  if (Array.isArray(value)) {
+    for (const v of value) collectSecretValues(v, out);
+  } else if (typeof value === 'object' && value !== null) {
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof v === 'string' && SECRET_KEY.test(key)) out.push(v);
+      else collectSecretValues(v, out);
+    }
+  }
+  return out;
+}
+
+/**
+ * Strip request material from a graphql-request `ClientError`, and make the
+ * Railway text it carries safe to log, in place.
  *
  * `ClientError`'s constructor bakes `JSON.stringify({ response, request })`
  * into `message` (and, via `captureStackTrace`, into `stack`); `request`
  * carries `variables`, which for `updateImage` include
  * `registryCredentials.password`. Anything downstream that logs
  * `err.message` (the retry log, the gate's debug line, `main.ts`) would print
- * it, and JSON escaping can defeat the runner's secret mask. Redacting here,
- * where the error enters our code, removes our own request material (the
- * variables we sent) from every current and future log site. Text that
- * Railway itself returns in `response.errors` is not scrubbed here.
+ * it, and JSON escaping can defeat the runner's secret mask.
+ *
+ * Railway's own `response.errors[].message` text is also untrusted: a GraphQL
+ * validation message can echo submitted variables (JSON-escaped), and any
+ * text can carry workflow commands. Chokepoint A: each message has `secrets`
+ * (the token plus every password/token-named variable) scrubbed in raw and
+ * JSON-escaped form, then passes through `sanitizeForLog`. This happens
+ * BEFORE `message` and `stack` are rebuilt from it.
  *
  * Mutated in place (not rebuilt) on purpose: a new `ClientError` would re-run
  * its constructor and bake the JSON back in, and the same instance must keep
  * `instanceof ClientError`, `response.status` and `response.errors` working
  * for retry classification and `mapToActionError`.
  */
-function redactClientError(err: ClientError): ClientError {
+function redactClientError(err: ClientError, secrets: readonly string[]): ClientError {
+  const clean = (text: string): string => sanitizeForLog(scrubSecrets(text, secrets));
+  for (const gqlError of err.response.errors ?? []) {
+    const mutable = gqlError as { message: unknown };
+    if (typeof mutable.message === 'string') mutable.message = clean(mutable.message);
+  }
   // Mirrors ClientError.extractMessage (private in graphql-request's typings).
   err.message =
     err.response.errors?.[0]?.message ?? `GraphQL Error (Code: ${String(err.response.status)})`;
@@ -159,7 +189,9 @@ export function createRailwayClient(opts: CreateRailwayClientOptions): RailwayCl
           signal: controller.signal,
         });
       } catch (err) {
-        if (err instanceof ClientError) throw redactClientError(err);
+        if (err instanceof ClientError) {
+          throw redactClientError(err, [opts.token, ...collectSecretValues(variables)]);
+        }
         throw err;
       } finally {
         clearTimeout(timer);

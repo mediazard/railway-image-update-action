@@ -1,5 +1,7 @@
 import * as core from '@actions/core';
 
+import { sanitizeForLog } from './log-sanitize';
+
 /**
  * Action-level error carrying a human-friendly message, optional detail block,
  * and a hint. Mirrors the bash `die "msg" "details" "hint"` triplet.
@@ -27,24 +29,32 @@ export class ActionError extends Error {
  * this — `setFailed` re-emits `::error::` and would double-log.
  */
 export async function emitToCore(err: ActionError): Promise<void> {
-  core.error(err.message);
+  // Chokepoint B: everything an ActionError carries passes through
+  // sanitizeForLog once. `core.info` writes raw stdout, so details are the
+  // channel that matters; message/hint go through escaped commands but are
+  // sanitized too so the summary matches.
+  const message = sanitizeForLog(err.message);
+  const details = err.details ? sanitizeForLog(err.details) : undefined;
+  const hint = err.hint ? sanitizeForLog(err.hint) : undefined;
 
-  if (err.details) {
+  core.error(message);
+
+  if (details) {
     core.startGroup('Details');
-    core.info(err.details);
+    core.info(details);
     core.endGroup();
   }
 
-  if (err.hint) {
-    core.notice(err.hint, { title: 'Hint' });
+  if (hint) {
+    core.notice(hint, { title: 'Hint' });
   }
 
-  core.summary.addHeading(err.message, 3);
-  if (err.details) {
-    core.summary.addRaw('\n```\n' + err.details + '\n```\n');
+  core.summary.addHeading(message, 3);
+  if (details) {
+    core.summary.addRaw('\n```\n' + details + '\n```\n');
   }
-  if (err.hint) {
-    core.summary.addQuote('💡 ' + err.hint);
+  if (hint) {
+    core.summary.addQuote('💡 ' + hint);
   }
 
   await core.summary.write();

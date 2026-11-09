@@ -29,6 +29,9 @@ export interface DigestResolveOptions {
 }
 
 /** Shape of the JSON returned by `docker buildx imagetools inspect --format '{{json .Manifest}}'`. */
+/** A content-addressed image digest, as written into the pinned ref. */
+const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
 interface ManifestJson {
   digest?: string;
 }
@@ -144,6 +147,14 @@ export async function resolveImageDigest(
       'Manifest digest resolution returned empty result',
       `Image: ${ref}\nReturned digest: (empty)`,
       'Ensure the image tag exists and the registry is reachable',
+    );
+  }
+
+  if (typeof (digest as unknown) !== 'string' || !SHA256_DIGEST_PATTERN.test(digest)) {
+    throw new ActionError(
+      'Manifest digest resolution returned an invalid digest',
+      `Image: ${ref}\nReturned digest: ${sanitizeForLog(String(digest)).slice(0, 200)}`,
+      'Expected sha256:<64 lowercase hex>. Check the registry and the docker buildx version.',
     );
   }
 

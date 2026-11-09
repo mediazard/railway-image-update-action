@@ -3,7 +3,24 @@ import {
   parseServicesString,
   zodErrorToActionError,
 } from '../../src/inputs/schema';
-import { ActionError } from '../../src/errors';
+import * as core from '@actions/core';
+
+import { ActionError, emitToCore } from '../../src/errors';
+import { expectNoWorkflowCommands } from '../fixtures/log-assert';
+
+vi.mock('@actions/core', () => ({
+  info: vi.fn(),
+  error: vi.fn(),
+  notice: vi.fn(),
+  startGroup: vi.fn(),
+  endGroup: vi.fn(),
+  summary: {
+    addHeading: vi.fn().mockReturnThis(),
+    addRaw: vi.fn().mockReturnThis(),
+    addQuote: vi.fn().mockReturnThis(),
+    write: vi.fn().mockResolvedValue(undefined),
+  },
+}));
 
 // Real UUIDs used across fixtures.
 const ENV_UUID = '550e8400-e29b-41d4-a716-446655440000';
@@ -236,5 +253,69 @@ describe('zodErrorToActionError — action-input-name messages', () => {
     expect(err.message).toBe('api-token is required');
     expect(err.details).toContain('api-token is required');
     expect(err.details).toContain('environment-id must be a UUID');
+  });
+});
+
+describe('injection hardening — first-service, labels, registry-username', () => {
+  const DIRTY_FIRST = 'x\n::add-mask::PWNED';
+
+  it('a forbidden first-service yields exactly one issue that does not echo the value', () => {
+    const result = ActionInputsSchema.safeParse(makeRawInputs({ firstService: DIRTY_FIRST }));
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.issues).toHaveLength(1);
+    for (const issue of result.error.issues) {
+      expect(issue.message).not.toContain('PWNED');
+    }
+  });
+
+  it('a forbidden first-service, end to end through emitToCore, prints no workflow command', async () => {
+    const result = ActionInputsSchema.safeParse(makeRawInputs({ firstService: DIRTY_FIRST }));
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    await emitToCore(zodErrorToActionError(result.error));
+    expectNoWorkflowCommands(vi.mocked(core.info).mock.calls.flat());
+    expectNoWorkflowCommands(vi.mocked(core.summary.addRaw).mock.calls.flat());
+  });
+
+  it.each([
+    ['embedded CR + legacy command', `web\r##[add-mask]PWNED:${WEB_UUID}`],
+    ['comma', `a,b:${WEB_UUID}`],
+    ['open bracket', `we[b:${WEB_UUID}`],
+    ['close bracket', `we]b:${WEB_UUID}`],
+    ['control char', `we\u0007b:${WEB_UUID}`],
+    ['U+2028', `we\u2028b:${WEB_UUID}`],
+    ['U+2029', `we\u2029b:${WEB_UUID}`],
+  ])('rejects a label with %s', (_name, input) => {
+    expect(() => parseServicesString(input)).toThrow(ActionError);
+    expect(() => parseServicesString(input)).toThrow(
+      'services: label contains forbidden characters',
+    );
+  });
+
+  it('still accepts labels with spaces and dashes', () => {
+    const map = parseServicesString(`web app:${WEB_UUID}\napi-v2:${WORKER_UUID}`);
+    expect(Array.from(map.keys())).toEqual(['web app', 'api-v2']);
+  });
+
+  it('rejects a first-service with a bracket or comma (same rule as labels)', () => {
+    for (const firstService of ['we[b', 'a,b', 'x\u2028y']) {
+      const result = ActionInputsSchema.safeParse(makeRawInputs({ firstService }));
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error.issues).toHaveLength(1);
+      expect(result.error.issues[0]!.message).toBe('first-service contains forbidden characters');
+    }
+  });
+
+  it('rejects a registry-username containing ##[ and accepts org+robot', () => {
+    const bad = ActionInputsSchema.safeParse(
+      makeRawInputs({ registryUsername: 'u##[add-mask]x', registryPassword: 'p' }),
+    );
+    expect(bad.success).toBe(false);
+    const good = ActionInputsSchema.safeParse(
+      makeRawInputs({ registryUsername: 'org+robot', registryPassword: 'p' }),
+    );
+    expect(good.success).toBe(true);
   });
 });
