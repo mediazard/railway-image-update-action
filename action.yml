@@ -43,6 +43,10 @@ inputs:
     description: "When resolve-to-digest is 'false', allow deploying a mutable tag (latest, main, master, develop, stable, or no tag). Defaults to 'false' to fail fast on unsafe refs."
     required: false
     default: "false"
+  dry-run:
+    description: "Log the Railway API calls that would be made without sending them. Nothing is deployed; deployed-services and failed-services are written empty, and image-tag and deployment-ids are not written."
+    required: false
+    default: "false"
 
 outputs:
   deployed-services:

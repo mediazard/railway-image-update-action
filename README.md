@@ -104,6 +104,7 @@ Both `registry-username` and `registry-password` must be provided together. Stor
 | `registry-password` | No | `""` | Password/token for private registry (requires registry-username) |
 | `resolve-to-digest` | No | `true` | Resolve the image tag to a content-addressed digest before deploying |
 | `allow-mutable-tag` | No | `false` | When `resolve-to-digest: false`, allow deploying mutable tags |
+| `dry-run` | No | `false` | Log the Railway API calls without sending them. Nothing changes on Railway; `deployed-services` and `failed-services` are written empty, and `image-tag` and `deployment-ids` are not written |
 
 ## Outputs
 

@@ -28,6 +28,17 @@ async function entry(): Promise<void> {
   return runMain();
 }
 
+/**
+ * Truthy-looking env values (case-insensitive `true`, `1`, `yes`, `y`, `on`).
+ * Used only to detect the retired DRY_RUN switch, so a variant spelling
+ * can't slip past the guard and become a live deploy.
+ */
+const TRUTHY_ENV_VALUES = new Set(['true', '1', 'yes', 'y', 'on']);
+
+function isTruthyEnv(value: string | undefined): boolean {
+  return value !== undefined && TRUTHY_ENV_VALUES.has(value.trim().toLowerCase());
+}
+
 async function runMain(): Promise<void> {
   // Load-bearing FIRST line: tell the post invocation we ran. Without this,
   // the post step would re-enter runMain when no cleanup work was recorded.
@@ -38,18 +49,39 @@ async function runMain(): Promise<void> {
   // deployed-services / failed-services keys on early die(); consumer
   // workflows depend on those keys existing in $GITHUB_OUTPUT.
   let state: DeployState = DeployState.empty();
+  // The one dry-run switch: the `dry-run` input, read once. Declared here so
+  // the `finally` sees it even if readInputs() throws.
+  let dryRun = false;
 
   try {
     const inputs = readInputs(); // throws on validation failure (already setSecret'd)
+    dryRun = inputs.dryRun;
+
+    // Fail closed on the retired DRY_RUN env var: silently ignoring it would
+    // turn an expected dry run into a live deploy. Placed BEFORE DeployState
+    // so, like every other input error, failed-services is written empty.
+    if (isTruthyEnv(process.env.DRY_RUN) && !dryRun) {
+      throw new ActionError(
+        'DRY_RUN environment variable is no longer supported',
+        undefined,
+        "Set the action input 'dry-run: true' to do a dry run, or unset DRY_RUN for this step to deploy.",
+      );
+    }
+
     state = new DeployState(Array.from(inputs.services.keys()));
 
-    const client =
-      process.env.DRY_RUN === 'true'
-        ? createDryRunClient()
-        : createRailwayClient({
-            token: inputs.apiToken,
-            tokenType: inputs.tokenType,
-          });
+    if (dryRun) {
+      core.warning(
+        'Dry run: no requests are sent to Railway and nothing is deployed. Outputs will not list any service as deployed.',
+      );
+    }
+
+    const client = dryRun
+      ? createDryRunClient()
+      : createRailwayClient({
+          token: inputs.apiToken,
+          tokenType: inputs.tokenType,
+        });
 
     await run({ client, execFn: getExecOutput, inputs, state });
   } catch (err) {
@@ -67,7 +99,7 @@ async function runMain(): Promise<void> {
     // Wrapped in try/catch so a writeOutputs failure (e.g. GITHUB_OUTPUT
     // unwritable) cannot mask the original error from the main try block.
     try {
-      writeOutputs(state);
+      writeOutputs(state, { dryRun });
     } catch (writeErr) {
       core.warning(
         `Failed to write GitHub Action outputs: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,

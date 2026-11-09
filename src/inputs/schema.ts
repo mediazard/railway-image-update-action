@@ -172,6 +172,7 @@ export const ActionInputsSchema = z
     registryPassword: z.string().default(''),
     resolveToDigest: z.boolean().default(true),
     allowMutableTag: z.boolean().default(false),
+    dryRun: z.boolean().default(false),
   })
   .superRefine(refineCredentialPair)
   .superRefine(refineFirstServiceExists);

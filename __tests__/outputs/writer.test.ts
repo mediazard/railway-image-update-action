@@ -77,4 +77,36 @@ describe('writeOutputs', () => {
     const calls = setOutput.mock.calls.map((c) => c[0]);
     expect(calls).not.toContain('image-tag');
   });
+
+  describe('dry-run option', () => {
+    function deployedState(): DeployState {
+      const s = new DeployState(['web']);
+      s.markDeployed('web');
+      s.attachDeploymentId('web', 'dry-run-deploy-id');
+      s.imageTag = 'ghcr.io/org/app@sha256:dryrun';
+      return s;
+    }
+
+    it('{ dryRun: true } writes empty deployed/failed and no image-tag or deployment-ids', () => {
+      writeOutputs(deployedState(), { dryRun: true });
+
+      const setOutput = core.setOutput as unknown as ReturnType<typeof vi.fn>;
+      expect(setOutput).toHaveBeenCalledWith('deployed-services', '');
+      expect(setOutput).toHaveBeenCalledWith('failed-services', '');
+      const calls = setOutput.mock.calls.map((c) => c[0]);
+      expect(calls).not.toContain('image-tag');
+      expect(calls).not.toContain('deployment-ids');
+    });
+
+    // PIN: the default (no option) path must not change.
+    it('without the option, writes deployed, image-tag and deployment-ids as before', () => {
+      writeOutputs(deployedState());
+
+      const setOutput = core.setOutput as unknown as ReturnType<typeof vi.fn>;
+      expect(setOutput).toHaveBeenCalledWith('deployed-services', 'web');
+      expect(setOutput).toHaveBeenCalledWith('failed-services', '');
+      expect(setOutput).toHaveBeenCalledWith('image-tag', 'ghcr.io/org/app@sha256:dryrun');
+      expect(setOutput).toHaveBeenCalledWith('deployment-ids', 'web=dry-run-deploy-id');
+    });
+  });
 });
