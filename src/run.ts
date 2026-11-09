@@ -25,7 +25,7 @@ export interface RunDeps {
   /**
    * Mutated by reference as services succeed. Constructed in `main.ts` BEFORE
    * `run()` is called so partial mutations survive a thrown `run()` —
-   * `main.ts`'s `finally` block always calls `writeOutputs(state)`.
+   * `main.ts`'s `finally` block always calls `writeOutputs(state, { dryRun })`.
    */
   readonly state: DeployState;
 }

@@ -242,6 +242,44 @@ describe('runMain — validation failure', () => {
   });
 });
 
+describe('runMain — retired DRY_RUN env guard (truthy spellings)', () => {
+  function liveInputs(): void {
+    vi.mocked(core.getState).mockReturnValue('');
+    installHappyInputs();
+    vi.mocked(core.getBooleanInput).mockImplementation(
+      (name: string): boolean => name === 'resolve-to-digest',
+    );
+  }
+
+  it.each(['1', 'TRUE', 'yes', 'Y', 'on'])(
+    'DRY_RUN=%s without the dry-run input → fails closed with the hint',
+    async (value) => {
+      liveInputs();
+      process.env.DRY_RUN = value;
+
+      await runMain();
+
+      expect(core.error).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(core.error).mock.calls[0]?.[0]).toMatch(/no longer supported/);
+      expect(process.exitCode).toBe(1);
+      expect(fetchStub).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['false', ''])('DRY_RUN=%j does not trip the guard', async (value) => {
+    liveInputs();
+    process.env.DRY_RUN = value;
+
+    await runMain();
+
+    // The live client hits the (rejecting) fetch stub, so the run errors —
+    // but NOT with the DRY_RUN guard message.
+    const messages = vi.mocked(core.error).mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => /no longer supported/.test(m))).toBe(false);
+    expect(fetchStub).toHaveBeenCalled();
+  });
+});
+
 describe('runMain — dry-run input', () => {
   it('dry-run: true → nothing reported deployed, one warning, no network', async () => {
     vi.mocked(core.getState).mockReturnValue('');

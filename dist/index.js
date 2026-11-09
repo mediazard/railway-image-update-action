@@ -61217,6 +61217,15 @@ async function entry() {
     }
     return runMain();
 }
+/**
+ * Truthy-looking env values (case-insensitive `true`, `1`, `yes`, `y`, `on`).
+ * Used only to detect the retired DRY_RUN switch, so a variant spelling
+ * can't slip past the guard and become a live deploy.
+ */
+const TRUTHY_ENV_VALUES = new Set(['true', '1', 'yes', 'y', 'on']);
+function isTruthyEnv(value) {
+    return value !== undefined && TRUTHY_ENV_VALUES.has(value.trim().toLowerCase());
+}
 async function runMain() {
     // Load-bearing FIRST line: tell the post invocation we ran. Without this,
     // the post step would re-enter runMain when no cleanup work was recorded.
@@ -61235,7 +61244,7 @@ async function runMain() {
         // Fail closed on the retired DRY_RUN env var: silently ignoring it would
         // turn an expected dry run into a live deploy. Placed BEFORE DeployState
         // so, like every other input error, failed-services is written empty.
-        if (process.env.DRY_RUN === 'true' && !dryRun) {
+        if (isTruthyEnv(process.env.DRY_RUN) && !dryRun) {
             throw new errors_1.ActionError('DRY_RUN environment variable is no longer supported', undefined, "Set the action input 'dry-run: true' to do a dry run, or unset DRY_RUN for this step to deploy.");
         }
         state = new state_1.DeployState(Array.from(inputs.services.keys()));
