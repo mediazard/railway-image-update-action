@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import * as core from '@actions/core';
 import { ClientError } from 'graphql-request';
 
 import {
@@ -83,7 +84,6 @@ describe('withRetry — network code policy', () => {
     'UND_ERR_CONNECT_TIMEOUT',
     'UND_ERR_HEADERS_TIMEOUT',
     'UND_ERR_SOCKET',
-    'ABORT_ERR',
   ])('retries network code %s (3 total attempts)', async (code) => {
     let attempts = 0;
     const fn = vi.fn(async () => {
@@ -242,5 +242,196 @@ describe('withRetry — safe-to-resend set is a subset of the retryable set', ()
       await expect(withRetry(fn, FAST_POLICY)).rejects.toBeDefined();
       expect(attempts).toBe(3);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Story 4: real Node 20 fetch failure shapes (copied from a probe against real
+// sockets). undici rejects with a TypeError carrying the code on `cause.code`;
+// p-retry 4.6.2 refuses to retry any TypeError whose message is not in its
+// browser list, so these must be retried by withRetry's own decision.
+// ─────────────────────────────────────────────────────────────────────────
+
+function realFetchFailed(code: string, message: string, extra: object = {}): TypeError {
+  return new TypeError('fetch failed', {
+    cause: Object.assign(new Error(message), { code, ...extra }),
+  });
+}
+
+const REAL_SHAPES: ReadonlyArray<[string, () => Error]> = [
+  [
+    'fetch failed / ECONNRESET',
+    () => realFetchFailed('ECONNRESET', 'read ECONNRESET', { errno: -54, syscall: 'read' }),
+  ],
+  [
+    'fetch failed / ECONNREFUSED',
+    () =>
+      realFetchFailed('ECONNREFUSED', 'connect ECONNREFUSED 127.0.0.1:1', {
+        errno: -61,
+        syscall: 'connect',
+      }),
+  ],
+  [
+    'fetch failed / ECONNREFUSED (AggregateError, happy-eyeballs)',
+    () =>
+      new TypeError('fetch failed', {
+        cause: Object.assign(
+          new AggregateError(
+            [
+              Object.assign(new Error('connect ECONNREFUSED ::1:1'), { code: 'ECONNREFUSED' }),
+              Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), {
+                code: 'ECONNREFUSED',
+              }),
+            ],
+            '',
+          ),
+          { code: 'ECONNREFUSED' },
+        ),
+      }),
+  ],
+  [
+    'fetch failed / UND_ERR_CONNECT_TIMEOUT',
+    () =>
+      realFetchFailed('UND_ERR_CONNECT_TIMEOUT', 'Connect Timeout Error', {
+        name: 'ConnectTimeoutError',
+      }),
+  ],
+  [
+    'terminated / UND_ERR_SOCKET',
+    () =>
+      new TypeError('terminated', {
+        cause: Object.assign(new Error('other side closed'), {
+          name: 'SocketError',
+          code: 'UND_ERR_SOCKET',
+        }),
+      }),
+  ],
+];
+
+describe('withRetry — real Node 20 fetch TypeErrors (story 4)', () => {
+  // RED before story 4: p-retry index.js:60 stops a non-browser TypeError after 1 attempt.
+  it.each(REAL_SHAPES)('retries %s (3 total attempts)', async (_label, make) => {
+    let attempts = 0;
+    const fn = vi.fn(async () => {
+      attempts += 1;
+      throw make();
+    });
+
+    await expect(withRetry(fn, FAST_POLICY)).rejects.toBeInstanceOf(TypeError);
+    expect(attempts).toBe(3);
+  });
+
+  // Guards the RetryableAttempt unwrap. RED before story 4 only via the call
+  // count (TypeError rule → 1 call); the `toBe(original)` half passed already.
+  it('rejects with the original TypeError instance after exhaustion', async () => {
+    const original = REAL_SHAPES[0][1]();
+    const fn = vi.fn(async () => {
+      throw original;
+    });
+    await expect(withRetry(fn, FAST_POLICY)).rejects.toBe(original);
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  // PIN: guards the unwrap for ClientError (instanceof + response survive).
+  it('pin: rejects with the original ClientError(503) after exhaustion', async () => {
+    const original = makeClientError(503);
+    const fn = vi.fn(async () => {
+      throw original;
+    });
+    const rejection = withRetry(fn, FAST_POLICY);
+    await expect(rejection).rejects.toBe(original);
+    await expect(rejection).rejects.toBeInstanceOf(ClientError);
+  });
+
+  // PIN: a non-retryable error is still the original (AbortError unwrap by p-retry).
+  it('pin: rejects with the original error when not retryable', async () => {
+    const original = makeClientError(401);
+    const fn = vi.fn(async () => {
+      throw original;
+    });
+    await expect(withRetry(fn, FAST_POLICY)).rejects.toBe(original);
+  });
+});
+
+describe('withRetry — attempt log wording (story 4)', () => {
+  // RED before story 4: the final line says "Retrying..." and shows `fetch failed`.
+  it('logs the code, says Retrying... on earlier attempts and Giving up. on the last', async () => {
+    const fn = vi.fn(async () => {
+      throw REAL_SHAPES[0][1]();
+    });
+    await expect(withRetry(fn, FAST_POLICY)).rejects.toBeDefined();
+
+    const lines = vi.mocked(core.info).mock.calls.map((c) => String(c[0]));
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe('Attempt 1/3 failed (ECONNRESET). Retrying...');
+    expect(lines[1]).toBe('Attempt 2/3 failed (ECONNRESET). Retrying...');
+    expect(lines[2]).toBe('Attempt 3/3 failed (ECONNRESET). Giving up.');
+    for (const line of lines) expect(line).not.toContain('fetch failed');
+    expect(lines[2]).not.toContain('Retrying');
+  });
+
+  it('logs the ClientError message when there is no code', async () => {
+    const fn = vi.fn(async () => {
+      throw makeClientError(503);
+    });
+    await expect(withRetry(fn, { ...FAST_POLICY, retries: 1 })).rejects.toBeDefined();
+    const lines = vi.mocked(core.info).mock.calls.map((c) => String(c[0]));
+    expect(lines).toEqual([
+      expect.stringMatching(
+        /^Attempt 1\/2 failed \(GraphQL Error \(Code: 503\).*\)\. Retrying\.\.\.$/,
+      ),
+      expect.stringMatching(
+        /^Attempt 2\/2 failed \(GraphQL Error \(Code: 503\).*\)\. Giving up\.$/,
+      ),
+    ]);
+  });
+});
+
+describe('withRetry — cancellation is never retried (story 4)', () => {
+  // RED before story 4: ABORT_ERR was in the retryable set → 3 attempts.
+  it("does not retry Node's AbortError (code ABORT_ERR) — 1 attempt", async () => {
+    const fn = vi.fn(async () => {
+      throw Object.assign(new Error('aborted'), { code: 'ABORT_ERR', name: 'AbortError' });
+    });
+    await expect(withRetry(fn, FAST_POLICY)).rejects.toBeDefined();
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  // PIN: DOMException.code is numeric, so these never matched the string set.
+  it.each(['AbortError', 'TimeoutError'])(
+    'pin: does not retry a DOMException %s — 1 attempt',
+    async (name) => {
+      const original = new DOMException('x', name);
+      const fn = vi.fn(async () => {
+        throw original;
+      });
+      await expect(withRetry(fn, FAST_POLICY)).rejects.toBe(original);
+      expect(fn).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('ABORT_ERR is not in the retryable set', () => {
+    expect(RETRYABLE_NETWORK_CODES.has('ABORT_ERR')).toBe(false);
+  });
+});
+
+describe('withRetry — our per-request timeout (story 4)', () => {
+  // RED before story 4: REQUEST_TIMEOUT was not in the set → 1 attempt.
+  it('retries code REQUEST_TIMEOUT in default (idempotent) mode — 3 attempts', async () => {
+    const fn = vi.fn(async () => {
+      throw Object.assign(new Error('Request timed out after 50ms'), { code: 'REQUEST_TIMEOUT' });
+    });
+    await expect(withRetry(fn, FAST_POLICY)).rejects.toBeDefined();
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  // PIN: a timed-out mutation may have been applied, so never resend it.
+  it('pin: does NOT retry REQUEST_TIMEOUT when idempotent:false — 1 attempt', async () => {
+    const fn = vi.fn(async () => {
+      throw Object.assign(new Error('Request timed out after 50ms'), { code: 'REQUEST_TIMEOUT' });
+    });
+    await expect(withRetry(fn, { ...FAST_POLICY, idempotent: false })).rejects.toBeDefined();
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(SAFE_TO_RESEND_NETWORK_CODES.has('REQUEST_TIMEOUT')).toBe(false);
   });
 });

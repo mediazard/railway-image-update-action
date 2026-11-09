@@ -349,7 +349,7 @@ describe('createRailwayClient — Railway-echoed secrets and commands (chokepoin
 });
 
 describe('createRailwayClient — AbortController timeout', () => {
-  it('rejects with an abort-flavored error when the server stalls past requestTimeoutMs', async () => {
+  it('rejects with a REQUEST_TIMEOUT-coded error when the server stalls past requestTimeoutMs', async () => {
     server.use(
       http.post(RAILWAY_API_URL, async () => {
         // Far longer than the configured client timeout; the client aborts first.
@@ -367,7 +367,7 @@ describe('createRailwayClient — AbortController timeout', () => {
     const started = Date.now();
     await expect(
       client.request(UPDATE_IMAGE_MUTATION, { sid: 's', eid: 'e' }),
-    ).rejects.toBeDefined();
+    ).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
     const elapsed = Date.now() - started;
 
     // Should have aborted quickly — definitely within 5s, nowhere near 30s.

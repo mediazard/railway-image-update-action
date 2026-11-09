@@ -14,13 +14,32 @@ import { RAILWAY_API_URL } from './mutations';
  *
  * New in v1 — v0 inherited curl's effectively-indefinite default; bounding
  * this is a deliberate behavior change documented in CHANGELOG.
- * AbortController-based, so it cooperates with `withRetry`'s `ABORT_ERR`
- * retry classification.
+ * AbortController-based; a request that hits it rejects with a
+ * `RequestTimeoutError` (code `REQUEST_TIMEOUT`), which `withRetry` retries for
+ * idempotent calls only.
  */
 export const PER_ATTEMPT_REQUEST_TIMEOUT_MS = 30_000;
 
 /** @deprecated use PER_ATTEMPT_REQUEST_TIMEOUT_MS — kept for backwards compat. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = PER_ATTEMPT_REQUEST_TIMEOUT_MS;
+
+/** Code carried by `RequestTimeoutError`; listed in `RETRYABLE_NETWORK_CODES`. */
+export const REQUEST_TIMEOUT_CODE = 'REQUEST_TIMEOUT';
+
+/**
+ * The request hit our own per-attempt timeout. Decided by a flag set in the
+ * timer, never by error identity: a caller's `AbortSignal.timeout()` reason is
+ * also a `TimeoutError`, and a caller's cancellation must not be retried. The
+ * message is constant apart from a number, so it is log-safe.
+ */
+export class RequestTimeoutError extends Error {
+  readonly code = REQUEST_TIMEOUT_CODE;
+
+  constructor(timeoutMs: number) {
+    super(`Request timed out after ${String(timeoutMs)}ms`);
+    this.name = 'RequestTimeoutError';
+  }
+}
 
 /**
  * Minimal transport surface used by `operations.ts`. Retry policy is **not**
@@ -180,8 +199,10 @@ export function createRailwayClient(opts: CreateRailwayClientOptions): RailwayCl
       }
 
       const controller = new AbortController();
+      let timedOut = false;
       const timer = setTimeout(() => {
-        controller.abort(new Error(`Request timed out after ${timeoutMs}ms`));
+        timedOut = true;
+        controller.abort(new RequestTimeoutError(timeoutMs));
       }, timeoutMs);
       const unchain = chainSignals(controller, requestOpts?.signal);
 
@@ -196,6 +217,11 @@ export function createRailwayClient(opts: CreateRailwayClientOptions): RailwayCl
         if (err instanceof ClientError) {
           throw redactClientError(err, [opts.token, ...collectSecretValues(variables)]);
         }
+        // The caller cancelled: rethrow its reason unchanged, never reclassify.
+        if (requestOpts?.signal?.aborted) throw err;
+        // Our timer fired: whatever undici surfaced (incl. a body-read
+        // rejection), report it as a timeout.
+        if (timedOut) throw new RequestTimeoutError(timeoutMs);
         throw err;
       } finally {
         clearTimeout(timer);

@@ -4,6 +4,8 @@ import pRetry, { AbortError } from 'p-retry';
 
 import { ActionError } from '../errors';
 
+import { REQUEST_TIMEOUT_CODE } from './client';
+
 /**
  * HTTP statuses that warrant a retry. Matches v0's bash behavior plus 500 (a
  * generic 5xx that v0 also retried via its `>= 500` arithmetic check).
@@ -16,8 +18,12 @@ const RETRYABLE_HTTP_STATUSES: ReadonlySet<number> = new Set([429, 500, 502, 503
  *
  * - `ENOTFOUND` / `EAI_AGAIN`         → curl 6 (DNS)
  * - `ECONNREFUSED` / `ECONNRESET`     → curl 7 (connect)
- * - `ETIMEDOUT`, `UND_ERR_*_TIMEOUT`, `UND_ERR_SOCKET`, `ABORT_ERR` → curl 28
- *   plus our own AbortController-based per-request timeout.
+ * - `ETIMEDOUT`, `UND_ERR_*_TIMEOUT`, `UND_ERR_SOCKET` → curl 28
+ * - `REQUEST_TIMEOUT` → our own per-request timeout (`RequestTimeoutError`).
+ *
+ * `ABORT_ERR` is deliberately absent: fetch never produces it (a DOMException
+ * `code` is numeric), and a Node `AbortError` used as a caller's cancellation
+ * reason must never be retried.
  */
 export const RETRYABLE_NETWORK_CODES: ReadonlySet<string> = new Set([
   'ENOTFOUND',
@@ -28,7 +34,7 @@ export const RETRYABLE_NETWORK_CODES: ReadonlySet<string> = new Set([
   'UND_ERR_CONNECT_TIMEOUT',
   'UND_ERR_HEADERS_TIMEOUT',
   'UND_ERR_SOCKET',
-  'ABORT_ERR',
+  REQUEST_TIMEOUT_CODE,
 ]);
 
 /**
@@ -38,7 +44,7 @@ export const RETRYABLE_NETWORK_CODES: ReadonlySet<string> = new Set([
  * enforces it).
  *
  * Deliberately absent: `ECONNRESET`, `UND_ERR_SOCKET`, `UND_ERR_HEADERS_TIMEOUT`
- * and `ABORT_ERR` can all fire after Railway accepted the request. `ETIMEDOUT`
+ * and `REQUEST_TIMEOUT` can all fire after Railway accepted the request. `ETIMEDOUT`
  * is used for connect AND read timeouts, so with only a code it is ambiguous.
  */
 export const SAFE_TO_RESEND_NETWORK_CODES: ReadonlySet<string> = new Set([
@@ -128,8 +134,8 @@ export function isSafeToResendError(err: unknown): boolean {
  * True only if Railway definitively processed and refused the request: a
  * GraphQL `errors[]` response, or an HTTP 4xx other than 429. Our own
  * `ActionError`s (shape validation) also count. Everything else — 5xx, 429
- * after retries, any network error, our per-request timeout (a plain `Error`
- * with no code), unknown shapes — leaves a non-idempotent call's outcome
+ * after retries, any network error, our per-request timeout
+ * (`RequestTimeoutError`), unknown shapes — leaves a non-idempotent call's outcome
  * unknown: the request may have reached Railway.
  */
 export function isDefinitiveRejection(err: unknown): boolean {
@@ -143,12 +149,34 @@ export function isDefinitiveRejection(err: unknown): boolean {
 }
 
 /**
+ * Marks an attempt failure that `withRetry` decided to retry. p-retry only
+ * special-cases `AbortError` (stop) and `TypeError` (stop unless a browser
+ * network message, which undici's `fetch failed` / `terminated` are not), so
+ * wrapping makes p-retry a pure scheduler. Unwrapped before `withRetry`
+ * returns. The message is copied verbatim: p-retry's `mainError()` groups
+ * failures by message.
+ */
+class RetryableAttempt extends Error {
+  readonly original: Error;
+
+  constructor(original: Error) {
+    super(original.message);
+    this.original = original;
+  }
+}
+
+function asError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+/**
  * Decorator: wraps an async producer in `p-retry` with explicit error
  * dispatch. Retryable errors (`isRetryableError`, or only
- * `isSafeToResendError` when `policy.idempotent` is false) are re-thrown so
- * `p-retry` retries; everything else is wrapped in `AbortError` so the retry
- * loop exits cleanly and the caller (`mapToActionError`) can categorize it.
- * p-retry rejects with the original error, so callers can classify it.
+ * `isSafeToResendError` when `policy.idempotent` is false) are wrapped in
+ * `RetryableAttempt` so `p-retry` retries them whatever their class;
+ * everything else is wrapped in `AbortError` so the retry loop exits cleanly.
+ * Either way `withRetry` rejects with the ORIGINAL error, so callers
+ * (`mapToActionError`, `isDefinitiveRejection`) can classify it.
  *
  * Intentionally NOT inside `client.ts`: `dry-run.ts` must never trigger
  * retries, and decoupling lets `operations.ts` opt every mutation in without
@@ -162,28 +190,37 @@ export async function withRetry<T>(
   const totalAttempts = cfg.retries + 1;
   const shouldRetry = cfg.idempotent ? isRetryableError : isSafeToResendError;
 
-  return pRetry(
-    async () => {
-      try {
-        return await fn();
-      } catch (err) {
-        if (shouldRetry(err)) {
-          throw err instanceof Error ? err : new Error(String(err)); // let p-retry retry
+  try {
+    return await pRetry(
+      async () => {
+        try {
+          return await fn();
+        } catch (err) {
+          if (shouldRetry(err)) throw new RetryableAttempt(asError(err));
+          throw new AbortError(asError(err));
         }
-        throw new AbortError(err instanceof Error ? err : new Error(String(err)));
-      }
-    },
-    {
-      retries: cfg.retries,
-      minTimeout: cfg.minTimeoutMs,
-      maxTimeout: cfg.maxTimeoutMs,
-      factor: cfg.factor,
-      randomize: cfg.randomize,
-      onFailedAttempt: (error) => {
-        core.info(
-          `Attempt ${error.attemptNumber}/${totalAttempts} failed (${error.message}). Retrying...`,
-        );
       },
-    },
-  );
+      {
+        retries: cfg.retries,
+        minTimeout: cfg.minTimeoutMs,
+        maxTimeout: cfg.maxTimeoutMs,
+        factor: cfg.factor,
+        randomize: cfg.randomize,
+        // Called on every retryable failure, including the last (retriesLeft 0).
+        // Logs the code (an identifier) when there is one, else the message
+        // (a ClientError message already went through client.ts chokepoint A).
+        onFailedAttempt: (error) => {
+          // Defensive fallback: only RetryableAttempt reaches here (AbortError skips this hook).
+          const failed = error instanceof RetryableAttempt ? error.original : error;
+          const what = extractCode(failed) ?? failed.message;
+          const next = error.retriesLeft > 0 ? 'Retrying...' : 'Giving up.';
+          core.info(
+            `Attempt ${String(error.attemptNumber)}/${String(totalAttempts)} failed (${what}). ${next}`,
+          );
+        },
+      },
+    );
+  } catch (err) {
+    throw err instanceof RetryableAttempt ? err.original : err;
+  }
 }
