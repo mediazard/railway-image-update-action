@@ -83,7 +83,8 @@ function happyClient(deployId: string | null = 'deploy-id-1'): FakeRailwayClient
   // this client but don't poll, so the canned response is harmless there.
   c.setResponse('deploymentStatus', {
     response: {
-      deployment: { id: 'd', status: 'SUCCESS', createdAt: '1970-01-01T00:00:00Z' },
+      // Same id the deploy returned: the gate refuses a different deployment.
+      deployment: { id: deployId ?? 'd', status: 'SUCCESS', createdAt: '1970-01-01T00:00:00Z' },
     },
   });
   return c;

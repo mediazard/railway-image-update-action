@@ -7,7 +7,8 @@ import type { ActionInputs } from './inputs/schema';
 import { sanitizeForLog } from './log-sanitize';
 import type { RailwayClient } from './railway/client';
 import {
-  getLatestDeploymentForService,
+  findDeploymentStartedAfter,
+  getBaselineDeploymentId,
   redeploy,
   updateImage,
   waitForDeployment,
@@ -139,6 +140,13 @@ async function deployOrdered(
     image,
     registryCredentials: creds,
   });
+  // Read the current latest deployment BEFORE redeploying, so the no-id
+  // fallback below can tell our new deployment apart from an older one. Never
+  // fails the run; null means "no usable baseline".
+  const baselineId = await getBaselineDeploymentId(client, {
+    serviceId: firstId,
+    environmentId: inputs.environmentId,
+  });
   core.info(`  ↳ Deploying [${firstLabel}]`);
   const firstResult = await redeploy(client, {
     serviceId: firstId,
@@ -157,20 +165,28 @@ async function deployOrdered(
   let deploymentId = firstResult.deploymentId;
   if (deploymentId === null) {
     // Rare under serviceInstanceDeployV2 (it reliably returns an id), but
-    // defense-in-depth: ask Railway for the latest deployment of this
-    // service in this environment. If we still can't find one, refuse to
-    // proceed — we'd rather fail loudly than deploy the rest against an
-    // unconfirmed primary.
-    const latest = await getLatestDeploymentForService(client, {
-      serviceId: firstId,
-      environmentId: inputs.environmentId,
-    });
-    if (latest === null) {
-      throw new ActionError(
+    // defense-in-depth: look for a deployment NEWER than the baseline. Adopting
+    // whatever is latest could pass the gate on an old SUCCESS. Fail closed in
+    // every unknown case — we'd rather fail loudly than deploy the rest
+    // against an unconfirmed primary.
+    const cannotConfirm = (reason: string): ActionError =>
+      new ActionError(
         `Cannot confirm [${firstLabel}] deploy — Railway returned no deployment id`,
-        `Railway returned: ${sanitizeForLog(JSON.stringify(firstResult.rawValue) ?? 'undefined')}`,
+        `Railway returned: ${sanitizeForLog(JSON.stringify(firstResult.rawValue) ?? 'undefined')}\n${reason}`,
         'Refusing to deploy the remaining services without confirmation. Check the Railway dashboard.',
       );
+    if (baselineId === null) {
+      throw cannotConfirm(
+        "No baseline deployment was recorded before the redeploy, so a newer deployment can't be told apart from an old one",
+      );
+    }
+    const latest = await findDeploymentStartedAfter(
+      client,
+      { serviceId: firstId, environmentId: inputs.environmentId },
+      baselineId,
+    );
+    if (latest === null) {
+      throw cannotConfirm(`No deployment newer than ${baselineId} appeared within ~10s`);
     }
     deploymentId = latest.id;
     core.info(`  ↪ Recovered deployment id via serviceInstance fallback: ${deploymentId}`);
