@@ -112,9 +112,10 @@ function collectSecretValues(value: unknown, out: string[] = []): string[] {
  *
  * Railway's own `response.errors[].message` text is also untrusted: a GraphQL
  * validation message can echo submitted variables (JSON-escaped), and any
- * text can carry workflow commands. Chokepoint A: each message has `secrets`
- * (the token plus every password/token-named variable) scrubbed in raw and
- * JSON-escaped form, then passes through `sanitizeForLog`. This happens
+ * text can carry workflow commands. Chokepoint A: each message has CRs
+ * stripped, then `secrets` (the token plus every password/token-named
+ * variable) scrubbed in raw and JSON-escaped form, then passes through
+ * `sanitizeForLog`. This happens
  * BEFORE `message` and `stack` are rebuilt from it.
  *
  * Mutated in place (not rebuilt) on purpose: a new `ClientError` would re-run
@@ -123,7 +124,10 @@ function collectSecretValues(value: unknown, out: string[] = []): string[] {
  * for retry classification and `mapToActionError`.
  */
 function redactClientError(err: ClientError, secrets: readonly string[]): ClientError {
-  const clean = (text: string): string => sanitizeForLog(scrubSecrets(text, secrets));
+  // Strip CR before scrubbing: sanitizeForLog drops CRs, which would otherwise
+  // reassemble a secret Railway echoed split by `\r` after the scrub missed it.
+  const clean = (text: string): string =>
+    sanitizeForLog(scrubSecrets(text.replace(/\r/g, ''), secrets));
   for (const gqlError of err.response.errors ?? []) {
     const mutable = gqlError as { message: unknown };
     if (typeof mutable.message === 'string') mutable.message = clean(mutable.message);

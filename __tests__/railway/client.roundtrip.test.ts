@@ -8,7 +8,7 @@ import { createRailwayClient } from '../../src/railway/client';
 import { RAILWAY_API_URL, UPDATE_IMAGE_MUTATION } from '../../src/railway/mutations';
 import { withRetry } from '../../src/railway/retry';
 import { mapToActionError } from '../../src/railway/errors';
-import { expectNoWorkflowCommands } from '../fixtures/log-assert';
+import { expectNoWorkflowCommands, hasWorkflowCommand } from '../fixtures/log-assert';
 
 vi.mock('@actions/core', () => ({
   info: vi.fn(),
@@ -248,12 +248,6 @@ describe('createRailwayClient — Railway-echoed secrets and commands (chokepoin
     return createRailwayClient({ token: TOKEN, tokenType: 'bearer', requestTimeoutMs: 5_000 });
   }
 
-  function hasCommandLine(text: string): boolean {
-    return text
-      .split(/\r\n|\r|\n/)
-      .some((l) => l.trimStart().startsWith('::') || l.includes('##['));
-  }
-
   it('the fake echoes the JSON-escaped password verbatim (guards the test itself)', () => {
     expect(ECHO).toContain(JSON.stringify(PASSWORD).slice(1, -1));
   });
@@ -285,9 +279,30 @@ describe('createRailwayClient — Railway-echoed secrets and commands (chokepoin
     ];
     for (const text of texts) {
       expect(text).not.toContain('SECRET');
-      expect(hasCommandLine(text)).toBe(false);
+      expect(hasWorkflowCommand(text)).toBe(false);
     }
     expect(err.response.errors?.[0]?.message).toContain('***');
+  });
+
+  it('a secret split by CR in the echo cannot be reassembled after CR stripping', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ data: null, errors: [{ message: 'bad token tok-SEC\rRET2 given' }] }),
+      ),
+    );
+    const err = (await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, vars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      )) as ClientError;
+    expect(err).toBeInstanceOf(ClientError);
+    for (const text of [err.message, err.stack ?? '', err.response.errors?.[0]?.message ?? '']) {
+      expect(text).not.toContain(TOKEN);
+      expect(text).not.toContain('SECRET2');
+    }
   });
 
   it('a single 503 attempt with a JSON errors[] body carries the dangerous text into the error', async () => {

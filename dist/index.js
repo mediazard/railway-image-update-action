@@ -61530,9 +61530,10 @@ function collectSecretValues(value, out = []) {
  *
  * Railway's own `response.errors[].message` text is also untrusted: a GraphQL
  * validation message can echo submitted variables (JSON-escaped), and any
- * text can carry workflow commands. Chokepoint A: each message has `secrets`
- * (the token plus every password/token-named variable) scrubbed in raw and
- * JSON-escaped form, then passes through `sanitizeForLog`. This happens
+ * text can carry workflow commands. Chokepoint A: each message has CRs
+ * stripped, then `secrets` (the token plus every password/token-named
+ * variable) scrubbed in raw and JSON-escaped form, then passes through
+ * `sanitizeForLog`. This happens
  * BEFORE `message` and `stack` are rebuilt from it.
  *
  * Mutated in place (not rebuilt) on purpose: a new `ClientError` would re-run
@@ -61541,7 +61542,9 @@ function collectSecretValues(value, out = []) {
  * for retry classification and `mapToActionError`.
  */
 function redactClientError(err, secrets) {
-    const clean = (text) => (0, log_sanitize_1.sanitizeForLog)((0, log_sanitize_1.scrubSecrets)(text, secrets));
+    // Strip CR before scrubbing: sanitizeForLog drops CRs, which would otherwise
+    // reassemble a secret Railway echoed split by `\r` after the scrub missed it.
+    const clean = (text) => (0, log_sanitize_1.sanitizeForLog)((0, log_sanitize_1.scrubSecrets)(text.replace(/\r/g, ''), secrets));
     for (const gqlError of err.response.errors ?? []) {
         const mutable = gqlError;
         if (typeof mutable.message === 'string')
@@ -62055,8 +62058,9 @@ async function updateImage(client, args) {
  *
  * On success the deploy is accepted server-side. We return both the parsed
  * deployment-id (string) and the raw value Railway sent — `deploymentId`
- * is `null` whenever `rawValue` is anything other than a non-empty string
- * (commonly `true` or `null`; see `extractDeploymentId` for full coverage).
+ * is `null` whenever `rawValue` is anything other than a string matching
+ * `DEPLOYMENT_ID_PATTERN` (commonly `true` or `null`; see
+ * `extractDeploymentId` for full coverage).
  * The caller surfaces an "unavailable" warning in the null case but doesn't
  * fail the deploy, because Railway already accepted it.
  */
@@ -62097,7 +62101,7 @@ function extractRawValue(raw) {
 }
 /**
  * Pull the deployment-id off Railway's response defensively. Returns the
- * deployment-id string if it's a non-empty string, else `null`.
+ * deployment-id string if it matches `DEPLOYMENT_ID_PATTERN`, else `null`.
  *
  * Known wire-shapes Railway has returned:
  *   - V2: `{ serviceInstanceDeployV2: "<id>" }`  — happy path

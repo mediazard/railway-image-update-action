@@ -9,10 +9,20 @@
  */
 export function expectNoWorkflowCommands(lines: readonly unknown[]): void {
   for (const line of lines) {
-    for (const piece of String(line).split(/\r\n|\r|\n/)) {
-      if (piece.trimStart().startsWith('::') || piece.includes('##[')) {
-        throw new Error(`workflow command would be parsed from log line: ${JSON.stringify(piece)}`);
-      }
+    const piece = findWorkflowCommandLine(String(line));
+    if (piece !== undefined) {
+      throw new Error(`workflow command would be parsed from log line: ${JSON.stringify(piece)}`);
     }
   }
+}
+
+/** True if any runner-split line of `text` would parse as a workflow command. */
+export function hasWorkflowCommand(text: string): boolean {
+  return findWorkflowCommandLine(text) !== undefined;
+}
+
+function findWorkflowCommandLine(text: string): string | undefined {
+  return text
+    .split(/\r\n|\r|\n/)
+    .find((piece) => piece.trimStart().startsWith('::') || piece.includes('##['));
 }

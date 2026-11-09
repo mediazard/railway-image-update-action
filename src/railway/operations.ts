@@ -112,8 +112,9 @@ export interface RedeployResult {
  *
  * On success the deploy is accepted server-side. We return both the parsed
  * deployment-id (string) and the raw value Railway sent — `deploymentId`
- * is `null` whenever `rawValue` is anything other than a non-empty string
- * (commonly `true` or `null`; see `extractDeploymentId` for full coverage).
+ * is `null` whenever `rawValue` is anything other than a string matching
+ * `DEPLOYMENT_ID_PATTERN` (commonly `true` or `null`; see
+ * `extractDeploymentId` for full coverage).
  * The caller surfaces an "unavailable" warning in the null case but doesn't
  * fail the deploy, because Railway already accepted it.
  */
@@ -155,7 +156,7 @@ function extractRawValue(raw: unknown): unknown {
 
 /**
  * Pull the deployment-id off Railway's response defensively. Returns the
- * deployment-id string if it's a non-empty string, else `null`.
+ * deployment-id string if it matches `DEPLOYMENT_ID_PATTERN`, else `null`.
  *
  * Known wire-shapes Railway has returned:
  *   - V2: `{ serviceInstanceDeployV2: "<id>" }`  — happy path
