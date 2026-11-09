@@ -61443,7 +61443,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.DEFAULT_REQUEST_TIMEOUT_MS = exports.PER_ATTEMPT_REQUEST_TIMEOUT_MS = void 0;
+exports.RequestTimeoutError = exports.REQUEST_TIMEOUT_CODE = exports.DEFAULT_REQUEST_TIMEOUT_MS = exports.PER_ATTEMPT_REQUEST_TIMEOUT_MS = void 0;
 exports.createRailwayClient = createRailwayClient;
 const core = __importStar(__nccwpck_require__(7484));
 const graphql_request_1 = __nccwpck_require__(8984);
@@ -61457,12 +61457,29 @@ const mutations_1 = __nccwpck_require__(7803);
  *
  * New in v1 — v0 inherited curl's effectively-indefinite default; bounding
  * this is a deliberate behavior change documented in CHANGELOG.
- * AbortController-based, so it cooperates with `withRetry`'s `ABORT_ERR`
- * retry classification.
+ * AbortController-based; a request that hits it rejects with a
+ * `RequestTimeoutError` (code `REQUEST_TIMEOUT`), which `withRetry` retries for
+ * idempotent calls only.
  */
 exports.PER_ATTEMPT_REQUEST_TIMEOUT_MS = 30_000;
 /** @deprecated use PER_ATTEMPT_REQUEST_TIMEOUT_MS — kept for backwards compat. */
 exports.DEFAULT_REQUEST_TIMEOUT_MS = exports.PER_ATTEMPT_REQUEST_TIMEOUT_MS;
+/** Code carried by `RequestTimeoutError`; listed in `RETRYABLE_NETWORK_CODES`. */
+exports.REQUEST_TIMEOUT_CODE = 'REQUEST_TIMEOUT';
+/**
+ * The request hit our own per-attempt timeout. Decided by a flag set in the
+ * timer, never by error identity: a caller's `AbortSignal.timeout()` reason is
+ * also a `TimeoutError`, and a caller's cancellation must not be retried. The
+ * message is constant apart from a number, so it is log-safe.
+ */
+class RequestTimeoutError extends Error {
+    code = exports.REQUEST_TIMEOUT_CODE;
+    constructor(timeoutMs) {
+        super(`Request timed out after ${String(timeoutMs)}ms`);
+        this.name = 'RequestTimeoutError';
+    }
+}
+exports.RequestTimeoutError = RequestTimeoutError;
 /**
  * Build the correct authorization header for the given Railway token type.
  *
@@ -61590,8 +61607,10 @@ function createRailwayClient(opts) {
                 core.debug(`Railway GraphQL request: ${requestOpts.operationName}`);
             }
             const controller = new AbortController();
+            let timedOut = false;
             const timer = setTimeout(() => {
-                controller.abort(new Error(`Request timed out after ${timeoutMs}ms`));
+                timedOut = true;
+                controller.abort(new RequestTimeoutError(timeoutMs));
             }, timeoutMs);
             const unchain = chainSignals(controller, requestOpts?.signal);
             try {
@@ -61606,6 +61625,13 @@ function createRailwayClient(opts) {
                 if (err instanceof graphql_request_1.ClientError) {
                     throw redactClientError(err, [opts.token, ...collectSecretValues(variables)]);
                 }
+                // The caller cancelled: rethrow its reason unchanged, never reclassify.
+                if (requestOpts?.signal?.aborted)
+                    throw err;
+                // Our timer fired: whatever undici surfaced (incl. a body-read
+                // rejection), report it as a timeout.
+                if (timedOut)
+                    throw new RequestTimeoutError(timeoutMs);
                 throw err;
             }
             finally {
@@ -62540,6 +62566,7 @@ const core = __importStar(__nccwpck_require__(7484));
 const graphql_request_1 = __nccwpck_require__(8984);
 const p_retry_1 = __importStar(__nccwpck_require__(2103));
 const errors_1 = __nccwpck_require__(3916);
+const client_1 = __nccwpck_require__(252);
 /**
  * HTTP statuses that warrant a retry. Matches v0's bash behavior plus 500 (a
  * generic 5xx that v0 also retried via its `>= 500` arithmetic check).
@@ -62551,8 +62578,12 @@ const RETRYABLE_HTTP_STATUSES = new Set([429, 500, 502, 503, 504]);
  *
  * - `ENOTFOUND` / `EAI_AGAIN`         → curl 6 (DNS)
  * - `ECONNREFUSED` / `ECONNRESET`     → curl 7 (connect)
- * - `ETIMEDOUT`, `UND_ERR_*_TIMEOUT`, `UND_ERR_SOCKET`, `ABORT_ERR` → curl 28
- *   plus our own AbortController-based per-request timeout.
+ * - `ETIMEDOUT`, `UND_ERR_*_TIMEOUT`, `UND_ERR_SOCKET` → curl 28
+ * - `REQUEST_TIMEOUT` → our own per-request timeout (`RequestTimeoutError`).
+ *
+ * `ABORT_ERR` is deliberately absent: fetch never produces it (a DOMException
+ * `code` is numeric), and a Node `AbortError` used as a caller's cancellation
+ * reason must never be retried.
  */
 exports.RETRYABLE_NETWORK_CODES = new Set([
     'ENOTFOUND',
@@ -62563,7 +62594,7 @@ exports.RETRYABLE_NETWORK_CODES = new Set([
     'UND_ERR_CONNECT_TIMEOUT',
     'UND_ERR_HEADERS_TIMEOUT',
     'UND_ERR_SOCKET',
-    'ABORT_ERR',
+    client_1.REQUEST_TIMEOUT_CODE,
 ]);
 /**
  * Network codes that prove the request never reached Railway, so even a
@@ -62572,7 +62603,7 @@ exports.RETRYABLE_NETWORK_CODES = new Set([
  * enforces it).
  *
  * Deliberately absent: `ECONNRESET`, `UND_ERR_SOCKET`, `UND_ERR_HEADERS_TIMEOUT`
- * and `ABORT_ERR` can all fire after Railway accepted the request. `ETIMEDOUT`
+ * and `REQUEST_TIMEOUT` can all fire after Railway accepted the request. `ETIMEDOUT`
  * is used for connect AND read timeouts, so with only a code it is ambiguous.
  */
 exports.SAFE_TO_RESEND_NETWORK_CODES = new Set([
@@ -62633,8 +62664,8 @@ function isSafeToResendError(err) {
  * True only if Railway definitively processed and refused the request: a
  * GraphQL `errors[]` response, or an HTTP 4xx other than 429. Our own
  * `ActionError`s (shape validation) also count. Everything else — 5xx, 429
- * after retries, any network error, our per-request timeout (a plain `Error`
- * with no code), unknown shapes — leaves a non-idempotent call's outcome
+ * after retries, any network error, our per-request timeout
+ * (`RequestTimeoutError`), unknown shapes — leaves a non-idempotent call's outcome
  * unknown: the request may have reached Railway.
  */
 function isDefinitiveRejection(err) {
@@ -62649,12 +62680,31 @@ function isDefinitiveRejection(err) {
     return false;
 }
 /**
+ * Marks an attempt failure that `withRetry` decided to retry. p-retry only
+ * special-cases `AbortError` (stop) and `TypeError` (stop unless a browser
+ * network message, which undici's `fetch failed` / `terminated` are not), so
+ * wrapping makes p-retry a pure scheduler. Unwrapped before `withRetry`
+ * returns. The message is copied verbatim: p-retry's `mainError()` groups
+ * failures by message.
+ */
+class RetryableAttempt extends Error {
+    original;
+    constructor(original) {
+        super(original.message);
+        this.original = original;
+    }
+}
+function asError(err) {
+    return err instanceof Error ? err : new Error(String(err));
+}
+/**
  * Decorator: wraps an async producer in `p-retry` with explicit error
  * dispatch. Retryable errors (`isRetryableError`, or only
- * `isSafeToResendError` when `policy.idempotent` is false) are re-thrown so
- * `p-retry` retries; everything else is wrapped in `AbortError` so the retry
- * loop exits cleanly and the caller (`mapToActionError`) can categorize it.
- * p-retry rejects with the original error, so callers can classify it.
+ * `isSafeToResendError` when `policy.idempotent` is false) are wrapped in
+ * `RetryableAttempt` so `p-retry` retries them whatever their class;
+ * everything else is wrapped in `AbortError` so the retry loop exits cleanly.
+ * Either way `withRetry` rejects with the ORIGINAL error, so callers
+ * (`mapToActionError`, `isDefinitiveRejection`) can classify it.
  *
  * Intentionally NOT inside `client.ts`: `dry-run.ts` must never trigger
  * retries, and decoupling lets `operations.ts` opt every mutation in without
@@ -62664,26 +62714,36 @@ async function withRetry(fn, policy) {
     const cfg = { ...DEFAULT_POLICY, ...policy };
     const totalAttempts = cfg.retries + 1;
     const shouldRetry = cfg.idempotent ? isRetryableError : isSafeToResendError;
-    return (0, p_retry_1.default)(async () => {
-        try {
-            return await fn();
-        }
-        catch (err) {
-            if (shouldRetry(err)) {
-                throw err instanceof Error ? err : new Error(String(err)); // let p-retry retry
+    try {
+        return await (0, p_retry_1.default)(async () => {
+            try {
+                return await fn();
             }
-            throw new p_retry_1.AbortError(err instanceof Error ? err : new Error(String(err)));
-        }
-    }, {
-        retries: cfg.retries,
-        minTimeout: cfg.minTimeoutMs,
-        maxTimeout: cfg.maxTimeoutMs,
-        factor: cfg.factor,
-        randomize: cfg.randomize,
-        onFailedAttempt: (error) => {
-            core.info(`Attempt ${error.attemptNumber}/${totalAttempts} failed (${error.message}). Retrying...`);
-        },
-    });
+            catch (err) {
+                if (shouldRetry(err))
+                    throw new RetryableAttempt(asError(err));
+                throw new p_retry_1.AbortError(asError(err));
+            }
+        }, {
+            retries: cfg.retries,
+            minTimeout: cfg.minTimeoutMs,
+            maxTimeout: cfg.maxTimeoutMs,
+            factor: cfg.factor,
+            randomize: cfg.randomize,
+            // Called on every retryable failure, including the last (retriesLeft 0).
+            // Logs the code (an identifier) when there is one, else the message
+            // (a ClientError message already went through client.ts chokepoint A).
+            onFailedAttempt: (error) => {
+                const failed = error instanceof RetryableAttempt ? error.original : error;
+                const what = extractCode(failed) ?? failed.message;
+                const next = error.retriesLeft > 0 ? 'Retrying...' : 'Giving up.';
+                core.info(`Attempt ${String(error.attemptNumber)}/${String(totalAttempts)} failed (${what}). ${next}`);
+            },
+        });
+    }
+    catch (err) {
+        throw err instanceof RetryableAttempt ? err.original : err;
+    }
 }
 
 
