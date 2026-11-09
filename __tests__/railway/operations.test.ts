@@ -311,6 +311,37 @@ describe('getLatestDeploymentForService — V2 no-id fallback', () => {
   });
 });
 
+describe('getLatestDeploymentForService — error paths', () => {
+  it('maps a 401 to the ActionError (not a raw ClientError)', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('serviceInstanceLatestDeployment', { error: makeClientError(401) });
+    await expect(
+      getLatestDeploymentForService(client, { serviceId: SERVICE_ID, environmentId: ENV_ID }),
+    ).rejects.toMatchObject({
+      name: 'ActionError',
+      message: 'Railway API authentication failed',
+      details: 'HTTP 401',
+    });
+  });
+
+  it('re-throws the abort reason as-is when the signal is aborted', async () => {
+    const client = new FakeRailwayClient();
+    const controller = new AbortController();
+    const reason = new Error('cancelled');
+    client.request = async function <_TVars, TResult>(): Promise<TResult> {
+      controller.abort(reason);
+      throw reason;
+    };
+    await expect(
+      getLatestDeploymentForService(
+        client,
+        { serviceId: SERVICE_ID, environmentId: ENV_ID },
+        controller.signal,
+      ),
+    ).rejects.toBe(reason);
+  });
+});
+
 describe('waitForDeployment', () => {
   /** Helper: client that returns the given status sequence on successive calls. */
   function statusSequenceClient(
@@ -859,7 +890,66 @@ describe('waitForDeployment — constant gate behavior', () => {
         onPoll: () => undefined,
         sleep: () => Promise.resolve(),
       }),
-    ).rejects.toBeInstanceOf(ClientError);
+    ).rejects.toMatchObject({
+      name: 'ActionError',
+      message: 'Railway API authentication failed',
+      details: 'HTTP 401',
+    });
     expect(statusCalls).toBe(1); // one attempt, no retry, no re-poll
+  });
+
+  it('passes a snapshot-shape ActionError from deploymentStatus through unchanged', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('deploymentStatus', {
+      response: { deployment: { id: 'd1', createdAt: 't' } }, // status missing
+    });
+    const err = await waitForDeployment(client, 'd1', {
+      timeoutMs: 100_000,
+      stallTimeoutMs: 0,
+      pollIntervalMs: 1,
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+    }).then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).message).toBe(
+      'Railway deployment response missing required fields',
+    );
+    expect((err as ActionError).details).toContain('Got: ');
+  });
+
+  it('re-throws the abort reason as-is when the signal aborts during an in-flight status request', async () => {
+    const client = new FakeRailwayClient();
+    const controller = new AbortController();
+    const reason = new Error('cancelled');
+    let statusCalls = 0;
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        statusCalls += 1;
+        controller.abort(reason);
+        throw reason;
+      }
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+    await expect(
+      waitForDeployment(client, 'd1', {
+        timeoutMs: 100_000,
+        stallTimeoutMs: 0,
+        pollIntervalMs: 1,
+        onPoll: () => undefined,
+        sleep: () => Promise.resolve(),
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(reason);
+    expect(statusCalls).toBe(1);
   });
 });

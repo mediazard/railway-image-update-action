@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { GraphQLClient } from 'graphql-request';
+import { ClientError, GraphQLClient } from 'graphql-request';
 
 import type { TokenType } from '../types';
 
@@ -80,6 +80,35 @@ function chainSignals(controller: AbortController, external: AbortSignal | undef
 }
 
 /**
+ * Strip request material from a graphql-request `ClientError`, in place.
+ *
+ * `ClientError`'s constructor bakes `JSON.stringify({ response, request })`
+ * into `message` (and, via `captureStackTrace`, into `stack`); `request`
+ * carries `variables`, which for `updateImage` include
+ * `registryCredentials.password`. Anything downstream that logs
+ * `err.message` (the retry log, the gate's debug line, `main.ts`) would print
+ * it, and JSON escaping can defeat the runner's secret mask. Redacting here,
+ * where the error enters our code, removes our own request material (the
+ * variables we sent) from every current and future log site. Text that
+ * Railway itself returns in `response.errors` is not scrubbed here.
+ *
+ * Mutated in place (not rebuilt) on purpose: a new `ClientError` would re-run
+ * its constructor and bake the JSON back in, and the same instance must keep
+ * `instanceof ClientError`, `response.status` and `response.errors` working
+ * for retry classification and `mapToActionError`.
+ */
+function redactClientError(err: ClientError): ClientError {
+  // Mirrors ClientError.extractMessage (private in graphql-request's typings).
+  err.message =
+    err.response.errors?.[0]?.message ?? `GraphQL Error (Code: ${String(err.response.status)})`;
+  err.request = { query: err.request.query };
+  // Keep the stack frames, drop the JSON-bearing header lines.
+  const frames = (err.stack ?? '').split('\n').filter((line) => /^\s+at /.test(line));
+  err.stack = [`ClientError: ${err.message}`, ...frames].join('\n');
+  return err;
+}
+
+/**
  * Construct a `RailwayClient` backed by `graphql-request@^7`.
  *
  * Each `.request()` call gets a fresh `AbortController` wired to:
@@ -129,6 +158,9 @@ export function createRailwayClient(opts: CreateRailwayClientOptions): RailwayCl
           variables: variables as Record<string, unknown>,
           signal: controller.signal,
         });
+      } catch (err) {
+        if (err instanceof ClientError) throw redactClientError(err);
+        throw err;
       } finally {
         clearTimeout(timer);
         unchain();

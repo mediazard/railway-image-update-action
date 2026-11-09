@@ -61427,6 +61427,34 @@ function chainSignals(controller, external) {
     };
 }
 /**
+ * Strip request material from a graphql-request `ClientError`, in place.
+ *
+ * `ClientError`'s constructor bakes `JSON.stringify({ response, request })`
+ * into `message` (and, via `captureStackTrace`, into `stack`); `request`
+ * carries `variables`, which for `updateImage` include
+ * `registryCredentials.password`. Anything downstream that logs
+ * `err.message` (the retry log, the gate's debug line, `main.ts`) would print
+ * it, and JSON escaping can defeat the runner's secret mask. Redacting here,
+ * where the error enters our code, removes our own request material (the
+ * variables we sent) from every current and future log site. Text that
+ * Railway itself returns in `response.errors` is not scrubbed here.
+ *
+ * Mutated in place (not rebuilt) on purpose: a new `ClientError` would re-run
+ * its constructor and bake the JSON back in, and the same instance must keep
+ * `instanceof ClientError`, `response.status` and `response.errors` working
+ * for retry classification and `mapToActionError`.
+ */
+function redactClientError(err) {
+    // Mirrors ClientError.extractMessage (private in graphql-request's typings).
+    err.message =
+        err.response.errors?.[0]?.message ?? `GraphQL Error (Code: ${String(err.response.status)})`;
+    err.request = { query: err.request.query };
+    // Keep the stack frames, drop the JSON-bearing header lines.
+    const frames = (err.stack ?? '').split('\n').filter((line) => /^\s+at /.test(line));
+    err.stack = [`ClientError: ${err.message}`, ...frames].join('\n');
+    return err;
+}
+/**
  * Construct a `RailwayClient` backed by `graphql-request@^7`.
  *
  * Each `.request()` call gets a fresh `AbortController` wired to:
@@ -61468,6 +61496,11 @@ function createRailwayClient(opts) {
                     variables: variables,
                     signal: controller.signal,
                 });
+            }
+            catch (err) {
+                if (err instanceof graphql_request_1.ClientError)
+                    throw redactClientError(err);
+                throw err;
             }
             finally {
                 clearTimeout(timer);
@@ -61711,6 +61744,7 @@ function hintFromGqlMessages(messages) {
  * Convert any thrown error from the railway transport / retry stack into a
  * structured `ActionError` (message / details / hint). The rules:
  *
+ *  - `ActionError`: returned unchanged (already structured and safe).
  *  - `AbortError` (from `p-retry`): unwrap `.originalError` and recurse so the
  *    underlying cause is what surfaces.
  *  - `ClientError` with `response.errors[]`: build a `RailwayGqlError`-style
@@ -61724,6 +61758,9 @@ function hintFromGqlMessages(messages) {
  * routinely contain secrets. We strip them at this single chokepoint.
  */
 function mapToActionError(err, operation) {
+    // Already structured (e.g. parseDeploymentSnapshot's shape errors): keep it.
+    if (err instanceof errors_1.ActionError)
+        return err;
     // Unwrap p-retry AbortError to surface the underlying cause.
     if (err instanceof p_retry_1.AbortError) {
         return mapToActionError(err.originalError, operation);
@@ -61986,7 +62023,15 @@ async function getDeploymentStatus(client, id, signal, retryPolicy) {
  * `createdAt` desc).
  */
 async function getLatestDeploymentForService(client, args, signal) {
-    const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY, { sid: args.serviceId, eid: args.environmentId }, { operationName: 'serviceInstanceLatestDeployment', signal }));
+    let raw;
+    try {
+        raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY, { sid: args.serviceId, eid: args.environmentId }, { operationName: 'serviceInstanceLatestDeployment', signal }));
+    }
+    catch (err) {
+        if (signal?.aborted)
+            throw err;
+        throw (0, errors_2.mapToActionError)(err, 'serviceInstanceLatestDeployment');
+    }
     if (typeof raw !== 'object' || raw === null)
         return null;
     const serviceInstance = raw.serviceInstance;
@@ -62145,8 +62190,10 @@ async function waitForDeployment(client, deploymentId, opts = {}) {
             // loop's own cadence would otherwise absorb the blip. Count the failed
             // poll toward the total budget and re-poll. A permanent error (auth, 4xx,
             // deployment-not-found) is NOT retryable and still aborts fast.
-            if (signal?.aborted || !(0, retry_1.isRetryableError)(err))
+            if (signal?.aborted)
                 throw err;
+            if (!(0, retry_1.isRetryableError)(err))
+                throw (0, errors_2.mapToActionError)(err, 'deploymentStatus');
             const elapsed = now() - started;
             if (elapsed >= timeoutMs) {
                 throw await gateError(client, deploymentId, `Deployment ${deploymentId} did not reach SUCCESS within ${elapsed}ms`, `Last status: ${lastStatus ?? 'unknown'} (status polling kept failing, after ${elapsed}ms)`, "The deploy's status could not be read before the cap. Check the Railway dashboard.", signal);

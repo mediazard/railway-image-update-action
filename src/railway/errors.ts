@@ -92,6 +92,7 @@ function hintFromGqlMessages(messages: ReadonlyArray<string>): string {
  * Convert any thrown error from the railway transport / retry stack into a
  * structured `ActionError` (message / details / hint). The rules:
  *
+ *  - `ActionError`: returned unchanged (already structured and safe).
  *  - `AbortError` (from `p-retry`): unwrap `.originalError` and recurse so the
  *    underlying cause is what surfaces.
  *  - `ClientError` with `response.errors[]`: build a `RailwayGqlError`-style
@@ -105,6 +106,9 @@ function hintFromGqlMessages(messages: ReadonlyArray<string>): string {
  * routinely contain secrets. We strip them at this single chokepoint.
  */
 export function mapToActionError(err: unknown, operation: string): ActionError {
+  // Already structured (e.g. parseDeploymentSnapshot's shape errors): keep it.
+  if (err instanceof ActionError) return err;
+
   // Unwrap p-retry AbortError to surface the underlying cause.
   if (err instanceof AbortError) {
     return mapToActionError(err.originalError, operation);
