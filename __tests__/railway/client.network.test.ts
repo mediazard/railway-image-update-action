@@ -146,7 +146,7 @@ describe('client — per-request timeout against a stalled server', () => {
 
 describe('client — connection reset (real undici TypeError)', () => {
   // RED before story 4: p-retry refuses to retry TypeError('fetch failed') → 1 fetch.
-  it('withRetry retries ECONNRESET (3 fetches); final error keeps cause.code', async () => {
+  it('withRetry retries a connection reset (3 fetches); final error keeps cause.code', async () => {
     const url = await startRstServer();
     const counter = countingFetch();
     const client = makeClient(url, counter.fetch, 2_000);
@@ -157,7 +157,10 @@ describe('client — connection reset (real undici TypeError)', () => {
     ).catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(TypeError);
-    expect((err as { cause?: { code?: unknown } }).cause?.code).toBe('ECONNRESET');
+    // macOS undici reports ECONNRESET; Linux may surface the same RST as UND_ERR_SOCKET.
+    expect(['ECONNRESET', 'UND_ERR_SOCKET']).toContain(
+      (err as { cause?: { code?: unknown } }).cause?.code,
+    );
     expect(counter.calls()).toBe(3);
   });
 });
@@ -197,6 +200,36 @@ describe('client — caller cancellation is never reclassified or retried', () =
     expect((err as Error).name).toBe('TimeoutError');
     expect(err).not.toBeInstanceOf(RequestTimeoutError);
     expect(counter.calls()).toBe(1);
+  });
+
+  // Guards the catch ORDER: here both the caller abort (5ms) and our timer
+  // (20ms) have fired before fetch rejects (~65ms), so swapping the
+  // `signal.aborted` / `timedOut` branches in client.ts turns this red.
+  it('caller abort wins over our timer when both fired before the rejection', async () => {
+    let calls = 0;
+    const slowAbortFetch: typeof fetch = (_input, init) => {
+      calls += 1;
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        const rejectLater = (): void => {
+          setTimeout(() => reject(signal?.reason), 60);
+        };
+        if (signal?.aborted) rejectLater();
+        else signal?.addEventListener('abort', rejectLater, { once: true });
+      });
+    };
+    const client = makeClient('http://127.0.0.1:9/graphql', slowAbortFetch, 20);
+    const controller = new AbortController();
+    const reason = new Error('caller cancelled');
+    setTimeout(() => controller.abort(reason), 5);
+
+    const err: unknown = await withRetry(
+      () => client.request(DEPLOYMENT_STATUS_QUERY, QUERY_VARS, { signal: controller.signal }),
+      FAST,
+    ).catch((e: unknown) => e);
+
+    expect(err).toBe(reason);
+    expect(calls).toBe(1);
   });
 });
 

@@ -210,6 +210,7 @@ export async function withRetry<T>(
         // Logs the code (an identifier) when there is one, else the message
         // (a ClientError message already went through client.ts chokepoint A).
         onFailedAttempt: (error) => {
+          // Defensive fallback: only RetryableAttempt reaches here (AbortError skips this hook).
           const failed = error instanceof RetryableAttempt ? error.original : error;
           const what = extractCode(failed) ?? failed.message;
           const next = error.retriesLeft > 0 ? 'Retrying...' : 'Giving up.';
