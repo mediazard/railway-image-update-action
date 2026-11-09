@@ -13,13 +13,12 @@
 
 ## Version Control
 
-This project uses **Jujutsu (jj)** instead of raw git for commits.
+This project uses plain **git**. Branch off `main`, commit, push, open a PR.
 
-- `jj status` — check working copy status
-- `jj commit -m "message"` — create a commit
-- `jj log` — view commit history
-
-Do NOT use `git commit` directly.
+- `git status` — check working tree status
+- `git switch -c my-feature main` — start a branch
+- `git commit -m "message"` — create a commit
+- `git log --oneline` — view commit history
 
 ## Architecture
 

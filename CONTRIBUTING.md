@@ -1,25 +1,19 @@
 # Contributing
 
-## Version control — jj (Jujutsu)
-
-This repo uses **jj** (Jujutsu), colocated with git. Never run raw `git commit` / `git push` — use jj.
+## Version control — git
 
 ```bash
-# Start a new change off main
-jj new main -m "feat: short description"
+# Start a branch off main
+git switch main && git pull
+git switch -c my-feature
 
-# Edit files — jj tracks the working copy automatically, no staging area
-# ...
+# Edit, then stage and commit
+git add -A
+git commit -m "feat(scope): short description"
 
-# Update the commit message
-jj describe -m "feat(scope): full message"
-
-# Bookmark the change and push it to the git remote
-jj bookmark create my-feature -r @
-jj git push -b my-feature
+# Push and open a PR
+git push -u origin my-feature
 ```
-
-See the [jj documentation](https://martinvonz.github.io/jj/latest/) for more.
 
 ## Node version
 

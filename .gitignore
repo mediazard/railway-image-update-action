@@ -51,6 +51,3 @@ bun.lockb
 
 # Claude
 .claude/
-
-# Jujutsu (jj)
-.jj/
