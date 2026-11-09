@@ -193,3 +193,18 @@ describe('mapToActionError — network errors (post-retry exhaustion)', () => {
     expect(action.details).toBe('weird-string');
   });
 });
+
+describe('mapToActionError — ActionError pass-through', () => {
+  it('returns an existing ActionError unchanged (same instance, fields intact)', () => {
+    const original = new ActionError(
+      'Railway deployment response missing required fields',
+      'Got: {"id":null}',
+      'The deployment status query did not return the expected shape.',
+    );
+    const mapped = mapToActionError(original, 'deploymentStatus');
+    expect(mapped).toBe(original);
+    expect(mapped.message).toBe('Railway deployment response missing required fields');
+    expect(mapped.details).toBe('Got: {"id":null}');
+    expect(mapped.hint).toBe('The deployment status query did not return the expected shape.');
+  });
+});

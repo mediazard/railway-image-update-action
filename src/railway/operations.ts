@@ -215,13 +215,19 @@ export async function getLatestDeploymentForService(
   args: { serviceId: string; environmentId: string },
   signal?: AbortSignal,
 ): Promise<DeploymentSnapshot | null> {
-  const raw = await withRetry<unknown>(() =>
-    client.request<ServiceInstanceLatestDeploymentVariables, unknown>(
-      SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY,
-      { sid: args.serviceId, eid: args.environmentId },
-      { operationName: 'serviceInstanceLatestDeployment', signal },
-    ),
-  );
+  let raw: unknown;
+  try {
+    raw = await withRetry<unknown>(() =>
+      client.request<ServiceInstanceLatestDeploymentVariables, unknown>(
+        SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY,
+        { sid: args.serviceId, eid: args.environmentId },
+        { operationName: 'serviceInstanceLatestDeployment', signal },
+      ),
+    );
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    throw mapToActionError(err, 'serviceInstanceLatestDeployment');
+  }
   if (typeof raw !== 'object' || raw === null) return null;
   const serviceInstance = (raw as Record<string, unknown>).serviceInstance;
   if (typeof serviceInstance !== 'object' || serviceInstance === null) return null;
@@ -426,7 +432,8 @@ export async function waitForDeployment(
       // loop's own cadence would otherwise absorb the blip. Count the failed
       // poll toward the total budget and re-poll. A permanent error (auth, 4xx,
       // deployment-not-found) is NOT retryable and still aborts fast.
-      if (signal?.aborted || !isRetryableError(err)) throw err;
+      if (signal?.aborted) throw err;
+      if (!isRetryableError(err)) throw mapToActionError(err, 'deploymentStatus');
       const elapsed = now() - started;
       if (elapsed >= timeoutMs) {
         throw await gateError(

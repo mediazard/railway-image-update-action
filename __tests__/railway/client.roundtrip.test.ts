@@ -1,9 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import * as core from '@actions/core';
+import { ClientError } from 'graphql-request';
 import { http, HttpResponse, delay } from 'msw';
 import { setupServer } from 'msw/node';
 
 import { createRailwayClient } from '../../src/railway/client';
 import { RAILWAY_API_URL, UPDATE_IMAGE_MUTATION } from '../../src/railway/mutations';
+import { withRetry } from '../../src/railway/retry';
 
 vi.mock('@actions/core', () => ({
   info: vi.fn(),
@@ -123,6 +126,104 @@ describe('createRailwayClient — credentials round-trip', () => {
     expect(captured.last!.body.variables.input.registryCredentials.password).toBe(
       'my"complex$pa$$word!\\\\',
     );
+  });
+});
+
+/**
+ * Security invariant: graphql-request's ClientError bakes the full request
+ * (incl. `variables.input.registryCredentials.password`) into `message` and
+ * `stack`. The client wrapper must redact it before anything can log it.
+ */
+describe('createRailwayClient — ClientError redaction', () => {
+  const SECRET_PASSWORD = 'pa"ss\\word-SECRET';
+  const secretVars = {
+    sid: 'svc',
+    eid: 'env',
+    input: {
+      source: { image: 'registry/repo:tag' },
+      registryCredentials: { username: 'user', password: SECRET_PASSWORD },
+    },
+  };
+  const FAST_POLICY = { retries: 2, minTimeoutMs: 1, maxTimeoutMs: 1, factor: 1, randomize: false };
+
+  function makeClient() {
+    return createRailwayClient({ token: 'tok', tokenType: 'bearer', requestTimeoutMs: 5_000 });
+  }
+
+  function expectNoSecret(err: unknown): void {
+    const e = err as ClientError;
+    for (const text of [e.message, e.stack ?? '', String(e), JSON.stringify(e)]) {
+      expect(text).not.toContain('SECRET');
+      expect(text).not.toContain('registryCredentials');
+    }
+    expect((e.request as any).variables).toBeUndefined();
+  }
+
+  it('HTTP 503: redacts message, stack and request.variables; keeps ClientError + status', async () => {
+    server.use(http.post(RAILWAY_API_URL, () => new HttpResponse(null, { status: 503 })));
+
+    const err = await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, secretVars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      );
+
+    expect(err).toBeInstanceOf(ClientError);
+    expect((err as ClientError).response.status).toBe(503);
+    expect((err as ClientError).message).toBe('GraphQL Error (Code: 503)');
+    expect((err as ClientError).request.query).toBe(UPDATE_IMAGE_MUTATION);
+    expectNoSecret(err);
+  });
+
+  it('200 with errors[]: message is the first GraphQL error; secret absent', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ data: null, errors: [{ message: 'Service not found' }] }),
+      ),
+    );
+
+    const err = await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, secretVars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      );
+
+    expect(err).toBeInstanceOf(ClientError);
+    expect((err as ClientError).message).toBe('Service not found');
+    expect((err as ClientError).response.errors?.[0]?.message).toBe('Service not found');
+    expectNoSecret(err);
+  });
+
+  it('withRetry over 503, 503, 200 resolves and never logs the secret', async () => {
+    vi.mocked(core.info).mockClear();
+    let calls = 0;
+    server.use(
+      http.post(RAILWAY_API_URL, () => {
+        calls += 1;
+        if (calls <= 2) return new HttpResponse(null, { status: 503 });
+        return HttpResponse.json({ data: { serviceInstanceUpdate: null } });
+      }),
+    );
+
+    const client = makeClient();
+    await expect(
+      withRetry(() => client.request(UPDATE_IMAGE_MUTATION, secretVars), FAST_POLICY),
+    ).resolves.toEqual({ serviceInstanceUpdate: null });
+
+    expect(calls).toBe(3);
+    const logged = vi.mocked(core.info).mock.calls.map((c) => String(c[0]));
+    expect(logged).toHaveLength(2);
+    for (const line of logged) {
+      expect(line).not.toContain('SECRET');
+      expect(line).not.toContain('variables');
+      expect(line).toContain('GraphQL Error (Code: 503)');
+    }
   });
 });
 
