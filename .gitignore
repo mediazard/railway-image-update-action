@@ -51,3 +51,6 @@ bun.lockb
 
 # Claude
 .claude/
+
+# Internal planning docs (epics, story plans)
+.dev-docs/
