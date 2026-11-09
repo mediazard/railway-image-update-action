@@ -20,7 +20,7 @@ import {
   type ServiceInstanceUpdateInput,
   type UpdateImageVariables,
 } from './mutations';
-import { withRetry, isAmbiguousSendFailure, isRetryableError, type RetryPolicy } from './retry';
+import { withRetry, isDefinitiveRejection, isRetryableError, type RetryPolicy } from './retry';
 
 /**
  * Why no zod schemas here?
@@ -108,9 +108,9 @@ export interface RedeployResult {
 }
 
 /**
- * Hint for a redeploy whose outcome is unknown: the request failed in a way
- * (5xx, connection reset, read timeout) that can happen after Railway already
- * created the deployment. Not retried, so it can't create a second one.
+ * Hint for a redeploy whose outcome is unknown: the request failed in any way
+ * other than a definitive rejection (5xx, connection reset, timeout, unknown
+ * error), which can happen after Railway already created the deployment.
  */
 export const REDEPLOY_OUTCOME_UNKNOWN_HINT =
   "The redeploy request may have reached Railway before the request failed. Check the service's deployments in the Railway dashboard before re-running; it was not retried, to avoid a duplicate deployment.";
@@ -151,7 +151,8 @@ export async function redeploy(client: RailwayClient, args: RedeployArgs): Promi
   } catch (err) {
     const actionErr: ActionError = mapToActionError(err, `deployService:${args.serviceLabel}`);
     // Classify the ORIGINAL error (p-retry rejects with it), not the mapped one.
-    if (isAmbiguousSendFailure(err)) {
+    // Only a definitive server rejection rules out a started deployment.
+    if (!isDefinitiveRejection(err)) {
       throw new ActionError(actionErr.message, actionErr.details, REDEPLOY_OUTCOME_UNKNOWN_HINT);
     }
     throw actionErr;
@@ -308,7 +309,11 @@ export async function getBaselineDeploymentId(
 /** Reads of the latest deployment the no-id fallback makes before giving up. */
 export const FALLBACK_LOOKUP_ATTEMPTS = 6;
 
-/** Gap between those reads (~10s in total): Railway's list can lag a new deployment. */
+/**
+ * Gap between those reads (~10s of waiting in total). Railway's list can lag a
+ * just-created deployment; the ~10s window is an estimate, not a measured or
+ * documented Railway figure.
+ */
 export const FALLBACK_LOOKUP_INTERVAL_MS = 2_000;
 
 export interface FindDeploymentOptions {
@@ -321,7 +326,8 @@ export interface FindDeploymentOptions {
  * Bounded search for the deployment a redeploy started when Railway returned
  * no id: the first latest deployment whose id differs from `baselineId`.
  * Returns `null` if none appears within `FALLBACK_LOOKUP_ATTEMPTS` reads.
- * Lookup errors propagate (already mapped to `ActionError`).
+ * Each read retries at most once, so a flaky endpoint keeps the search near
+ * its bound. Lookup errors propagate (already mapped to `ActionError`).
  *
  * An id different from the baseline proves a newer deployment exists, not that
  * this run created it (a concurrent run could have started one).
@@ -336,7 +342,7 @@ export async function findDeploymentStartedAfter(
   const { signal } = opts;
   for (let attempt = 1; attempt <= FALLBACK_LOOKUP_ATTEMPTS; attempt += 1) {
     signal?.throwIfAborted();
-    const latest = await getLatestDeploymentForService(client, args, signal);
+    const latest = await getLatestDeploymentForService(client, args, signal, { retries: 1 });
     if (latest !== null && latest.id !== baselineId) return latest;
     if (attempt < FALLBACK_LOOKUP_ATTEMPTS) await sleep(FALLBACK_LOOKUP_INTERVAL_MS, signal);
   }

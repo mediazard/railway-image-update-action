@@ -7,6 +7,8 @@ import type { ActionInputs } from './inputs/schema';
 import { sanitizeForLog } from './log-sanitize';
 import type { RailwayClient } from './railway/client';
 import {
+  FALLBACK_LOOKUP_ATTEMPTS,
+  FALLBACK_LOOKUP_INTERVAL_MS,
   findDeploymentStartedAfter,
   getBaselineDeploymentId,
   redeploy,
@@ -186,10 +188,13 @@ async function deployOrdered(
       baselineId,
     );
     if (latest === null) {
-      throw cannotConfirm(`No deployment newer than ${baselineId} appeared within ~10s`);
+      throw cannotConfirm(
+        `No deployment newer than ${baselineId} appeared after ${FALLBACK_LOOKUP_ATTEMPTS} lookups, ${FALLBACK_LOOKUP_INTERVAL_MS / 1000}s apart`,
+      );
     }
     deploymentId = latest.id;
     core.info(`  ↪ Recovered deployment id via serviceInstance fallback: ${deploymentId}`);
+    state.attachDeploymentId(firstLabel, deploymentId);
   }
 
   core.info(`  ⏳ Waiting for [${firstLabel}] to reach SUCCESS...`);

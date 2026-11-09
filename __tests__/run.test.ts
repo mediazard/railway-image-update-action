@@ -35,6 +35,7 @@ vi.mock('@actions/core', () => ({
 import { ClientError } from 'graphql-request';
 
 import { run } from '../src/run';
+import { FALLBACK_LOOKUP_ATTEMPTS } from '../src/railway/operations';
 import { ActionError } from '../src/errors';
 import { DeployState } from '../src/outputs/state';
 import type { ActionInputs } from '../src/inputs/schema';
@@ -454,6 +455,9 @@ describe('run — ordered path, deploy returned no id (fallback must find OUR de
 
     expect(err).toBeInstanceOf(ActionError);
     expect((err as ActionError).message).toContain('Cannot confirm [web]');
+    expect((err as ActionError).details).toContain(
+      `No deployment newer than old appeared after ${FALLBACK_LOOKUP_ATTEMPTS} lookups`,
+    );
     expect(state.deployedLabels()).not.toContain('web');
     expect(callSequence(client)).not.toContainEqual(['update', B_UUID]);
   });
@@ -469,6 +473,8 @@ describe('run — ordered path, deploy returned no id (fallback must find OUR de
     expect(polled.length).toBeGreaterThan(0);
     expect(polled.every(([, id]) => id === 'new')).toBe(true);
     expect(state.deployedLabels()).toEqual(['web', 'worker']);
+    // The recovered id reaches the deployment-ids output.
+    expect(state.ids()).toContainEqual({ label: 'web', id: 'new' });
   });
 
   it('fails "Cannot confirm" when no baseline could be read, even if a deployment shows later', async () => {

@@ -62056,9 +62056,9 @@ async function updateImage(client, args) {
     }
 }
 /**
- * Hint for a redeploy whose outcome is unknown: the request failed in a way
- * (5xx, connection reset, read timeout) that can happen after Railway already
- * created the deployment. Not retried, so it can't create a second one.
+ * Hint for a redeploy whose outcome is unknown: the request failed in any way
+ * other than a definitive rejection (5xx, connection reset, timeout, unknown
+ * error), which can happen after Railway already created the deployment.
  */
 exports.REDEPLOY_OUTCOME_UNKNOWN_HINT = "The redeploy request may have reached Railway before the request failed. Check the service's deployments in the Railway dashboard before re-running; it was not retried, to avoid a duplicate deployment.";
 /**
@@ -62093,7 +62093,8 @@ async function redeploy(client, args) {
     catch (err) {
         const actionErr = (0, errors_2.mapToActionError)(err, `deployService:${args.serviceLabel}`);
         // Classify the ORIGINAL error (p-retry rejects with it), not the mapped one.
-        if ((0, retry_1.isAmbiguousSendFailure)(err)) {
+        // Only a definitive server rejection rules out a started deployment.
+        if (!(0, retry_1.isDefinitiveRejection)(err)) {
             throw new errors_1.ActionError(actionErr.message, actionErr.details, exports.REDEPLOY_OUTCOME_UNKNOWN_HINT);
         }
         throw actionErr;
@@ -62208,13 +62209,18 @@ async function getBaselineDeploymentId(client, args, signal) {
 }
 /** Reads of the latest deployment the no-id fallback makes before giving up. */
 exports.FALLBACK_LOOKUP_ATTEMPTS = 6;
-/** Gap between those reads (~10s in total): Railway's list can lag a new deployment. */
+/**
+ * Gap between those reads (~10s of waiting in total). Railway's list can lag a
+ * just-created deployment; the ~10s window is an estimate, not a measured or
+ * documented Railway figure.
+ */
 exports.FALLBACK_LOOKUP_INTERVAL_MS = 2_000;
 /**
  * Bounded search for the deployment a redeploy started when Railway returned
  * no id: the first latest deployment whose id differs from `baselineId`.
  * Returns `null` if none appears within `FALLBACK_LOOKUP_ATTEMPTS` reads.
- * Lookup errors propagate (already mapped to `ActionError`).
+ * Each read retries at most once, so a flaky endpoint keeps the search near
+ * its bound. Lookup errors propagate (already mapped to `ActionError`).
  *
  * An id different from the baseline proves a newer deployment exists, not that
  * this run created it (a concurrent run could have started one).
@@ -62224,7 +62230,7 @@ async function findDeploymentStartedAfter(client, args, baselineId, opts = {}) {
     const { signal } = opts;
     for (let attempt = 1; attempt <= exports.FALLBACK_LOOKUP_ATTEMPTS; attempt += 1) {
         signal?.throwIfAborted();
-        const latest = await getLatestDeploymentForService(client, args, signal);
+        const latest = await getLatestDeploymentForService(client, args, signal, { retries: 1 });
         if (latest !== null && latest.id !== baselineId)
             return latest;
         if (attempt < exports.FALLBACK_LOOKUP_ATTEMPTS)
@@ -62528,11 +62534,12 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SAFE_TO_RESEND_NETWORK_CODES = exports.RETRYABLE_NETWORK_CODES = void 0;
 exports.isRetryableError = isRetryableError;
 exports.isSafeToResendError = isSafeToResendError;
-exports.isAmbiguousSendFailure = isAmbiguousSendFailure;
+exports.isDefinitiveRejection = isDefinitiveRejection;
 exports.withRetry = withRetry;
 const core = __importStar(__nccwpck_require__(7484));
 const graphql_request_1 = __nccwpck_require__(8984);
 const p_retry_1 = __importStar(__nccwpck_require__(2103));
+const errors_1 = __nccwpck_require__(3916);
 /**
  * HTTP statuses that warrant a retry. Matches v0's bash behavior plus 500 (a
  * generic 5xx that v0 also retried via its `>= 500` arithmetic check).
@@ -62623,12 +62630,23 @@ function isSafeToResendError(err) {
     return code !== undefined && exports.SAFE_TO_RESEND_NETWORK_CODES.has(code);
 }
 /**
- * True if `err` is transient but the request may already have reached Railway
- * (5xx, reset, socket closed, read timeout). A non-idempotent call that fails
- * this way has an unknown outcome.
+ * True only if Railway definitively processed and refused the request: a
+ * GraphQL `errors[]` response, or an HTTP 4xx other than 429. Our own
+ * `ActionError`s (shape validation) also count. Everything else — 5xx, 429
+ * after retries, any network error, our per-request timeout (a plain `Error`
+ * with no code), unknown shapes — leaves a non-idempotent call's outcome
+ * unknown: the request may have reached Railway.
  */
-function isAmbiguousSendFailure(err) {
-    return isRetryableError(err) && !isSafeToResendError(err);
+function isDefinitiveRejection(err) {
+    if (err instanceof errors_1.ActionError)
+        return true;
+    if (err instanceof graphql_request_1.ClientError) {
+        if ((err.response.errors?.length ?? 0) > 0)
+            return true;
+        const status = err.response.status;
+        return status >= 400 && status < 500 && status !== 429;
+    }
+    return false;
 }
 /**
  * Decorator: wraps an async producer in `p-retry` with explicit error
@@ -62832,10 +62850,11 @@ async function deployOrdered(client, inputs, state, image) {
         }
         const latest = await (0, operations_1.findDeploymentStartedAfter)(client, { serviceId: firstId, environmentId: inputs.environmentId }, baselineId);
         if (latest === null) {
-            throw cannotConfirm(`No deployment newer than ${baselineId} appeared within ~10s`);
+            throw cannotConfirm(`No deployment newer than ${baselineId} appeared after ${operations_1.FALLBACK_LOOKUP_ATTEMPTS} lookups, ${operations_1.FALLBACK_LOOKUP_INTERVAL_MS / 1000}s apart`);
         }
         deploymentId = latest.id;
         core.info(`  ↪ Recovered deployment id via serviceInstance fallback: ${deploymentId}`);
+        state.attachDeploymentId(firstLabel, deploymentId);
     }
     core.info(`  ⏳ Waiting for [${firstLabel}] to reach SUCCESS...`);
     await (0, operations_1.waitForDeployment)(client, deploymentId);

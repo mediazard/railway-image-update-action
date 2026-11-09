@@ -4,6 +4,7 @@ import { ClientError } from 'graphql-request';
 import { ActionError } from '../../src/errors';
 import {
   FALLBACK_LOOKUP_ATTEMPTS,
+  REDEPLOY_OUTCOME_UNKNOWN_HINT,
   findDeploymentStartedAfter,
   getBaselineDeploymentId,
   getDeploymentStatus,
@@ -1179,5 +1180,87 @@ describe('getBaselineDeploymentId', () => {
         controller.signal,
       ),
     ).rejects.toBe(reason);
+  });
+});
+
+describe('redeploy — outcome-unknown hint on every failure that is not a definitive rejection', () => {
+  async function redeployError(error: unknown): Promise<ActionError> {
+    const client = new FakeRailwayClient();
+    client.setResponse('deployService', { error });
+    const err = await redeploy(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+      serviceLabel: 'web',
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ActionError);
+    expect(client.calls).toHaveLength(1);
+    return err as ActionError;
+  }
+
+  it('our own 30s request timeout (plain Error, no code) → outcome-unknown hint', async () => {
+    const err = await redeployError(new Error('Request timed out after 30000ms'));
+    expect(err.hint).toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  it('an unlisted network code (EPIPE on cause.code) → outcome-unknown hint', async () => {
+    const err = await redeployError(
+      Object.assign(new Error('fetch failed'), { cause: { code: 'EPIPE' } }),
+    );
+    expect(err.hint).toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  // PIN (passes before this change too).
+  it('pin: ECONNRESET on cause.code → outcome-unknown hint', async () => {
+    const err = await redeployError(
+      Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNRESET' } }),
+    );
+    expect(err.hint).toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  // PIN: a definitive server rejection keeps the mapped hint.
+  it('pin: HTTP 403 keeps the generic mapped hint', async () => {
+    const err = await redeployError(makeClientError(403));
+    expect(err.message).toBe('Railway API rejected the request (forbidden)');
+    expect(err.hint).not.toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  // PIN: GraphQL errors[] means Railway processed and refused the mutation.
+  it('pin: GraphQL errors[] keep the generic mapped hint', async () => {
+    const gqlError = new ClientError(
+      {
+        status: 200,
+        headers: new Headers(),
+        body: '',
+        errors: [{ message: 'Service not found' }],
+      } as any,
+      { query: '' } as any,
+    );
+    const err = await redeployError(gqlError);
+    expect(err.message).toContain('Railway GraphQL error');
+    expect(err.hint).not.toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+});
+
+describe('findDeploymentStartedAfter — stays near its bound on a flaky lookup', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('retries each lookup at most once (2 attempts), then propagates', async () => {
+    vi.useFakeTimers();
+    const client = new FakeRailwayClient();
+    client.setResponse('serviceInstanceLatestDeployment', { error: makeClientError(503) });
+
+    const settled = findDeploymentStartedAfter(
+      client,
+      { serviceId: SERVICE_ID, environmentId: ENV_ID },
+      'old',
+      { sleep: () => Promise.resolve() },
+    ).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const err = await settled;
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect(client.calls).toHaveLength(2);
   });
 });

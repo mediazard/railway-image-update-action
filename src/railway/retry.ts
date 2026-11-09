@@ -2,6 +2,8 @@ import * as core from '@actions/core';
 import { ClientError } from 'graphql-request';
 import pRetry, { AbortError } from 'p-retry';
 
+import { ActionError } from '../errors';
+
 /**
  * HTTP statuses that warrant a retry. Matches v0's bash behavior plus 500 (a
  * generic 5xx that v0 also retried via its `>= 500` arithmetic check).
@@ -123,12 +125,21 @@ export function isSafeToResendError(err: unknown): boolean {
 }
 
 /**
- * True if `err` is transient but the request may already have reached Railway
- * (5xx, reset, socket closed, read timeout). A non-idempotent call that fails
- * this way has an unknown outcome.
+ * True only if Railway definitively processed and refused the request: a
+ * GraphQL `errors[]` response, or an HTTP 4xx other than 429. Our own
+ * `ActionError`s (shape validation) also count. Everything else — 5xx, 429
+ * after retries, any network error, our per-request timeout (a plain `Error`
+ * with no code), unknown shapes — leaves a non-idempotent call's outcome
+ * unknown: the request may have reached Railway.
  */
-export function isAmbiguousSendFailure(err: unknown): boolean {
-  return isRetryableError(err) && !isSafeToResendError(err);
+export function isDefinitiveRejection(err: unknown): boolean {
+  if (err instanceof ActionError) return true;
+  if (err instanceof ClientError) {
+    if ((err.response.errors?.length ?? 0) > 0) return true;
+    const status = err.response.status;
+    return status >= 400 && status < 500 && status !== 429;
+  }
+  return false;
 }
 
 /**
