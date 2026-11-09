@@ -60657,11 +60657,39 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DOCKER_HUB_LOGIN_SERVER = void 0;
+exports.registryHostFor = registryHostFor;
 exports.resolveImageDigest = resolveImageDigest;
 const core = __importStar(__nccwpck_require__(7078));
-const exec = __importStar(__nccwpck_require__(6118));
 const errors_1 = __nccwpck_require__(4293);
 const log_sanitize_1 = __nccwpck_require__(192);
+const exec_1 = __nccwpck_require__(8713);
+/**
+ * The server string for Docker Hub, used for BOTH `docker login` and
+ * `docker logout`. `docker login docker.io` stores credentials under this key,
+ * but `docker logout docker.io` erases only `docker.io` variants — so the
+ * credentials would outlive the post step. Using this string explicitly makes
+ * login and logout hit the same key (and it is the key buildx reads).
+ */
+exports.DOCKER_HUB_LOGIN_SERVER = 'https://index.docker.io/v1/';
+/**
+ * The ONLY derivation of a registry host from an image reference
+ * (distribution/reference `splitDockerDomain`): the first path segment is a
+ * host only if it contains `.` or `:` or is `localhost`; otherwise the image
+ * is on Docker Hub. `docker.io` and `index.docker.io` also map to Docker Hub.
+ */
+function registryHostFor(ref) {
+    const slash = ref.indexOf('/');
+    if (slash === -1)
+        return exports.DOCKER_HUB_LOGIN_SERVER;
+    const first = ref.slice(0, slash);
+    if (!(first.includes('.') || first.includes(':') || first === 'localhost')) {
+        return exports.DOCKER_HUB_LOGIN_SERVER;
+    }
+    if (first === 'docker.io' || first === 'index.docker.io')
+        return exports.DOCKER_HUB_LOGIN_SERVER;
+    return first;
+}
 /** Shape of the JSON returned by `docker buildx imagetools inspect --format '{{json .Manifest}}'`. */
 /** A content-addressed image digest, as written into the pinned ref. */
 const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -60688,35 +60716,54 @@ async function resolveImageDigest(ref, opts, execFn) {
     // 3. Live mode: announce the lookup. Note the leading two spaces and 🔍
     //    emoji — matches bash v0 byte-for-byte.
     core.info(`  🔍 Resolving manifest digest for: ${ref}`);
+    const host = registryHostFor(ref);
     // Defense-in-depth against argv injection: even though IMAGE_REF_PATTERN
-    // now rejects leading `-`, the derived `registry` segment must also not
-    // start with one — otherwise docker would consume it as a global flag
-    // (e.g. `--config`, `--host`).
-    if (opts.registry.startsWith('-') || ref.startsWith('-')) {
-        throw new errors_1.ActionError('Refusing docker arguments that look like CLI flags', `registry='${opts.registry}', ref='${ref}'`, 'Image reference must not start with a hyphen');
+    // now rejects leading `-`, the derived host must also not start with one —
+    // otherwise docker would consume it as a global flag (e.g. `--config`).
+    if (host.startsWith('-') || ref.startsWith('-')) {
+        throw new errors_1.ActionError('Refusing docker arguments that look like CLI flags', `registry='${host}', ref='${ref}'`, 'Image reference must not start with a hyphen');
     }
-    const run = execFn ?? exec.getExecOutput;
+    const run = execFn ?? exec_1.runWithTimeout;
     // 4. If credentials provided, `docker login` first via stdin to avoid
     //    leaking the password in `ps`/argv. The `--` separator after flags
-    //    pins `registry` as the positional argument, so even if some future
+    //    pins the host as the positional argument, so even if some future
     //    version of docker invents a new global flag with a similar name,
     //    we won't be fooled.
     if (opts.credentials) {
         const { username, password } = opts.credentials;
-        const loginResult = await run('docker', ['login', '-u', username, '--password-stdin', '--', opts.registry], {
-            input: Buffer.from(password),
-            silent: true,
-            ignoreReturnCode: true,
-        });
-        if (loginResult.exitCode !== 0) {
-            throw new errors_1.ActionError('Registry login failed during digest resolution', `Registry: ${opts.registry}\nUsername: ${username}`, 'Verify registry-username and registry-password are correct');
+        // Record the logout host BEFORE login (see `onDockerLogin`).
+        opts.onDockerLogin?.(host);
+        core.info(`  🔐 Logging in to ${host}`);
+        let loginResult;
+        try {
+            loginResult = await run('docker', ['login', '-u', username, '--password-stdin', '--', host], {
+                input: Buffer.from(password),
+                timeoutMs: exec_1.DOCKER_LOGIN_TIMEOUT_MS,
+            });
         }
-        opts.onDockerLogin?.(opts.registry);
+        catch (err) {
+            if (err instanceof exec_1.ExecTimeoutError) {
+                throw new errors_1.ActionError(`Registry login timed out after ${exec_1.DOCKER_LOGIN_TIMEOUT_MS / 1000}s`, `Registry: ${host}`, "The registry did not respond. Check the image host and the runner's network access to it.");
+            }
+            throw err;
+        }
+        if (loginResult.exitCode !== 0) {
+            throw new errors_1.ActionError('Registry login failed during digest resolution', `Registry: ${host}\nUsername: ${username}`, 'Verify registry-username and registry-password are correct');
+        }
     }
     // 5. Inspect the manifest. `buildx imagetools inspect` is preferred over
     //    `docker manifest inspect` because it works with multi-arch indexes
     //    without `experimental` mode. `--` separator pins `ref` as positional.
-    const inspect = await run('docker', ['buildx', 'imagetools', 'inspect', '--format', '{{json .Manifest}}', '--', ref], { silent: true, ignoreReturnCode: true });
+    let inspect;
+    try {
+        inspect = await run('docker', ['buildx', 'imagetools', 'inspect', '--format', '{{json .Manifest}}', '--', ref], { timeoutMs: exec_1.IMAGETOOLS_INSPECT_TIMEOUT_MS });
+    }
+    catch (err) {
+        if (err instanceof exec_1.ExecTimeoutError) {
+            throw new errors_1.ActionError(`Resolving the image digest timed out after ${exec_1.IMAGETOOLS_INSPECT_TIMEOUT_MS / 1000}s`, `Image: ${ref}`, "The registry did not respond. Check the image host and the runner's network access to it.");
+        }
+        throw err;
+    }
     if (inspect.exitCode !== 0) {
         throw new errors_1.ActionError('Failed to resolve manifest digest for image', 
         // sanitize stderr: a hostile registry could echo `::add-mask::...` and
@@ -60751,6 +60798,131 @@ async function resolveImageDigest(ref, opts, execFn) {
     core.info(`  ✓ Resolved: ${resolved}`);
     return resolved;
 }
+
+
+/***/ }),
+
+/***/ 8713:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.runWithTimeout = exports.ExecTimeoutError = exports.DOCKER_LOGOUT_TIMEOUT_MS = exports.IMAGETOOLS_INSPECT_TIMEOUT_MS = exports.DOCKER_LOGIN_TIMEOUT_MS = void 0;
+const node_child_process_1 = __nccwpck_require__(1421);
+/**
+ * Bounds for the three docker calls. Registry round-trips take seconds; the
+ * inspect of a large multi-arch index can take tens of seconds. All stay well
+ * inside a CI job, so a black-holed host fails the step instead of hanging it
+ * until the job timeout.
+ */
+exports.DOCKER_LOGIN_TIMEOUT_MS = 60_000;
+exports.IMAGETOOLS_INSPECT_TIMEOUT_MS = 120_000;
+exports.DOCKER_LOGOUT_TIMEOUT_MS = 30_000;
+/**
+ * After the child exits (or is killed), how long to wait for its stdio pipes
+ * to close. A grandchild (e.g. a credential helper) can inherit and hold the
+ * pipes open, so `'close'` may never fire on its own.
+ */
+const EXIT_STDIO_GRACE_MS = 1_000;
+/**
+ * The command was killed by the timer. The message deliberately carries no
+ * argv and no output, so it is log-safe (no username, host or secret).
+ */
+class ExecTimeoutError extends Error {
+    timeoutMs;
+    code = 'EXEC_TIMEOUT';
+    constructor(timeoutMs) {
+        super(`Command timed out after ${timeoutMs}ms`);
+        this.timeoutMs = timeoutMs;
+        this.name = 'ExecTimeoutError';
+    }
+}
+exports.ExecTimeoutError = ExecTimeoutError;
+/**
+ * Run a command without a shell, capturing stdout/stderr (nothing is echoed),
+ * and resolve with its exit code whatever it is. On timeout: SIGKILL the
+ * child, destroy its pipes, wait (bounded) for it to exit so it is reaped,
+ * then reject `ExecTimeoutError`. Rejects on spawn errors (e.g. ENOENT).
+ */
+const runWithTimeout = (cmd, args, opts) => new Promise((resolve, reject) => {
+    const child = (0, node_child_process_1.spawn)(cmd, [...args], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let exitCode = null;
+    let exited = false;
+    let graceTimer;
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+        stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+        stderr += chunk;
+    });
+    // EPIPE if the child exits before reading its input; the exit code tells the story.
+    child.stdin.on('error', () => undefined);
+    const destroyPipes = () => {
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+    };
+    const settle = (fn) => {
+        if (settled)
+            return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(graceTimer);
+        fn();
+    };
+    const resolveWithExit = () => {
+        settle(() => resolve({ exitCode: exitCode ?? 1, stdout, stderr }));
+    };
+    child.on('error', (err) => {
+        settle(() => {
+            destroyPipes();
+            reject(err);
+        });
+    });
+    child.on('exit', (code) => {
+        exited = true;
+        exitCode = code;
+        if (settled)
+            return;
+        // Normal exit: give the pipes a bounded window to drain and close.
+        graceTimer = setTimeout(() => {
+            destroyPipes();
+            resolveWithExit();
+        }, EXIT_STDIO_GRACE_MS);
+    });
+    child.on('close', () => {
+        if (exited)
+            resolveWithExit();
+    });
+    const timer = setTimeout(() => {
+        if (settled)
+            return;
+        if (exited) {
+            // The command finished; only its pipes were still draining.
+            destroyPipes();
+            resolveWithExit();
+            return;
+        }
+        settled = true;
+        const fail = () => reject(new ExecTimeoutError(opts.timeoutMs));
+        child.kill('SIGKILL');
+        destroyPipes();
+        // Wait for the kill to be reaped (bounded), so no zombie outlives us.
+        const reapTimer = setTimeout(fail, EXIT_STDIO_GRACE_MS);
+        child.once('exit', () => {
+            clearTimeout(reapTimer);
+            fail();
+        });
+    }, opts.timeoutMs);
+    child.stdin.end(opts.input);
+});
+exports.runWithTimeout = runWithTimeout;
 
 
 /***/ }),
@@ -61191,8 +61363,8 @@ exports.entry = entry;
 exports.runMain = runMain;
 exports.runPost = runPost;
 const core = __importStar(__nccwpck_require__(7078));
-const exec_1 = __nccwpck_require__(6118);
 const errors_1 = __nccwpck_require__(4293);
+const exec_1 = __nccwpck_require__(8713);
 const parse_1 = __nccwpck_require__(1419);
 const client_1 = __nccwpck_require__(8213);
 const dry_run_1 = __nccwpck_require__(5325);
@@ -61257,7 +61429,7 @@ async function runMain() {
                 token: inputs.apiToken,
                 tokenType: inputs.tokenType,
             });
-        await (0, run_1.run)({ client, execFn: exec_1.getExecOutput, inputs, state });
+        await (0, run_1.run)({ client, execFn: exec_1.runWithTimeout, inputs, state });
     }
     catch (err) {
         const actionErr = err instanceof errors_1.ActionError
@@ -61287,9 +61459,10 @@ async function runPost() {
     try {
         const registry = saved_1.savedState.getDockerLogoutRegistry();
         if (registry !== '') {
-            await (0, exec_1.getExecOutput)('docker', ['logout', '--', registry], {
-                ignoreReturnCode: true,
-                silent: true,
+            // Exit code ignored: logging out of a host never logged in to is
+            // harmless. A timeout rejects into the catch below (warn only).
+            await (0, exec_1.runWithTimeout)('docker', ['logout', '--', registry], {
+                timeoutMs: exec_1.DOCKER_LOGOUT_TIMEOUT_MS,
             });
         }
     }
@@ -62802,12 +62975,10 @@ async function run(deps) {
 /** Resolve image to digest, or fail on mutable tags if not allowed. */
 async function resolveImage(inputs, execFn) {
     if (inputs.resolveToDigest) {
-        const registry = inputs.image.split('/')[0] ?? '';
         const creds = inputs.registryUsername !== '' && inputs.registryPassword !== ''
             ? { username: inputs.registryUsername, password: inputs.registryPassword }
             : undefined;
         return (0, digest_1.resolveImageDigest)(inputs.image, {
-            registry,
             credentials: creds,
             onDockerLogin: (r) => saved_1.savedState.recordDockerLogout(r),
             isDryRun: inputs.dryRun,
@@ -63152,6 +63323,14 @@ module.exports = require("node:async_hooks");
 
 "use strict";
 module.exports = require("node:buffer");
+
+/***/ }),
+
+/***/ 1421:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("node:child_process");
 
 /***/ }),
 

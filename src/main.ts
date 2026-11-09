@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
-import { getExecOutput } from '@actions/exec';
 
 import { ActionError, emitToCore } from './errors';
+import { DOCKER_LOGOUT_TIMEOUT_MS, runWithTimeout } from './image/exec';
 import { readInputs } from './inputs/parse';
 import { createRailwayClient } from './railway/client';
 import { createDryRunClient } from './railway/dry-run';
@@ -83,7 +83,7 @@ async function runMain(): Promise<void> {
           tokenType: inputs.tokenType,
         });
 
-    await run({ client, execFn: getExecOutput, inputs, state });
+    await run({ client, execFn: runWithTimeout, inputs, state });
   } catch (err) {
     const actionErr =
       err instanceof ActionError
@@ -114,9 +114,10 @@ async function runPost(): Promise<void> {
   try {
     const registry = savedState.getDockerLogoutRegistry();
     if (registry !== '') {
-      await getExecOutput('docker', ['logout', '--', registry], {
-        ignoreReturnCode: true,
-        silent: true,
+      // Exit code ignored: logging out of a host never logged in to is
+      // harmless. A timeout rejects into the catch below (warn only).
+      await runWithTimeout('docker', ['logout', '--', registry], {
+        timeoutMs: DOCKER_LOGOUT_TIMEOUT_MS,
       });
     }
   } catch (err) {

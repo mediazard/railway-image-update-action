@@ -347,6 +347,33 @@ describe('run — image resolution', () => {
   });
 });
 
+describe('run — registry login host comes from the image ref', () => {
+  const HUB = 'https://index.docker.io/v1/';
+
+  it.each([
+    ['myorg/app:v1', HUB],
+    ['nginx:1.25', HUB],
+    // pin: hosted registries are unchanged
+    ['ghcr.io/org/app:v1', 'ghcr.io'],
+  ])('%s → logs in to and records logout for %s', async (image, host) => {
+    const execFn = makeExecFn();
+    const inputs = makeInputs({
+      image,
+      resolveToDigest: true,
+      allowMutableTag: false,
+      registryUsername: 'u',
+      registryPassword: 'p',
+    });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    await run({ client: happyClient(), execFn, inputs, state });
+
+    const firstCall = execFn.mock.calls[0] as unknown as [string, string[]];
+    expect(firstCall[1]).toEqual(['login', '-u', 'u', '--password-stdin', '--', host]);
+    expect(core.saveState).toHaveBeenCalledWith('dockerLogoutRegistry', host);
+  });
+});
+
 describe('run — dry-run is driven by inputs.dryRun, not the DRY_RUN env', () => {
   afterEach(() => {
     delete process.env.DRY_RUN;

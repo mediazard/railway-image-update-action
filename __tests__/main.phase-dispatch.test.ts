@@ -37,13 +37,17 @@ vi.mock('@actions/core', () => ({
   },
 }));
 
-vi.mock('@actions/exec', () => ({
-  getExecOutput: vi.fn(async () => ({ stdout: '', stderr: '', exitCode: 0 })),
-  exec: vi.fn(async () => 0),
-}));
+vi.mock('../src/image/exec', async () => {
+  const actual = await vi.importActual<typeof ExecModule>('../src/image/exec');
+  return {
+    ...actual,
+    runWithTimeout: vi.fn(async () => ({ stdout: '', stderr: '', exitCode: 0 })),
+  };
+});
 
 import * as core from '@actions/core';
-import * as exec from '@actions/exec';
+import type * as ExecModule from '../src/image/exec';
+import { DOCKER_LOGOUT_TIMEOUT_MS, ExecTimeoutError, runWithTimeout } from '../src/image/exec';
 import { entry, runMain, runPost } from '../src/main';
 
 const ENV_UUID = '550e8400-e29b-41d4-a716-446655440000';
@@ -124,7 +128,7 @@ describe('entry — phase dispatch', () => {
     // runMain → writeOutputs is the side-effect we use to confirm "main ran".
     expect(core.setOutput).toHaveBeenCalledWith('deployed-services', expect.any(String));
     // We should NOT have invoked `docker logout`.
-    expect(exec.getExecOutput).not.toHaveBeenCalledWith(
+    expect(runWithTimeout).not.toHaveBeenCalledWith(
       'docker',
       expect.arrayContaining(['logout']),
       expect.anything(),
@@ -136,11 +140,9 @@ describe('entry — phase dispatch', () => {
 
     await entry();
 
-    expect(exec.getExecOutput).toHaveBeenCalledWith(
-      'docker',
-      ['logout', '--', 'ghcr.io'],
-      expect.objectContaining({ ignoreReturnCode: true }),
-    );
+    expect(runWithTimeout).toHaveBeenCalledWith('docker', ['logout', '--', 'ghcr.io'], {
+      timeoutMs: DOCKER_LOGOUT_TIMEOUT_MS,
+    });
     // Post never writes outputs / never sets exitCode.
     expect(process.exitCode).toBeUndefined();
   });
@@ -153,7 +155,7 @@ describe('entry — phase dispatch', () => {
     await entry();
 
     // No docker logout (nothing to clean).
-    expect(exec.getExecOutput).not.toHaveBeenCalled();
+    expect(runWithTimeout).not.toHaveBeenCalled();
     // No outputs written (we're in post, not main).
     expect(core.setOutput).not.toHaveBeenCalled();
     expect(process.exitCode).toBeUndefined();
@@ -161,21 +163,32 @@ describe('entry — phase dispatch', () => {
 });
 
 describe('runPost', () => {
-  it('calls docker logout with the recorded registry when state is non-empty', async () => {
-    mockState({ dockerLogoutRegistry: 'docker.io' });
+  it('logs out of the recorded Docker Hub server with the logout timeout', async () => {
+    mockState({ dockerLogoutRegistry: 'https://index.docker.io/v1/' });
 
     await runPost();
 
-    expect(exec.getExecOutput).toHaveBeenCalledWith(
+    expect(runWithTimeout).toHaveBeenCalledWith(
       'docker',
-      ['logout', '--', 'docker.io'],
-      expect.objectContaining({ ignoreReturnCode: true }),
+      ['logout', '--', 'https://index.docker.io/v1/'],
+      { timeoutMs: DOCKER_LOGOUT_TIMEOUT_MS },
     );
+  });
+
+  it('a logout timeout only warns — never setFailed, never exitCode', async () => {
+    mockState({ dockerLogoutRegistry: 'ghcr.io' });
+    vi.mocked(runWithTimeout).mockRejectedValueOnce(new ExecTimeoutError(DOCKER_LOGOUT_TIMEOUT_MS));
+
+    await runPost();
+
+    expect(core.warning).toHaveBeenCalled();
+    expect(core.setFailed).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
   });
 
   it('NEVER calls core.setFailed even when docker logout throws', async () => {
     mockState({ dockerLogoutRegistry: 'ghcr.io' });
-    vi.mocked(exec.getExecOutput).mockRejectedValueOnce(new Error('docker exec failure'));
+    vi.mocked(runWithTimeout).mockRejectedValueOnce(new Error('docker exec failure'));
 
     await runPost();
 
@@ -191,7 +204,7 @@ describe('runPost', () => {
 
     await runPost();
 
-    expect(exec.getExecOutput).not.toHaveBeenCalled();
+    expect(runWithTimeout).not.toHaveBeenCalled();
     expect(core.warning).not.toHaveBeenCalled();
   });
 });

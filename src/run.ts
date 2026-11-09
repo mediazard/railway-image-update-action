@@ -69,7 +69,6 @@ export async function run(deps: RunDeps): Promise<void> {
 /** Resolve image to digest, or fail on mutable tags if not allowed. */
 async function resolveImage(inputs: ActionInputs, execFn: ExecFn): Promise<string> {
   if (inputs.resolveToDigest) {
-    const registry = inputs.image.split('/')[0] ?? '';
     const creds =
       inputs.registryUsername !== '' && inputs.registryPassword !== ''
         ? { username: inputs.registryUsername, password: inputs.registryPassword }
@@ -77,7 +76,6 @@ async function resolveImage(inputs: ActionInputs, execFn: ExecFn): Promise<strin
     return resolveImageDigest(
       inputs.image,
       {
-        registry,
         credentials: creds,
         onDockerLogin: (r) => savedState.recordDockerLogout(r),
         isDryRun: inputs.dryRun,
