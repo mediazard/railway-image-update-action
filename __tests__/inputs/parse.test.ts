@@ -37,6 +37,7 @@ interface InputsBundle {
 interface BooleanBundle {
   'resolve-to-digest': boolean;
   'allow-mutable-tag': boolean;
+  'dry-run': boolean;
 }
 
 /**
@@ -60,6 +61,7 @@ function installCoreMocks(
   const booleanDefaults: BooleanBundle = {
     'resolve-to-digest': true,
     'allow-mutable-tag': false,
+    'dry-run': false,
   };
 
   const mergedStrings: InputsBundle = { ...stringDefaults, ...strings };
@@ -99,6 +101,16 @@ describe('readInputs — happy path', () => {
     expect(inputs.registryPassword).toBe('');
     expect(inputs.resolveToDigest).toBe(true);
     expect(inputs.allowMutableTag).toBe(false);
+    expect(inputs.dryRun).toBe(false);
+  });
+
+  it('reads dry-run with core.getBooleanInput into inputs.dryRun', () => {
+    installCoreMocks({}, { 'dry-run': true });
+
+    const inputs = readInputs();
+
+    expect(core.getBooleanInput).toHaveBeenCalledWith('dry-run');
+    expect(inputs.dryRun).toBe(true);
   });
 });
 

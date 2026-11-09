@@ -120,6 +120,13 @@ describe('ActionInputsSchema — happy path and refines', () => {
     expect(result.data.allowMutableTag).toBe(false);
   });
 
+  it('defaults dryRun to false when omitted, and keeps an explicit true', () => {
+    const omitted = ActionInputsSchema.safeParse(makeRawInputs());
+    expect(omitted.success && omitted.data.dryRun).toBe(false);
+    const on = ActionInputsSchema.safeParse(makeRawInputs({ dryRun: true }));
+    expect(on.success && on.data.dryRun).toBe(true);
+  });
+
   describe('refineCredentialPair', () => {
     it('errors when registry-username is present without registry-password', () => {
       const result = ActionInputsSchema.safeParse(

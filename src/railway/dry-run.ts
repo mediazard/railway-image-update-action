@@ -4,7 +4,7 @@ import type { RailwayClient } from './client';
 import { RAILWAY_API_URL } from './mutations';
 
 /**
- * Canned-response client matching the v0 bash DRY_RUN path. Logs the same
+ * Canned-response client used when the `dry-run` input is true. Logs the same
  * `[DRY-RUN] Would send to ...` triplet, then synchronously resolves with a
  * canned response — different shape for the deploy mutation than for any
  * other call (matches `serviceInstanceDeploy` vs `dryRun: true` in v0).
@@ -12,7 +12,7 @@ import { RAILWAY_API_URL } from './mutations';
  * **Invariant (load-bearing): never rejects.** `operations.ts` wraps every
  * request in `withRetry`, and dry-run runs must produce a single
  * `[DRY-RUN] Would send` line per operation with zero retry-attempt noise.
- * A unit test asserts no retry-attempt log appears under DRY_RUN.
+ * A unit test asserts no retry-attempt log appears with the `dry-run` input.
  */
 export function createDryRunClient(): RailwayClient {
   return {

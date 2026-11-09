@@ -38,6 +38,7 @@ import { run } from '../src/run';
 import { FALLBACK_LOOKUP_ATTEMPTS } from '../src/railway/operations';
 import { ActionError } from '../src/errors';
 import { DeployState } from '../src/outputs/state';
+import { createDryRunClient } from '../src/railway/dry-run';
 import type { ActionInputs } from '../src/inputs/schema';
 import * as core from '@actions/core';
 
@@ -79,6 +80,7 @@ function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
     registryPassword: '',
     resolveToDigest: false,
     allowMutableTag: true,
+    dryRun: false,
     ...overrides,
   } as ActionInputs;
 }
@@ -342,6 +344,55 @@ describe('run — image resolution', () => {
     expect(state.imageTag).toBe(
       'ghcr.io/foo/bar@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
     );
+  });
+});
+
+describe('run — dry-run is driven by inputs.dryRun, not the DRY_RUN env', () => {
+  afterEach(() => {
+    delete process.env.DRY_RUN;
+  });
+
+  it('inputs.dryRun=true with a tagged image skips digest resolution (execFn not called)', async () => {
+    const execFn = makeExecFn();
+    const inputs = makeInputs({
+      image: 'ghcr.io/org/app:v1',
+      resolveToDigest: true,
+      allowMutableTag: false,
+      dryRun: true,
+    });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    await run({ client: createDryRunClient(), execFn, inputs, state });
+
+    expect(execFn).not.toHaveBeenCalled();
+    expect(state.imageTag).toMatch(/@sha256:dryrun$/);
+  });
+
+  it('DRY_RUN=true env with inputs.dryRun=false no longer switches the digest path (execFn called)', async () => {
+    process.env.DRY_RUN = 'true';
+    const execFn = makeExecFn();
+    const inputs = makeInputs({
+      image: 'ghcr.io/org/app:v1',
+      resolveToDigest: true,
+      allowMutableTag: false,
+      dryRun: false,
+    });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    await run({ client: happyClient(), execFn, inputs, state });
+
+    expect(execFn).toHaveBeenCalled();
+  });
+
+  it('inputs.dryRun=true logs a dry-run final line, never "Deploy complete"', async () => {
+    const inputs = makeInputs({ dryRun: true });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    await run({ client: createDryRunClient(), execFn: makeExecFn(), inputs, state });
+
+    const lines = vi.mocked(core.info).mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('Dry run complete'))).toBe(true);
+    expect(lines.some((l) => l.includes('✅ Deploy complete'))).toBe(false);
   });
 });
 

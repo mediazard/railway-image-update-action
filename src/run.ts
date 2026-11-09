@@ -55,6 +55,12 @@ export async function run(deps: RunDeps): Promise<void> {
   }
 
   core.info('');
+  if (inputs.dryRun) {
+    core.info(
+      `🧪 Dry run complete — no changes were made on Railway (${inputs.services.size} services checked)`,
+    );
+    return;
+  }
   core.info(
     `✅ Deploy complete (${state.deployedLabels().length} services): ${state.deployedLabels().join(' ')}`,
   );
@@ -62,8 +68,6 @@ export async function run(deps: RunDeps): Promise<void> {
 
 /** Resolve image to digest, or fail on mutable tags if not allowed. */
 async function resolveImage(inputs: ActionInputs, execFn: ExecFn): Promise<string> {
-  const isDryRun = process.env.DRY_RUN === 'true';
-
   if (inputs.resolveToDigest) {
     const registry = inputs.image.split('/')[0] ?? '';
     const creds =
@@ -76,7 +80,7 @@ async function resolveImage(inputs: ActionInputs, execFn: ExecFn): Promise<strin
         registry,
         credentials: creds,
         onDockerLogin: (r) => savedState.recordDockerLogout(r),
-        isDryRun,
+        isDryRun: inputs.dryRun,
       },
       execFn,
     );
