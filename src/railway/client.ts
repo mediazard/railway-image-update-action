@@ -134,8 +134,9 @@ function collectSecretValues(value: unknown, out: string[] = []): string[] {
  * text can carry workflow commands. Chokepoint A: each message has CRs
  * stripped, then `secrets` (the token plus every password/token-named
  * variable) scrubbed in raw and JSON-escaped form, then passes through
- * `sanitizeForLog`. This happens
- * BEFORE `message` and `stack` are rebuilt from it.
+ * `sanitizeForLog`. This happens BEFORE `message` and `stack` are rebuilt
+ * from it. Each GraphQL error is rebuilt as `{ message }` alone (a non-string
+ * message becomes `''`); its `extensions`, `locations` and `path` are dropped.
  *
  * Mutated in place (not rebuilt) on purpose: a new `ClientError` would re-run
  * its constructor and bake the JSON back in, and the same instance must keep
@@ -148,19 +149,20 @@ function redactClientError(err: ClientError, secrets: readonly string[]): Client
   // reassemble a secret Railway echoed split by `\r` after the scrub missed it.
   const clean = (text: string): string =>
     sanitizeForLog(scrubSecrets(text.replace(/\r/g, ''), secrets));
-  for (const gqlError of err.response.errors ?? []) {
-    const mutable = gqlError as { message: unknown };
-    if (typeof mutable.message === 'string') mutable.message = clean(mutable.message);
-  }
+  // Each GraphQL error keeps only its scrubbed `message`: `extensions`,
+  // `locations` and `path` are never read and could carry unscrubbed echoes.
+  const { status } = err.response;
+  const errors = err.response.errors?.map((gqlError) => {
+    const raw = (gqlError as { message: unknown }).message;
+    return { message: typeof raw === 'string' ? clean(raw) : '' };
+  });
   // Mirrors ClientError.extractMessage (private in graphql-request's typings).
-  err.message =
-    err.response.errors?.[0]?.message ?? `GraphQL Error (Code: ${String(err.response.status)})`;
+  err.message = errors?.[0]?.message ?? `GraphQL Error (Code: ${String(status)})`;
   err.request = { query: err.request.query };
   // Keep only what retry classification and mapToActionError read. `body` is
   // the raw, unscrubbed response text (it repeats any echoed secret), and
   // `headers`/`data`/`extensions` are never used; all would show up in
   // `JSON.stringify(err)` or `util.inspect(err)`.
-  const { status, errors } = err.response;
   err.response = { status, errors } as ClientError['response'];
   // Keep the stack frames, drop the JSON-bearing header lines.
   const frames = (err.stack ?? '').split('\n').filter((line) => /^\s+at /.test(line));

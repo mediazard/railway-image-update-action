@@ -323,6 +323,41 @@ describe('createRailwayClient — Railway-echoed secrets and commands (chokepoin
     expect(mapped.details).toContain('got invalid value');
   });
 
+  it('keeps only the scrubbed message on each GraphQL error (extensions/locations/path dropped)', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({
+          data: null,
+          errors: [
+            {
+              message: 'Problem processing request',
+              locations: [{ line: 1, column: 2 }],
+              path: ['serviceInstanceUpdate'],
+              extensions: { code: 'BAD_INPUT', echo: { password: PASSWORD, token: TOKEN } },
+            },
+          ],
+        }),
+      ),
+    );
+    const err = (await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, vars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      )) as ClientError;
+
+    expect(err).toBeInstanceOf(ClientError);
+    expect(err.response.errors).toEqual([{ message: 'Problem processing request' }]);
+    for (const text of [JSON.stringify(err), inspect(err, { depth: 5 })]) {
+      expect(text).not.toContain('SECRET');
+      expect(text).not.toContain('extensions');
+    }
+    const mapped = mapToActionError(err, 'updateImage');
+    expect(mapped.details).toBe('Problem processing request');
+  });
+
   it('a secret split by CR in the echo cannot be reassembled after CR stripping', async () => {
     server.use(
       http.post(RAILWAY_API_URL, () =>

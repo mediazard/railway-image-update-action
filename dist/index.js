@@ -65041,7 +65041,10 @@ async function emitToCore(err) {
     if (hint) {
         core.notice(hint, { title: 'Hint' });
     }
-    core.summary.addHeading(message, 3);
+    // Everything in the summary is HTML-escaped: core.summary inserts text
+    // into HTML verbatim, and message/hint can carry a label (which may hold
+    // `<` / `>`) or Railway text.
+    core.summary.addHeading(escapeHtml(message), 3);
     if (details) {
         // Escaped inside <pre>, not a ``` fence: details carry untrusted text
         // (Railway, docker), and a fence in it would end the block and let the
@@ -65049,7 +65052,7 @@ async function emitToCore(err) {
         core.summary.addRaw('\n<pre>' + escapeHtml(details) + '</pre>\n');
     }
     if (hint) {
-        core.summary.addQuote('💡 ' + hint);
+        core.summary.addQuote('💡 ' + escapeHtml(hint));
     }
     // The summary is best-effort: with no GITHUB_STEP_SUMMARY (some self-hosted
     // or local runners) write() rejects, which must not replace the real error
@@ -66243,8 +66246,9 @@ function collectSecretValues(value, out = []) {
  * text can carry workflow commands. Chokepoint A: each message has CRs
  * stripped, then `secrets` (the token plus every password/token-named
  * variable) scrubbed in raw and JSON-escaped form, then passes through
- * `sanitizeForLog`. This happens
- * BEFORE `message` and `stack` are rebuilt from it.
+ * `sanitizeForLog`. This happens BEFORE `message` and `stack` are rebuilt
+ * from it. Each GraphQL error is rebuilt as `{ message }` alone (a non-string
+ * message becomes `''`); its `extensions`, `locations` and `path` are dropped.
  *
  * Mutated in place (not rebuilt) on purpose: a new `ClientError` would re-run
  * its constructor and bake the JSON back in, and the same instance must keep
@@ -66256,20 +66260,20 @@ function redactClientError(err, secrets) {
     // Strip CR before scrubbing: sanitizeForLog drops CRs, which would otherwise
     // reassemble a secret Railway echoed split by `\r` after the scrub missed it.
     const clean = (text) => (0, log_sanitize_1.sanitizeForLog)((0, log_sanitize_1.scrubSecrets)(text.replace(/\r/g, ''), secrets));
-    for (const gqlError of err.response.errors ?? []) {
-        const mutable = gqlError;
-        if (typeof mutable.message === 'string')
-            mutable.message = clean(mutable.message);
-    }
+    // Each GraphQL error keeps only its scrubbed `message`: `extensions`,
+    // `locations` and `path` are never read and could carry unscrubbed echoes.
+    const { status } = err.response;
+    const errors = err.response.errors?.map((gqlError) => {
+        const raw = gqlError.message;
+        return { message: typeof raw === 'string' ? clean(raw) : '' };
+    });
     // Mirrors ClientError.extractMessage (private in graphql-request's typings).
-    err.message =
-        err.response.errors?.[0]?.message ?? `GraphQL Error (Code: ${String(err.response.status)})`;
+    err.message = errors?.[0]?.message ?? `GraphQL Error (Code: ${String(status)})`;
     err.request = { query: err.request.query };
     // Keep only what retry classification and mapToActionError read. `body` is
     // the raw, unscrubbed response text (it repeats any echoed secret), and
     // `headers`/`data`/`extensions` are never used; all would show up in
     // `JSON.stringify(err)` or `util.inspect(err)`.
-    const { status, errors } = err.response;
     err.response = { status, errors };
     // Keep the stack frames, drop the JSON-bearing header lines.
     const frames = (err.stack ?? '').split('\n').filter((line) => /^\s+at /.test(line));

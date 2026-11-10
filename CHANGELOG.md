@@ -42,8 +42,8 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Private-registry login goes to the image's real registry host. Docker Hub images (short names such as `myorg/app` or `nginx`, and `docker.io/...`) log in to `https://index.docker.io/v1/`, so the post step's logout now erases the stored Docker Hub credentials.
 - Patched vulnerable dependencies: `undici` (pinned to a fixed 6.x release) and `zod` (now zod 4).
 - `docker` output quoted in an error is capped at 4096 characters, so a registry cannot flood the log and job summary.
-- Redacted Railway API errors no longer keep the raw response body or headers, which could repeat an echoed secret when the error object was serialized.
-- Error details in the job summary are HTML-escaped inside `<pre>`, so text from Railway or `docker` cannot close the block and render as markdown or HTML.
+- Redacted Railway API errors no longer keep the raw response body or headers, and each GraphQL error keeps only its scrubbed message (no `extensions`, `locations` or `path`). These could repeat an echoed secret when the error object was serialized.
+- The job summary is HTML-escaped: the error heading and hint, and the details (inside `<pre>`), so text from Railway, `docker` or a service label cannot render as markdown or HTML.
 
 ## [1.1.0] — 2026-07-09
 

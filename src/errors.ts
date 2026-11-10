@@ -51,7 +51,10 @@ export async function emitToCore(err: ActionError): Promise<void> {
     core.notice(hint, { title: 'Hint' });
   }
 
-  core.summary.addHeading(message, 3);
+  // Everything in the summary is HTML-escaped: core.summary inserts text
+  // into HTML verbatim, and message/hint can carry a label (which may hold
+  // `<` / `>`) or Railway text.
+  core.summary.addHeading(escapeHtml(message), 3);
   if (details) {
     // Escaped inside <pre>, not a ``` fence: details carry untrusted text
     // (Railway, docker), and a fence in it would end the block and let the
@@ -59,7 +62,7 @@ export async function emitToCore(err: ActionError): Promise<void> {
     core.summary.addRaw('\n<pre>' + escapeHtml(details) + '</pre>\n');
   }
   if (hint) {
-    core.summary.addQuote('💡 ' + hint);
+    core.summary.addQuote('💡 ' + escapeHtml(hint));
   }
 
   // The summary is best-effort: with no GITHUB_STEP_SUMMARY (some self-hosted

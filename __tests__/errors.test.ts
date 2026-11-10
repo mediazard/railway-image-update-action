@@ -57,6 +57,28 @@ describe('emitToCore — job summary', () => {
     expect(written).not.toContain('<script>');
   });
 
+  it('HTML-escapes the summary heading and hint too (a label can carry < >)', async () => {
+    const summaryFile = path.join(tmpDir, 'summary.md');
+    fs.writeFileSync(summaryFile, '');
+    process.env.GITHUB_STEP_SUMMARY = summaryFile;
+
+    await emitToCore(
+      new ActionError(
+        'Railway GraphQL error during: deployService:web<img src=x>',
+        undefined,
+        'Check <b>web<img src=x></b>',
+      ),
+    );
+
+    const written = fs.readFileSync(summaryFile, 'utf8');
+    expect(written).toContain(
+      '<h3>Railway GraphQL error during: deployService:web&lt;img src=x&gt;</h3>',
+    );
+    expect(written).toContain('Check &lt;b&gt;web&lt;img src=x&gt;&lt;/b&gt;');
+    expect(written).not.toContain('<img');
+    expect(written).not.toContain('<b>');
+  });
+
   it('resolves when GITHUB_STEP_SUMMARY is unset, logging a debug line instead', async () => {
     delete process.env.GITHUB_STEP_SUMMARY;
     const debug = vi.spyOn(core, 'debug');
