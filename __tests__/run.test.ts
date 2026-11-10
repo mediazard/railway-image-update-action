@@ -82,7 +82,7 @@ function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
     allowMutableTag: true,
     dryRun: false,
     ...overrides,
-  } as ActionInputs;
+  };
 }
 
 /** Configure the fake client with success canned responses for update + redeploy + status. */
@@ -463,10 +463,7 @@ describe('run — a deployment id carrying a command (parallel path)', () => {
 });
 
 function makeClientError(status: number): ClientError {
-  return new ClientError(
-    { status, headers: new Headers(), body: '', errors: [] } as never,
-    { query: '' } as never,
-  );
+  return new ClientError({ status, headers: new Headers(), body: '', errors: [] }, { query: '' });
 }
 
 const WEB_WORKER = (): Map<string, string> =>

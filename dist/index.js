@@ -67033,7 +67033,6 @@ async function waitForDeployment(client, deploymentId, opts = {}) {
     const started = now();
     let lastStatus = null;
     let lastTransitionAt = started;
-    // eslint-disable-next-line no-constant-condition
     while (true) {
         signal?.throwIfAborted();
         // One retry (not the default two): a single poll must not spend the budget.
@@ -67117,6 +67116,8 @@ function parseDeploymentSnapshot(raw, contextKey) {
 function defaultSleep(ms, signal) {
     return new Promise((resolve, reject) => {
         if (signal?.aborted) {
+            // Propagate the abort reason verbatim (AbortSignal semantics), whatever its type.
+            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
             reject(signal.reason ?? new Error('Aborted'));
             return;
         }
@@ -67127,6 +67128,7 @@ function defaultSleep(ms, signal) {
         const onAbort = () => {
             clearTimeout(timer);
             signal?.removeEventListener('abort', onAbort);
+            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
             reject(signal?.reason ?? new Error('Aborted'));
         };
         signal?.addEventListener('abort', onAbort, { once: true });
@@ -67648,6 +67650,8 @@ function formatRaw(value) {
         return s.length > 100 ? `${s.slice(0, 100)}…` : s;
     }
     catch {
+        // Last resort when JSON.stringify throws (e.g. a BigInt or a cycle); '[object Object]' is acceptable.
+        // eslint-disable-next-line @typescript-eslint/no-base-to-string
         return String(value);
     }
 }

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 vi.mock('@actions/core', () => ({
   info: vi.fn(),
   debug: vi.fn(),

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { ClientError } from 'graphql-request';
 
 import { ActionError } from '../../src/errors';
@@ -34,8 +33,8 @@ function makeClientError(status: number): ClientError {
       headers: new Headers(),
       body: '',
       errors: [],
-    } as any,
-    { query: '' } as any,
+    },
+    { query: '' },
   );
 }
 
@@ -1233,7 +1232,7 @@ describe('redeploy — outcome-unknown hint on every failure that is not a defin
         body: '',
         errors: [{ message: 'Service not found' }],
       } as any,
-      { query: '' } as any,
+      { query: '' },
     );
     const err = await redeployError(gqlError);
     expect(err.message).toContain('Railway GraphQL error');

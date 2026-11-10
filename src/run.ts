@@ -299,6 +299,8 @@ function formatRaw(value: unknown): string {
     const s = JSON.stringify(value);
     return s.length > 100 ? `${s.slice(0, 100)}…` : s;
   } catch {
+    // Last resort when JSON.stringify throws (e.g. a BigInt or a cycle); '[object Object]' is acceptable.
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string
     return String(value);
   }
 }

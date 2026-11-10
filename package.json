@@ -31,16 +31,16 @@
     "undici": "^6.29.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.19.2",
-    "@typescript-eslint/eslint-plugin": "^7.18.0",
-    "@typescript-eslint/parser": "^7.18.0",
     "@vercel/ncc": "^0.45.0",
     "@vitest/coverage-v8": "^4.1.12",
-    "eslint": "^8.57.0",
+    "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
     "msw": "~2.14.6",
     "prettier": "^3.9.10",
     "typescript": "^5.4.5",
+    "typescript-eslint": "^8.72.2",
     "vitest": "^4.1.12"
   }
 }
