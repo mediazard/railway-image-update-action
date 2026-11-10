@@ -3214,6 +3214,7 @@ var _location = __nccwpck_require__(2245);
 
 var _printLocation = __nccwpck_require__(6512);
 
+/** @category Errors */
 function toNormalizedOptions(args) {
   const firstArg = args[0];
 
@@ -3256,9 +3257,7 @@ class GraphQLError extends Error {
    * Enumerable, and appears in the result of JSON.stringify().
    */
 
-  /**
-   * An array of GraphQL AST Nodes corresponding to this error.
-   */
+  /** An array of GraphQL AST Nodes corresponding to this error. */
 
   /**
    * The source GraphQL document for the first location of this error.
@@ -3272,15 +3271,96 @@ class GraphQLError extends Error {
    * which correspond to this error.
    */
 
+  /** Original error that caused this GraphQLError, if one exists. */
+
+  /** Extension fields to add to the formatted error. */
+
   /**
-   * The original error thrown from a field resolver during execution.
+   * Creates a GraphQLError instance.
+   * @param message - Human-readable error message.
+   * @param options - Error metadata such as source locations, response path, original error, and extensions.
+   * This positional-arguments constructor overload is deprecated. Use the
+   * `GraphQLError(message, options)` overload instead.
+   * @example
+   * ```ts
+   * import { Kind } from 'graphql/language';
+   * import assert from 'node:assert/strict';
+   * // Create an error from AST nodes and response metadata.
+   * import { parse } from 'graphql/language';
+   * import { GraphQLError } from 'graphql/error';
+   *
+   * const document = parse('{ greeting }');
+   * const operation = document.definitions[0];
+   * assert(operation.kind === Kind.OPERATION_DEFINITION);
+   * const fieldNode = operation.selectionSet.selections[0];
+   * const error = new GraphQLError('Cannot query this field.', {
+   *   nodes: fieldNode,
+   *   path: ['greeting'],
+   *   extensions: { code: 'FORBIDDEN' },
+   * });
+   *
+   * error.message; // => 'Cannot query this field.'
+   * error.locations; // => [{ line: 1, column: 3 }]
+   * error.path; // => ['greeting']
+   * error.extensions; // => { code: 'FORBIDDEN' }
+   * ```
+   * @example
+   * ```ts
+   * // This variant derives locations from source positions and preserves the original error.
+   * import { Source } from 'graphql/language';
+   * import { GraphQLError } from 'graphql/error';
+   *
+   * const source = new Source('{ greeting }');
+   * const originalError = new Error('Database unavailable.');
+   * const error = new GraphQLError('Resolver failed.', {
+   *   source,
+   *   positions: [2],
+   *   path: ['greeting'],
+   *   originalError,
+   * });
+   *
+   * error.locations; // => [{ line: 1, column: 3 }]
+   * error.path; // => ['greeting']
+   * error.originalError; // => originalError
+   * ```
    */
 
   /**
-   * Extension fields to add to the formatted error.
-   */
-
-  /**
+   * Creates a GraphQLError instance using the legacy positional constructor.
+   * This deprecated overload will be removed in v17. Prefer the
+   * `GraphQLErrorOptions` object overload, which keeps optional error metadata
+   * in a single options bag.
+   * @param message - Human-readable error message.
+   * @param nodes - AST node or nodes associated with this error.
+   * @param source - Source document used to derive error locations.
+   * @param positions - Character offsets in the source document associated with
+   * this error.
+   * @param path - Response path where this error occurred during execution.
+   * @param originalError - Original error that caused this GraphQLError, if one
+   * exists.
+   * @param extensions - Extension fields to include in the formatted error.
+   * @example
+   * ```ts
+   * import { Source } from 'graphql/language';
+   * import { GraphQLError } from 'graphql/error';
+   *
+   * const source = new Source('{ greeting }');
+   * const originalError = new Error('Database unavailable.');
+   * const error = new GraphQLError(
+   *   'Resolver failed.',
+   *   undefined,
+   *   source,
+   *   [2],
+   *   ['greeting'],
+   *   originalError,
+   *   { code: 'INTERNAL' },
+   * );
+   *
+   * error.locations; // => [{ line: 1, column: 3 }]
+   * error.path; // => ['greeting']
+   * error.originalError; // => originalError
+   * error.extensions; // => { code: 'INTERNAL' }
+   * ```
    * @deprecated Please use the `GraphQLErrorOptions` constructor overload instead.
    */
   constructor(message, ...rawArgs) {
@@ -3322,12 +3402,13 @@ class GraphQLError extends Error {
         : nodeLocations.map((loc) => loc.start);
     this.locations =
       positions && source
-        ? positions.map((pos) => (0, _location.getLocation)(source, pos))
-        : nodeLocations === null || nodeLocations === void 0
-        ? void 0
-        : nodeLocations.map((loc) =>
-            (0, _location.getLocation)(loc.source, loc.start),
-          );
+        ? (0, _location.getLocations)(
+            positions.map((start) => ({
+              source,
+              start,
+            })),
+          )
+        : nodeLocations && (0, _location.getLocations)(nodeLocations);
     const originalExtensions = (0, _isObjectLike.isObjectLike)(
       originalError === null || originalError === void 0
         ? void 0
@@ -3392,10 +3473,30 @@ class GraphQLError extends Error {
     }
     /* c8 ignore stop */
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'GraphQLError';
   }
+  /**
+   * Returns this error as a human-readable message with source locations.
+   * @returns The formatted error string.
+   * @example
+   * ```ts
+   * import { Source } from 'graphql/language';
+   * import { GraphQLError } from 'graphql/error';
+   *
+   * const error = new GraphQLError('Cannot query field "name".', {
+   *   source: new Source('{ name }'),
+   *   positions: [2],
+   * });
+   *
+   * error.toString(); // => 'Cannot query field "name".\n\nGraphQL request:1:3\n1 | { name }\n  |   ^'
+   * ```
+   */
 
   toString() {
     let output = this.message;
@@ -3416,6 +3517,21 @@ class GraphQLError extends Error {
 
     return output;
   }
+  /**
+   * Returns the JSON representation used when this object is serialized.
+   * @returns The JSON-serializable representation.
+   * @example
+   * ```ts
+   * import { GraphQLError } from 'graphql/error';
+   *
+   * const error = new GraphQLError('Resolver failed.', {
+   *   path: ['viewer', 'name'],
+   *   extensions: { code: 'INTERNAL' },
+   * });
+   *
+   * error.toJSON(); // => { message: 'Resolver failed.', path: ['viewer', 'name'], extensions: { code: 'INTERNAL' } }
+   * ```
+   */
 
   toJSON() {
     const formattedError = {
@@ -3443,14 +3559,23 @@ exports.GraphQLError = GraphQLError;
 function undefinedIfEmpty(array) {
   return array === undefined || array.length === 0 ? undefined : array;
 }
-/**
- * See: https://spec.graphql.org/draft/#sec-Errors
- */
+/** See: https://spec.graphql.org/draft/#sec-Errors */
 
 /**
  * Prints a GraphQLError to a string, representing useful location information
- * about the error's position in the source.
+ * about the error's position in the source. This deprecated helper is retained
+ * for backwards compatibility; call `error.toString()` instead because
+ * printError will be removed in v17.
+ * @param error - The error to format.
+ * @returns The printed string representation.
+ * @example
+ * ```ts
+ * import { GraphQLError, printError } from 'graphql/error';
  *
+ * const message = printError(new GraphQLError('Example error'));
+ *
+ * message; // => 'Example error'
+ * ```
  * @deprecated Please use `error.toString` instead. Will be removed in v17
  */
 function printError(error) {
@@ -3458,8 +3583,19 @@ function printError(error) {
 }
 /**
  * Given a GraphQLError, format it according to the rules described by the
- * Response Format, Errors section of the GraphQL Specification.
+ * Response Format, Errors section of the GraphQL Specification. This deprecated
+ * helper is retained for backwards compatibility; call `error.toJSON()`
+ * instead because formatError will be removed in v17.
+ * @param error - The error to format.
+ * @returns The JSON-serializable formatted error.
+ * @example
+ * ```ts
+ * import { GraphQLError, formatError } from 'graphql/error';
  *
+ * const formatted = formatError(new GraphQLError('Example error'));
+ *
+ * formatted; // => { message: 'Example error' }
+ * ```
  * @deprecated Please use `error.toJSON` instead. Will be removed in v17
  */
 
@@ -3534,10 +3670,33 @@ var _toError = __nccwpck_require__(9615);
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Errors */
+
 /**
  * Given an arbitrary value, presumably thrown while attempting to execute a
  * GraphQL operation, produce a new GraphQLError aware of the location in the
  * document responsible for the original Error.
+ * @param rawOriginalError - The original error value to wrap.
+ * @param nodes - The AST nodes associated with the error.
+ * @param path - The response path associated with the error.
+ * @returns The GraphQL error.
+ * @example
+ * ```ts
+ * import { Kind } from 'graphql/language';
+ * import assert from 'node:assert/strict';
+ * import { parse } from 'graphql/language';
+ * import { locatedError } from 'graphql/error';
+ *
+ * const document = parse('{ viewer { name } }');
+ * const operation = document.definitions[0];
+ * assert(operation.kind === Kind.OPERATION_DEFINITION);
+ * const fieldNode = operation.selectionSet.selections[0];
+ * const error = locatedError(new Error('Resolver failed'), fieldNode, ['viewer']);
+ *
+ * error.message; // => 'Resolver failed'
+ * error.locations; // => [{ line: 1, column: 3 }]
+ * error.path; // => ['viewer']
+ * ```
  */
 function locatedError(rawOriginalError, nodes, path) {
   var _nodes;
@@ -3580,9 +3739,25 @@ exports.syntaxError = syntaxError;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Errors */
+
 /**
  * Produces a GraphQLError representing a syntax error, containing useful
  * descriptive information about the syntax error's position in the source.
+ * @param source - The GraphQL source containing the syntax error.
+ * @param position - Character offset where the syntax error was encountered.
+ * @param description - Human-readable description of the syntax error.
+ * @returns A GraphQLError located at the syntax error position.
+ * @example
+ * ```ts
+ * import { Source } from 'graphql/language';
+ * import { syntaxError } from 'graphql/error';
+ *
+ * const error = syntaxError(new Source('query {'), 7, 'Expected Name');
+ *
+ * error.message; // => 'Syntax Error: Expected Name'
+ * error.locations; // => [{ line: 1, column: 8 }]
+ * ```
  */
 function syntaxError(source, position, description) {
   return new _GraphQLError.GraphQLError(`Syntax Error: ${description}`, {
@@ -3631,6 +3806,7 @@ function collectFields(
   variableValues,
   runtimeType,
   selectionSet,
+  onSelectionSet,
 ) {
   const fields = new Map();
   collectFieldsImpl(
@@ -3641,6 +3817,7 @@ function collectFields(
     selectionSet,
     fields,
     new Set(),
+    onSelectionSet,
   );
   return fields;
 }
@@ -3690,7 +3867,12 @@ function collectFieldsImpl(
   selectionSet,
   fields,
   visitedFragmentNames,
+  onSelectionSet,
 ) {
+  onSelectionSet === null || onSelectionSet === void 0
+    ? void 0
+    : onSelectionSet(selectionSet);
+
   for (const selection of selectionSet.selections) {
     switch (selection.kind) {
       case _kinds.Kind.FIELD: {
@@ -3726,6 +3908,7 @@ function collectFieldsImpl(
           selection.selectionSet,
           fields,
           visitedFragmentNames,
+          onSelectionSet,
         );
         break;
       }
@@ -3758,6 +3941,7 @@ function collectFieldsImpl(
           fragment.selectionSet,
           fields,
           visitedFragmentNames,
+          onSelectionSet,
         );
         break;
       }
@@ -3767,6 +3951,8 @@ function collectFieldsImpl(
 /**
  * Determines if a field should be included based on the `@include` and `@skip`
  * directives, where `@skip` has higher precedence than `@include`.
+ *
+ * @internal
  */
 
 function shouldIncludeNode(variableValues, node) {
@@ -3796,6 +3982,8 @@ function shouldIncludeNode(variableValues, node) {
 }
 /**
  * Determines if a fragment is applicable to the given type.
+ *
+ * @internal
  */
 
 function doesFragmentConditionMatch(schema, fragment, type) {
@@ -3822,6 +4010,8 @@ function doesFragmentConditionMatch(schema, fragment, type) {
 }
 /**
  * Implements the logic to compute the key of a given field's entry
+ *
+ * @internal
  */
 
 function getFieldEntryKey(node) {
@@ -3886,10 +4076,14 @@ var _collectFields = __nccwpck_require__(7611);
 
 var _values = __nccwpck_require__(3604);
 
+/** @category Execution */
+
 /**
  * A memoized collection of relevant subfields with regard to the return
  * type. Memoizing ensures the subfields are not repeatedly calculated, which
  * saves overhead when resolving lists of values.
+ *
+ * @internal
  */
 const collectSubfields = (0, _memoize.memoize3)(
   (exeContext, returnType, fieldNodes) =>
@@ -3926,11 +4120,10 @@ const collectSubfields = (0, _memoize.memoize3)(
  *
  * Namely, schema of the type system that is currently executing,
  * and the fragments defined in the query document
- */
-
-/**
+ *
  * @internal
  */
+
 class CollectedErrors {
   constructor() {
     this._errorPositions = new Set();
@@ -3970,11 +4163,9 @@ class CollectedErrors {
   }
 }
 /**
- * The result of GraphQL execution.
- *
- *   - `errors` is included when any errors occurred as a non-empty array.
- *   - `data` is the result of a successful execution of the query.
- *   - `extensions` is reserved for adding non-standard properties.
+ * Represents the response produced by executing a GraphQL operation.
+ * @typeParam TData - Shape of the execution data payload.
+ * @typeParam TExtensions - Shape of the extensions payload.
  */
 
 /**
@@ -3986,6 +4177,136 @@ class CollectedErrors {
  *
  * If the arguments to this function do not result in a legal execution context,
  * a GraphQLError will be thrown immediately explaining the invalid input.
+ *
+ * Field errors are collected into the response instead of rejecting the
+ * returned promise. Only the field that produced the error and its descendants
+ * are omitted; sibling fields continue to execute. Errors from fields of
+ * non-null type may propagate to the nearest nullable parent, which can be the
+ * entire response data.
+ * @param args - The arguments used to perform the operation.
+ * @returns A completed execution result, or a promise resolving to one when execution is asynchronous.
+ * @example
+ * ```ts
+ * // Execute an asynchronous operation with variables.
+ * import { parse } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { execute } from 'graphql/execution';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting(name: String!): String
+ *   }
+ * `);
+ *
+ * const result = await execute({
+ *   schema,
+ *   document: parse('query ($name: String!) { greeting(name: $name) }'),
+ *   rootValue: {
+ *     greeting: ({ name }: { name: string }) => `Hello, ${name}!`,
+ *   },
+ *   variableValues: { name: 'Ada' },
+ * }); // => { data: { greeting: 'Hello, Ada!' } }
+ * ```
+ * @example
+ * ```ts
+ * // This variant supplies context plus custom field and type resolvers.
+ * import { parse } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { execute } from 'graphql/execution';
+ *
+ * const schema = buildSchema(`
+ *   interface Named {
+ *     name: String!
+ *   }
+ *
+ *   type User implements Named {
+ *     name: String!
+ *   }
+ *
+ *   type Query {
+ *     viewer: Named
+ *   }
+ * `);
+ *
+ * const result = await execute({
+ *   schema,
+ *   document: parse('query Viewer { viewer { __typename name } }'),
+ *   rootValue: { viewer: { kind: 'user', name: 'Ada' } },
+ *   contextValue: { locale: 'en' },
+ *   operationName: 'Viewer',
+ *   fieldResolver: (source, _args, _contextValue, info) => {
+ *     return source[info.fieldName];
+ *   },
+ *   typeResolver: (value) => {
+ *     return value.kind === 'user' ? 'User' : undefined;
+ *   },
+ * });
+ *
+ * result; // => { data: { viewer: { __typename: 'User', name: 'Ada' } } }
+ * ```
+ * @example
+ * ```ts
+ * // This variant shows how resolver errors become field errors in the result.
+ * import { parse } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { execute } from 'graphql/execution';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     broken: String
+ *   }
+ * `);
+ * const document = parse('{ broken }');
+ *
+ * const result = await execute({
+ *   schema,
+ *   document,
+ *   rootValue: {
+ *     broken: () => {
+ *       throw new Error('Resolver failed.');
+ *     },
+ *   },
+ * });
+ *
+ * result.data?.broken; // => null
+ * result.errors?.[0].message; // => 'Resolver failed.'
+ * ```
+ * @example
+ * ```ts
+ * // This variant limits how many variable coercion errors are reported.
+ * import { parse } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { execute } from 'graphql/execution';
+ *
+ * const schema = buildSchema(`
+ *   input ReviewInput {
+ *     stars: Int!
+ *   }
+ *
+ *   type Query {
+ *     review(input: ReviewInput!): String
+ *   }
+ * `);
+ * const document = parse(`
+ *   query ($first: ReviewInput!, $second: ReviewInput!) {
+ *     first: review(input: $first)
+ *     second: review(input: $second)
+ *   }
+ * `);
+ *
+ * const result = await execute({
+ *   schema,
+ *   document,
+ *   variableValues: {
+ *     first: { stars: 'bad' },
+ *     second: { stars: 'also bad' },
+ *   },
+ *   options: { maxCoercionErrors: 1 },
+ * });
+ *
+ * result.errors?.length; // => 2
+ * result.errors?.[1].message.includes('error limit reached'); // => true
+ * ```
  */
 function execute(args) {
   // Temporary for v15 to v16 migration. Remove in v17
@@ -4005,17 +4326,7 @@ function execute(args) {
     return {
       errors: exeContext,
     };
-  } // Return a Promise that will eventually resolve to the data described by
-  // The "Response" section of the GraphQL specification.
-  //
-  // If errors are encountered while executing a GraphQL field, only that
-  // field and its descendants will be omitted, and sibling fields will still
-  // be executed. An execution which encounters errors will still result in a
-  // resolved Promise.
-  //
-  // Errors from sub-fields of a NonNull type may propagate to the top level,
-  // at which point we still log the error and null the parent field, which
-  // in this case is the entire response.
+  }
 
   try {
     const { operation } = exeContext;
@@ -4041,6 +4352,53 @@ function execute(args) {
  * Also implements the "Executing requests" section of the GraphQL specification.
  * However, it guarantees to complete synchronously (or throw an error) assuming
  * that all field resolvers are also synchronous.
+ * @param args - The arguments used to perform the operation.
+ * @returns Completed execution output for a synchronous operation.
+ * @example
+ * ```ts
+ * // Execute an operation synchronously when all resolvers are synchronous.
+ * import { parse } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { executeSync } from 'graphql/execution';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting: String
+ *   }
+ * `);
+ * const document = parse('{ greeting }');
+ *
+ * const result = executeSync({
+ *   schema,
+ *   document,
+ *   rootValue: {
+ *     greeting: 'Hello',
+ *   },
+ * });
+ *
+ * result; // => { data: { greeting: 'Hello' } }
+ * ```
+ * @example
+ * ```ts
+ * // This variant shows executeSync throwing when a resolver returns a promise.
+ * import { parse } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { executeSync } from 'graphql/execution';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting: String
+ *   }
+ * `);
+ *
+ * executeSync({
+ *   schema,
+ *   document: parse('{ greeting }'),
+ *   rootValue: {
+ *     greeting: async () => 'Hello',
+ *   },
+ * }); // throws an error
+ * ```
  */
 
 function executeSync(args) {
@@ -4055,6 +4413,8 @@ function executeSync(args) {
 /**
  * Given a completed execution context and data, build the `{ errors, data }`
  * response defined by the "Response" section of the GraphQL specification.
+ *
+ * @internal
  */
 
 function buildResponse(data, errors) {
@@ -4069,7 +4429,9 @@ function buildResponse(data, errors) {
 }
 /**
  * Essential assertions before executing to provide developer feedback for
- * improper use of the GraphQL library.
+ * improper use of the GraphQL library. This deprecated internal helper will be
+ * removed in v17; call `assertValidSchema()` and rely on TypeScript checks
+ * instead.
  *
  * @deprecated will be removed in v17 in favor of assertValidSchema() and TS checks
  * @internal
@@ -4097,7 +4459,10 @@ function assertValidExecutionArguments(schema, document, rawVariableValues) {
  */
 
 function buildExecutionContext(args) {
-  var _definition$name, _operation$variableDe, _options$maxCoercionE;
+  var _definition$name,
+    _operation$variableDe,
+    _options$maxCoercionE,
+    _args$hideSuggestions;
 
   const {
     schema,
@@ -4180,6 +4545,11 @@ function buildExecutionContext(args) {
         _options$maxCoercionE !== void 0
           ? _options$maxCoercionE
           : 50,
+      hideSuggestions:
+        (_args$hideSuggestions = args.hideSuggestions) !== null &&
+        _args$hideSuggestions !== void 0
+          ? _args$hideSuggestions
+          : false,
     },
   );
 
@@ -4211,6 +4581,8 @@ function buildExecutionContext(args) {
 }
 /**
  * Implements the "Executing operations" section of the spec.
+ *
+ * @internal
  */
 
 function executeOperation(exeContext, operation, rootValue) {
@@ -4256,6 +4628,8 @@ function executeOperation(exeContext, operation, rootValue) {
 /**
  * Implements the "Executing selection sets" section of the spec
  * for fields that must be executed serially.
+ *
+ * @internal
  */
 
 function executeFieldsSerially(
@@ -4297,6 +4671,8 @@ function executeFieldsSerially(
 /**
  * Implements the "Executing selection sets" section of the spec
  * for fields that may be executed in parallel.
+ *
+ * @internal
  */
 
 function executeFields(exeContext, parentType, sourceValue, path, fields) {
@@ -4346,6 +4722,8 @@ function executeFields(exeContext, parentType, sourceValue, path, fields) {
  * In particular, this function figures out the value that the field returns by
  * calling its resolve function, then calls completeValue to complete promises,
  * serialize scalars, or execute the sub-selection-set for objects.
+ *
+ * @internal
  */
 
 function executeField(exeContext, parentType, source, fieldNodes, path) {
@@ -4425,9 +4803,7 @@ function executeField(exeContext, parentType, source, fieldNodes, path) {
     return handleFieldError(error, returnType, path, exeContext);
   }
 }
-/**
- * @internal
- */
+/** @internal */
 
 function buildResolveInfo(exeContext, fieldDef, fieldNodes, parentType, path) {
   // The resolve function's optional fourth argument is a collection of
@@ -4477,6 +4853,8 @@ function handleFieldError(error, returnType, path, exeContext) {
  *
  * Otherwise, the field type expects a sub-selection set, and will complete the
  * value by executing all sub-selections.
+ *
+ * @internal
  */
 
 function completeValue(exeContext, returnType, fieldNodes, info, path, result) {
@@ -4560,6 +4938,8 @@ function completeValue(exeContext, returnType, fieldNodes, info, path, result) {
 /**
  * Complete a list value by completing each item in the list with the
  * inner type
+ *
+ * @internal
  */
 
 function completeListValue(
@@ -4638,6 +5018,8 @@ function completeListValue(
 /**
  * Complete a Scalar or Enum by serializing to a valid value, returning
  * null if serialization is not possible.
+ *
+ * @internal
  */
 
 function completeLeafValue(returnType, result) {
@@ -4658,6 +5040,8 @@ function completeLeafValue(returnType, result) {
 /**
  * Complete a value of an abstract type by determining the runtime object type
  * of that value, then complete the value for that type.
+ *
+ * @internal
  */
 
 function completeAbstractValue(
@@ -4778,6 +5162,8 @@ function ensureValidRuntimeType(
 }
 /**
  * Complete an Object value by executing all sub-selections.
+ *
+ * @internal
  */
 
 function completeObjectValue(
@@ -4852,27 +5238,37 @@ const defaultTypeResolver = function (value, contextValue, info, abstractType) {
   const possibleTypes = info.schema.getPossibleTypes(abstractType);
   const promisedIsTypeOfResults = [];
 
-  for (let i = 0; i < possibleTypes.length; i++) {
-    const type = possibleTypes[i];
+  try {
+    for (let i = 0; i < possibleTypes.length; i++) {
+      const type = possibleTypes[i];
 
-    if (type.isTypeOf) {
-      const isTypeOfResult = type.isTypeOf(value, contextValue, info);
+      if (type.isTypeOf) {
+        const isTypeOfResult = type.isTypeOf(value, contextValue, info);
 
-      if ((0, _isPromise.isPromise)(isTypeOfResult)) {
-        promisedIsTypeOfResults[i] = isTypeOfResult;
-      } else if (isTypeOfResult) {
-        if (promisedIsTypeOfResults.length) {
-          // Explicitly ignore any promise rejections
-          Promise.allSettled(promisedIsTypeOfResults)
-            /* c8 ignore next 3 */
-            .catch(() => {
-              // Do nothing
-            });
+        if ((0, _isPromise.isPromise)(isTypeOfResult)) {
+          promisedIsTypeOfResults[i] = isTypeOfResult;
+        } else if (isTypeOfResult) {
+          if (promisedIsTypeOfResults.length) {
+            // Explicitly ignore any promise rejections
+            Promise.allSettled(promisedIsTypeOfResults)
+              /* c8 ignore next 3 */
+              .catch(() => {
+                // Do nothing
+              });
+          }
+
+          return type.name;
         }
-
-        return type.name;
       }
     }
+  } catch (error) {
+    if (promisedIsTypeOfResults.length) {
+      return Promise.allSettled(promisedIsTypeOfResults).then(() => {
+        throw error;
+      });
+    }
+
+    throw error;
   }
 
   if (promisedIsTypeOfResults.length) {
@@ -5038,6 +5434,8 @@ exports.mapAsyncIterator = mapAsyncIterator;
 /**
  * Given an AsyncIterable and a callback function, return an AsyncIterator
  * which produces values mapped via calling the callback function.
+ *
+ * @internal
  */
 function mapAsyncIterator(iterable, callback) {
   const iterator = iterable[Symbol.asyncIterator]();
@@ -5053,18 +5451,18 @@ function mapAsyncIterator(iterable, callback) {
         done: false,
       };
     } catch (error) {
-      /* c8 ignore start */
-      // FIXME: add test case
-      if (typeof iterator.return === 'function') {
-        try {
-          await iterator.return();
-        } catch (_e) {
-          /* ignore error */
-        }
-      }
-
+      await returnIgnoringErrors();
       throw error;
-      /* c8 ignore stop */
+    }
+  }
+
+  async function returnIgnoringErrors() {
+    if (typeof iterator.return === 'function') {
+      try {
+        await iterator.return();
+      } catch (_error) {
+        // Keep the original error when closing the source also fails.
+      }
     }
   }
 
@@ -5088,6 +5486,7 @@ function mapAsyncIterator(iterable, callback) {
         return mapResult(await iterator.throw(error));
       }
 
+      await returnIgnoringErrors();
       throw error;
     },
 
@@ -5132,10 +5531,12 @@ var _mapAsyncIterator = __nccwpck_require__(974);
 
 var _values = __nccwpck_require__(3604);
 
+/** @category Subscriptions */
+
 /**
  * Implements the "Subscribe" algorithm described in the GraphQL specification.
  *
- * Returns a Promise which resolves to either an AsyncIterator (if successful)
+ * Returns a Promise that resolves to either an AsyncIterator (if successful)
  * or an ExecutionResult (error). The promise will be rejected if the schema or
  * other arguments to this function are invalid, or if the resolved event stream
  * is not an async iterable.
@@ -5151,7 +5552,125 @@ var _values = __nccwpck_require__(3604);
  * If the operation succeeded, the promise resolves to an AsyncIterator, which
  * yields a stream of ExecutionResults representing the response stream.
  *
- * Accepts either an object with named arguments, or individual arguments.
+ * Each payload yielded by the source event stream is executed with the payload
+ * as the root value. This maps the subscription source stream into the response
+ * stream described by the GraphQL specification.
+ *
+ * Accepts an object with named arguments.
+ * @param args - The arguments used to perform the operation.
+ * @returns A source stream mapped to execution results, or an execution result
+ * containing subscription errors.
+ * @example
+ * ```ts
+ * // Use a same-named rootValue function to provide the source event stream.
+ * import assert from 'node:assert';
+ * import { parse } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { subscribe } from 'graphql/execution';
+ *
+ * async function* greetings() {
+ *   yield { greeting: 'Hello' };
+ *   yield { greeting: 'Bonjour' };
+ * }
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     noop: String
+ *   }
+ *
+ *   type Subscription {
+ *     greeting: String
+ *   }
+ * `);
+ *
+ * const result = await subscribe({
+ *   schema,
+ *   document: parse('subscription { greeting }'),
+ *   rootValue: { greeting: () => greetings() },
+ * });
+ *
+ * assert('next' in result);
+ *
+ * const firstPayload = await result.next();
+ * firstPayload.value; // => { data: { greeting: 'Hello' } }
+ * ```
+ * @example
+ * ```ts
+ * // This variant supplies events through a custom subscribeFieldResolver.
+ * import assert from 'node:assert';
+ * import { parse } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { subscribe } from 'graphql/execution';
+ *
+ * async function* defaultGreetings() {
+ *   yield { greeting: 'Hello' };
+ * }
+ *
+ * async function* frenchGreetings() {
+ *   yield { greeting: 'Bonjour' };
+ * }
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     noop: String
+ *   }
+ *
+ *   type Subscription {
+ *     greeting(locale: String): String
+ *   }
+ * `);
+ *
+ * const result = await subscribe({
+ *   schema,
+ *   document: parse(
+ *     'subscription Greeting($locale: String) { greeting(locale: $locale) }',
+ *   ),
+ *   rootValue: {
+ *     greeting: (
+ *       args: { locale?: string },
+ *       contextValue: { defaultLocale: string },
+ *     ) => {
+ *       const locale = args.locale ?? contextValue.defaultLocale;
+ *       return locale === 'fr' ? frenchGreetings() : defaultGreetings();
+ *     },
+ *   },
+ *   contextValue: { defaultLocale: 'fr' },
+ *   variableValues: { locale: 'fr' },
+ *   operationName: 'Greeting',
+ *   subscribeFieldResolver: (rootValue, args, contextValue, info) => {
+ *     args.locale; // => 'fr'
+ *     return rootValue[info.fieldName](args, contextValue);
+ *   },
+ * });
+ *
+ * assert('next' in result);
+ *
+ * const firstPayload = await result.next();
+ * firstPayload.value; // => { data: { greeting: 'Bonjour' } }
+ * ```
+ * @example
+ * ```ts
+ * // This variant shows the error result when the schema has no subscription root.
+ * import assert from 'node:assert';
+ * import { parse } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { subscribe } from 'graphql/execution';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     noop: String
+ *   }
+ * `);
+ *
+ * const result = await subscribe({
+ *   schema,
+ *   document: parse('subscription { greeting }'),
+ * });
+ *
+ * assert('errors' in result);
+ *
+ * result.errors?.[0].message; // => 'Schema is not configured to execute subscription operation.'
+ * ```
  */
 async function subscribe(args) {
   // Temporary for v15 to v16 migration. Remove in v17
@@ -5164,15 +5683,10 @@ async function subscribe(args) {
 
   if (!(0, _isAsyncIterable.isAsyncIterable)(resultOrStream)) {
     return resultOrStream;
-  } // For each payload yielded from a subscription, map it over the normal
-  // GraphQL `execute` function, with `payload` as the rootValue.
-  // This implements the "MapSourceToResponseEvent" algorithm described in
-  // the GraphQL specification. The `execute` function provides the
-  // "ExecuteSubscriptionEvent" algorithm, as it is nearly identical to the
-  // "ExecuteQuery" algorithm, for which `execute` is also used.
+  }
 
   const mapSourceToResponse = (payload) =>
-    (0, _execute.execute)({ ...args, rootValue: payload }); // Map every source value to a ExecutionResult value as described above.
+    (0, _execute.execute)({ ...args, rootValue: payload });
 
   return (0, _mapAsyncIterator.mapAsyncIterator)(
     resultOrStream,
@@ -5202,7 +5716,7 @@ function toNormalizedArgs(args) {
  * Implements the "CreateSourceEventStream" algorithm described in the
  * GraphQL specification, resolving the subscription source event stream.
  *
- * Returns a Promise which resolves to either an AsyncIterable (if successful)
+ * Returns a Promise that resolves to either an AsyncIterable (if successful)
  * or an ExecutionResult (error). The promise will be rejected if the schema or
  * other arguments to this function are invalid, or if the resolved event stream
  * is not an async iterable.
@@ -5211,7 +5725,7 @@ function toNormalizedArgs(args) {
  * compliant subscription, a GraphQL Response (ExecutionResult) with
  * descriptive errors and no data will be returned.
  *
- * If the the source stream could not be created due to faulty subscription
+ * If the source stream could not be created due to faulty subscription
  * resolver logic or underlying systems, the promise will resolve to a single
  * ExecutionResult containing `errors` and no `data`.
  *
@@ -5225,8 +5739,39 @@ function toNormalizedArgs(args) {
  * different process or machine than the stateless GraphQL execution engine,
  * or otherwise separating these two steps. For more on this, see the
  * "Supporting Subscriptions at Scale" information in the GraphQL specification.
+ * @param args - The arguments used to perform the operation.
+ * @returns The source event stream, or an execution result containing subscription errors.
+ * @example
+ * ```ts
+ * import { parse } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { createSourceEventStream } from 'graphql/execution';
+ *
+ * async function* greetings() {
+ *   yield { greeting: 'Hello' };
+ * }
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     noop: String
+ *   }
+ *
+ *   type Subscription {
+ *     greeting: String
+ *   }
+ * `);
+ *
+ * const stream = await createSourceEventStream({
+ *   schema,
+ *   document: parse('subscription { greeting }'),
+ *   rootValue: { greeting: () => greetings() },
+ * });
+ *
+ * Symbol.asyncIterator in stream; // => true
+ * ```
  */
 
+/** @internal */
 async function createSourceEventStream(...rawArgs) {
   const args = toNormalizedArgs(rawArgs);
   const { schema, document, variableValues } = args; // If arguments are missing or incorrectly typed, this is an internal
@@ -5386,14 +5931,84 @@ var _typeFromAST = __nccwpck_require__(6738);
 
 var _valueFromAST = __nccwpck_require__(6495);
 
+/** @category Values */
+
 /**
  * Prepares an object map of variableValues of the correct type based on the
  * provided variable definitions and arbitrary input. If the input cannot be
- * parsed to match the variable definitions, a GraphQLError will be thrown.
+ * parsed to match the variable definitions, GraphQLError values are returned.
  *
- * Note: The returned value is a plain Object with a prototype, since it is
+ * Note: Returned value is a plain Object with a prototype, since it is
  * exposed to user code. Care should be taken to not pull values from the
  * Object prototype.
+ * @param schema - GraphQL schema to use.
+ * @param varDefNodes - The variable definition AST nodes to coerce.
+ * @param inputs - The runtime variable values keyed by variable name.
+ * @param options - Optional variable coercion options, including error limits.
+ * @returns Coerced variable values, or request errors.
+ * @example
+ * ```ts
+ * import assert from 'node:assert/strict';
+ * // Coerce provided variables and apply operation defaults.
+ * import { parse, Kind } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { getVariableValues } from 'graphql/execution';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     reviews(stars: Int!, limit: Int = 10): [String]
+ *   }
+ * `);
+ * const document = parse(`
+ *   query ($stars: Int!, $limit: Int = 10) {
+ *     reviews(stars: $stars, limit: $limit)
+ *   }
+ * `);
+ * const operation = document.definitions[0];
+ * assert(operation.kind === Kind.OPERATION_DEFINITION);
+ *
+ * const result = getVariableValues(schema, operation.variableDefinitions ?? [], {
+ *   stars: 5,
+ * });
+ *
+ * result; // => { coerced: { stars: 5, limit: 10 } }
+ * ```
+ * @example
+ * ```ts
+ * import assert from 'node:assert/strict';
+ * // This variant uses maxErrors to cap reported coercion errors.
+ * import { parse, Kind } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { getVariableValues } from 'graphql/execution';
+ *
+ * const schema = buildSchema(`
+ *   input ReviewInput {
+ *     stars: Int!
+ *   }
+ *
+ *   type Query {
+ *     review(input: ReviewInput!): String
+ *   }
+ * `);
+ * const document = parse(`
+ *   query ($first: ReviewInput!, $second: ReviewInput!) {
+ *     first: review(input: $first)
+ *     second: review(input: $second)
+ *   }
+ * `);
+ * const operation = document.definitions[0];
+ * assert(operation.kind === Kind.OPERATION_DEFINITION);
+ *
+ * const result = getVariableValues(
+ *   schema,
+ *   operation.variableDefinitions ?? [],
+ *   { first: { stars: 'bad' }, second: { stars: 'also bad' } },
+ *   { maxErrors: 1 },
+ * );
+ *
+ * result.errors?.length; // => 2
+ * result.errors?.[1].message.includes('error limit reached'); // => true
+ * ```
  */
 function getVariableValues(schema, varDefNodes, inputs, options) {
   const errors = [];
@@ -5414,6 +6029,7 @@ function getVariableValues(schema, varDefNodes, inputs, options) {
 
         errors.push(error);
       },
+      options === null || options === void 0 ? void 0 : options.hideSuggestions,
     );
 
     if (errors.length === 0) {
@@ -5430,7 +6046,13 @@ function getVariableValues(schema, varDefNodes, inputs, options) {
   };
 }
 
-function coerceVariableValues(schema, varDefNodes, inputs, onError) {
+function coerceVariableValues(
+  schema,
+  varDefNodes,
+  inputs,
+  onError,
+  hideSuggestions,
+) {
   const coercedValues = Object.create(null);
 
   for (const varDefNode of varDefNodes) {
@@ -5440,7 +6062,7 @@ function coerceVariableValues(schema, varDefNodes, inputs, onError) {
     if (!(0, _definition.isInputType)(varType)) {
       // Must use input types for variables. This should be caught during
       // validation, however is checked again here for safety.
-      const varTypeStr = (0, _printer.print)(varDefNode.type);
+      const varTypeStr = (0, _printer.printForError)(varDefNode.type);
       onError(
         new _GraphQLError.GraphQLError(
           `Variable "$${varName}" expected value of type "${varTypeStr}" which cannot be used as an input type.`,
@@ -5509,6 +6131,7 @@ function coerceVariableValues(schema, varDefNodes, inputs, onError) {
           }),
         );
       },
+      hideSuggestions,
     );
   }
 
@@ -5518,9 +6141,60 @@ function coerceVariableValues(schema, varDefNodes, inputs, onError) {
  * Prepares an object map of argument values given a list of argument
  * definitions and list of argument AST nodes.
  *
- * Note: The returned value is a plain Object with a prototype, since it is
+ * Note: Returned value is a plain Object with a prototype, since it is
  * exposed to user code. Care should be taken to not pull values from the
  * Object prototype.
+ * @param def - The field or directive definition whose arguments should be coerced.
+ * @param node - The AST node to inspect.
+ * @param variableValues - The runtime variable values keyed by variable name.
+ * @returns Coerced argument values keyed by argument name.
+ * @example
+ * ```ts
+ * import assert from 'node:assert/strict';
+ * // Read literal argument values and defaults.
+ * import { parse, Kind } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { getArgumentValues } from 'graphql/execution';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     reviews(stars: Int!, limit: Int = 10): [String]
+ *   }
+ * `);
+ * const fieldDef = schema.getQueryType()?.getFields().reviews;
+ * assert(fieldDef);
+ * const document = parse('{ reviews(stars: 5) }');
+ * const operation = document.definitions[0];
+ * assert(operation.kind === Kind.OPERATION_DEFINITION);
+ * const fieldNode = operation.selectionSet.selections[0];
+ * assert(fieldNode.kind === Kind.FIELD);
+ *
+ * getArgumentValues(fieldDef, fieldNode); // => { stars: 5, limit: 10 }
+ * ```
+ * @example
+ * ```ts
+ * import assert from 'node:assert/strict';
+ * // This variant resolves argument values from operation variables.
+ * import { parse, Kind } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { getArgumentValues } from 'graphql/execution';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     reviews(stars: Int!): [String]
+ *   }
+ * `);
+ * const fieldDef = schema.getQueryType()?.getFields().reviews;
+ * assert(fieldDef);
+ * const document = parse('query ($stars: Int!) { reviews(stars: $stars) }');
+ * const operation = document.definitions[0];
+ * assert(operation.kind === Kind.OPERATION_DEFINITION);
+ * const fieldNode = operation.selectionSet.selections[0];
+ * assert(fieldNode.kind === Kind.FIELD);
+ *
+ * getArgumentValues(fieldDef, fieldNode, { stars: 5 }); // => { stars: 5 }
+ * getArgumentValues(fieldDef, fieldNode, {}); // throws an error
+ * ```
  */
 
 function getArgumentValues(def, node, variableValues) {
@@ -5613,7 +6287,7 @@ function getArgumentValues(def, node, variableValues) {
       // execution. This is a runtime check to ensure execution does not
       // continue with an invalid argument value.
       throw new _GraphQLError.GraphQLError(
-        `Argument "${name}" has invalid value ${(0, _printer.print)(
+        `Argument "${name}" has invalid value ${(0, _printer.printForError)(
           valueNode,
         )}.`,
         {
@@ -5628,17 +6302,60 @@ function getArgumentValues(def, node, variableValues) {
   return { ...coercedValues };
 }
 /**
+ * AST node shape accepted by getDirectiveValues.
+ * @internal
+ */
+
+/**
  * Prepares an object map of argument values given a directive definition
  * and a AST node which may contain directives. Optionally also accepts a map
  * of variable values.
  *
  * If the directive does not exist on the node, returns undefined.
  *
- * Note: The returned value is a plain Object with a prototype, since it is
+ * Note: Returned value is a plain Object with a prototype, since it is
  * exposed to user code. Care should be taken to not pull values from the
  * Object prototype.
+ * @param directiveDef - The directive definition whose arguments should be coerced.
+ * @param node - The AST node to inspect.
+ * @param variableValues - The runtime variable values keyed by variable name.
+ * @returns Coerced directive argument values keyed by argument name.
+ * @example
+ * ```ts
+ * import assert from 'node:assert/strict';
+ * // Read literal directive arguments from a node.
+ * import { parse, Kind } from 'graphql/language';
+ * import { GraphQLSkipDirective } from 'graphql/type';
+ * import { getDirectiveValues } from 'graphql/execution';
+ *
+ * const document = parse('{ name @skip(if: true) }');
+ * const operation = document.definitions[0];
+ * assert(operation.kind === Kind.OPERATION_DEFINITION);
+ * const fieldNode = operation.selectionSet.selections[0];
+ *
+ * getDirectiveValues(GraphQLSkipDirective, fieldNode); // => { if: true }
+ * ```
+ * @example
+ * ```ts
+ * import assert from 'node:assert/strict';
+ * // This variant resolves directive arguments from variables and handles absent directives.
+ * import { parse, Kind } from 'graphql/language';
+ * import { GraphQLIncludeDirective } from 'graphql/type';
+ * import { getDirectiveValues } from 'graphql/execution';
+ *
+ * const document = parse(
+ *   'query ($includeName: Boolean!) { name @include(if: $includeName) }',
+ * );
+ * const operation = document.definitions[0];
+ * assert(operation.kind === Kind.OPERATION_DEFINITION);
+ * const fieldNode = operation.selectionSet.selections[0];
+ *
+ * getDirectiveValues(GraphQLIncludeDirective, fieldNode, {
+ *   includeName: false,
+ * }); // => { if: false }
+ * getDirectiveValues(GraphQLIncludeDirective, { directives: [] }); // => undefined
+ * ```
  */
-
 function getDirectiveValues(directiveDef, node, variableValues) {
   var _node$directives;
 
@@ -5685,15 +6402,129 @@ var _validate2 = __nccwpck_require__(7063);
 
 var _execute = __nccwpck_require__(8923);
 
+/**
+ * Parses, validates, and executes a GraphQL document against a schema.
+ *
+ * This is the primary entry point for fulfilling GraphQL operations. Use this
+ * when you want a single-call request lifecycle that returns a promise in all
+ * cases.
+ *
+ * More sophisticated GraphQL servers, such as those which persist queries, may
+ * wish to separate the validation and execution phases to a static-time tooling
+ * step and a server runtime step.
+ * @param args - Request execution arguments, including schema and source.
+ * @returns A promise that resolves to an execution result or validation errors.
+ * @example
+ * ```ts
+ * // Execute a complete asynchronous request with variables.
+ * import { graphql, buildSchema } from 'graphql';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting(name: String!): String
+ *   }
+ * `);
+ *
+ * const result = await graphql({
+ *   schema,
+ *   source: 'query SayHello($name: String!) { greeting(name: $name) }',
+ *   rootValue: {
+ *     greeting: ({ name }: { name: string }) => `Hello, ${name}!`,
+ *   },
+ *   variableValues: { name: 'Ada' },
+ *   operationName: 'SayHello',
+ * }); // => { data: { greeting: 'Hello, Ada!' } }
+ * ```
+ * @example
+ * ```ts
+ * // This variant supplies context plus custom field and type resolvers.
+ * import { graphql, buildSchema } from 'graphql';
+ *
+ * const schema = buildSchema(`
+ *   interface Named {
+ *     name: String!
+ *   }
+ *
+ *   type User implements Named {
+ *     name: String!
+ *   }
+ *
+ *   type Query {
+ *     viewer: Named
+ *   }
+ * `);
+ *
+ * const result = await graphql({
+ *   schema,
+ *   source: '{ viewer { __typename name } }',
+ *   rootValue: { viewer: { kind: 'user', name: 'Ada' } },
+ *   contextValue: { locale: 'en' },
+ *   fieldResolver: (source, _args, context, info) => {
+ *     context.locale; // => 'en'
+ *     return source[info.fieldName];
+ *   },
+ *   typeResolver: (value) => {
+ *     return value.kind === 'user' ? 'User' : undefined;
+ *   },
+ * }); // => { data: { viewer: { __typename: 'User', name: 'Ada' } } }
+ * ```
+ * @category Request Pipeline
+ */
 function graphql(args) {
   // Always return a Promise for a consistent API.
   return new Promise((resolve) => resolve(graphqlImpl(args)));
 }
 /**
- * The graphqlSync function also fulfills GraphQL operations by parsing,
- * validating, and executing a GraphQL document along side a GraphQL schema.
- * However, it guarantees to complete synchronously (or throw an error) assuming
- * that all field resolvers are also synchronous.
+ * Parses, validates, and executes a GraphQL document synchronously.
+ *
+ * This function guarantees that execution completes synchronously, or throws an
+ * error, assuming that all field resolvers are also synchronous. It throws when
+ * any resolver returns a promise.
+ * @param args - Request execution arguments, including schema and source.
+ * @returns Completed execution output, or request errors if parsing or
+ * validation fails.
+ * @example
+ * ```ts
+ * // Execute a complete synchronous request with variables.
+ * import { graphqlSync, buildSchema } from 'graphql';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting(name: String!): String
+ *   }
+ * `);
+ *
+ * const result = graphqlSync({
+ *   schema,
+ *   source: 'query SayHello($name: String!) { greeting(name: $name) }',
+ *   rootValue: {
+ *     greeting: ({ name }: { name: string }) => `Hello, ${name}!`,
+ *   },
+ *   variableValues: { name: 'Ada' },
+ *   operationName: 'SayHello',
+ * }); // => { data: { greeting: 'Hello, Ada!' } }
+ * ```
+ * @example
+ * ```ts
+ * // This variant uses a synchronous custom field resolver and context.
+ * import { graphqlSync, buildSchema } from 'graphql';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting: String
+ *   }
+ * `);
+ *
+ * const result = graphqlSync({
+ *   schema,
+ *   source: '{ greeting }',
+ *   fieldResolver: (_source, _args, contextValue) => {
+ *     return contextValue.defaultGreeting;
+ *   },
+ *   contextValue: { defaultGreeting: 'Hello' },
+ * }); // => { data: { greeting: 'Hello' } }
+ * ```
+ * @category Request Pipeline
  */
 
 function graphqlSync(args) {
@@ -5722,6 +6553,7 @@ function graphqlImpl(args) {
     operationName,
     fieldResolver,
     typeResolver,
+    hideSuggestions,
   } = args; // Validate Schema
 
   const schemaValidationErrors = (0, _validate.validateSchema)(schema);
@@ -5742,7 +6574,14 @@ function graphqlImpl(args) {
     };
   } // Validate
 
-  const validationErrors = (0, _validate2.validate)(schema, document);
+  const validationErrors = (0, _validate2.validate)(
+    schema,
+    document,
+    undefined,
+    {
+      hideSuggestions,
+    },
+  );
 
   if (validationErrors.length > 0) {
     return {
@@ -5759,6 +6598,7 @@ function graphqlImpl(args) {
     operationName,
     fieldResolver,
     typeResolver,
+    hideSuggestions,
   });
 }
 
@@ -7096,8 +7936,14 @@ Object.defineProperty(exports, "__esModule", ({
 exports.addPath = addPath;
 exports.pathToArray = pathToArray;
 
+/** @category Paths */
+
+/** Represents a linked response path from a field back to the root response. */
+
 /**
  * Given a Path and a key, return a new Path containing the new key.
+ *
+ * @internal
  */
 function addPath(prev, key, typename) {
   return {
@@ -7108,6 +7954,29 @@ function addPath(prev, key, typename) {
 }
 /**
  * Given a Path, return an Array of the path keys.
+ * @param path - The linked response path to flatten.
+ * @returns An array of response path keys from root to leaf.
+ * @example
+ * ```ts
+ * import { pathToArray } from 'graphql/jsutils/Path';
+ *
+ * const path = {
+ *   prev: {
+ *     prev: {
+ *       prev: undefined,
+ *       key: 'viewer',
+ *       typename: 'Query',
+ *     },
+ *     key: 'friends',
+ *     typename: 'User',
+ *   },
+ *   key: 0,
+ *   typename: undefined,
+ * };
+ *
+ * pathToArray(path); // => ['viewer', 'friends', 0]
+ * pathToArray(undefined); // => []
+ * ```
  */
 
 function pathToArray(path) {
@@ -7125,6 +7994,62 @@ function pathToArray(path) {
 
 /***/ }),
 
+/***/ 9942:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true,
+}));
+exports.SetMap = void 0;
+
+/**
+ * Maps an order-independent set of member identities to a value.
+ * Each member receives a map-local ID; sorted IDs form the exact key.
+ * @internal
+ */
+class SetMap {
+  constructor() {
+    this._entries = new Map();
+    this._memberIds = new Map();
+    this._nextMemberId = 0;
+  }
+
+  get(members) {
+    return this._entries.get(this._key(members));
+  }
+
+  set(members, value) {
+    this._entries.set(this._key(members), value);
+  }
+
+  _key(members) {
+    const ids = [];
+
+    for (const member of members) {
+      let id = this._memberIds.get(member);
+
+      if (id === undefined) {
+        id = this._nextMemberId++;
+
+        this._memberIds.set(member, id);
+      }
+
+      ids.push(id);
+    }
+
+    ids.sort((id1, id2) => id1 - id2);
+    return ids.join(',');
+  }
+}
+
+exports.SetMap = SetMap;
+
+
+/***/ }),
+
 /***/ 5383:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -7136,6 +8061,7 @@ Object.defineProperty(exports, "__esModule", ({
 }));
 exports.devAssert = devAssert;
 
+/** @internal */
 function devAssert(condition, message) {
   const booleanCondition = Boolean(condition);
 
@@ -7159,9 +8085,12 @@ Object.defineProperty(exports, "__esModule", ({
 exports.didYouMean = didYouMean;
 const MAX_SUGGESTIONS = 5;
 /**
- * Given [ A, B, C ] return ' Did you mean A, B, or C?'.
+ * Given [A, B, C] return ' Did you mean A, B, or C?'.
+ *
+ * @internal
  */
 
+/** @internal */
 function didYouMean(firstArg, secondArg) {
   const [subMessage, suggestionsArg] = secondArg
     ? [firstArg, secondArg]
@@ -7206,6 +8135,8 @@ exports.groupBy = groupBy;
 
 /**
  * Groups array items into a Map, given a function to produce grouping key.
+ *
+ * @internal
  */
 function groupBy(list, keyFn) {
   const result = new Map();
@@ -7240,6 +8171,8 @@ exports.identityFunc = identityFunc;
 
 /**
  * Returns the first argument it receives.
+ *
+ * @internal
  */
 function identityFunc(x) {
   return x;
@@ -7262,6 +8195,8 @@ const MAX_ARRAY_LENGTH = 10;
 const MAX_RECURSIVE_DEPTH = 2;
 /**
  * Used to print values in error messages.
+ *
+ * @internal
  */
 
 function inspect(value) {
@@ -7399,6 +8334,8 @@ const isProduction =
  * constructors are detected.
  * See: https://expressjs.com/en/advanced/best-practice-performance.html#set-node_env-to-production
  * See: https://webpack.js.org/guides/production/
+ *
+ * @internal
  */
 
 const instanceOf =
@@ -7461,6 +8398,7 @@ Object.defineProperty(exports, "__esModule", ({
 }));
 exports.invariant = invariant;
 
+/** @internal */
 function invariant(condition, message) {
   const booleanCondition = Boolean(condition);
 
@@ -7488,6 +8426,8 @@ exports.isAsyncIterable = isAsyncIterable;
 /**
  * Returns true if the provided object implements the AsyncIterator protocol via
  * implementing a `Symbol.asyncIterator` method.
+ *
+ * @internal
  */
 function isAsyncIterable(maybeAsyncIterable) {
   return (
@@ -7519,13 +8459,16 @@ exports.isIterableObject = isIterableObject;
  * an object should be iterated-over e.g. Array, Map, Set, Int8Array,
  * TypedArray, etc. but excludes string literals.
  *
+ * @internal
  * @example
  * ```ts
- * isIterableObject([ 1, 2, 3 ]) // true
- * isIterableObject(new Map()) // true
- * isIterableObject('ABC') // false
- * isIterableObject({ key: 'value' }) // false
- * isIterableObject({ length: 1, 0: 'Alpha' }) // false
+ * import { isIterableObject } from 'graphql/jsutils/isIterableObject';
+ *
+ * isIterableObject([1, 2, 3]); // => true
+ * isIterableObject(new Map()); // => true
+ * isIterableObject('ABC'); // => false
+ * isIterableObject({ key: 'value' }); // => false
+ * isIterableObject({ length: 1, 0: 'Alpha' }); // => false
  * ```
  */
 function isIterableObject(maybeIterable) {
@@ -7554,6 +8497,8 @@ exports.isObjectLike = isObjectLike;
 /**
  * Return true if `value` is object-like. A value is object-like if it's not
  * `null` and has a `typeof` result of "object".
+ *
+ * @internal
  */
 function isObjectLike(value) {
   return typeof value == 'object' && value !== null;
@@ -7576,6 +8521,8 @@ exports.isPromise = isPromise;
 /**
  * Returns true if the value acts like a Promise, i.e. has a "then" function,
  * otherwise returns false.
+ *
+ * @internal
  */
 function isPromise(value) {
   return (
@@ -7604,25 +8551,20 @@ exports.keyMap = keyMap;
  *
  * This provides a convenient lookup for the array items if the key function
  * produces unique results.
+ * @internal
+ * @example
  * ```ts
+ * import { keyMap } from 'graphql/jsutils/keyMap';
+ *
  * const phoneBook = [
  *   { name: 'Jon', num: '555-1234' },
- *   { name: 'Jenny', num: '867-5309' }
- * ]
+ *   { name: 'Jenny', num: '867-5309' },
+ * ];
  *
- * const entriesByName = keyMap(
- *   phoneBook,
- *   entry => entry.name
- * )
+ * const entriesByName = keyMap(phoneBook, (entry) => entry.name);
  *
- * // {
- * //   Jon: { name: 'Jon', num: '555-1234' },
- * //   Jenny: { name: 'Jenny', num: '867-5309' }
- * // }
- *
- * const jennyEntry = entriesByName['Jenny']
- *
- * // { name: 'Jenny', num: '857-6309' }
+ * Object.keys(entriesByName); // => ['Jon', 'Jenny']
+ * entriesByName['Jenny']; // => { name: 'Jenny', num: '867-5309' }
  * ```
  */
 function keyMap(list, keyFn) {
@@ -7652,18 +8594,21 @@ exports.keyValMap = keyValMap;
 /**
  * Creates a keyed JS object from an array, given a function to produce the keys
  * and a function to produce the values from each item in the array.
+ * @internal
+ * @example
  * ```ts
+ * import { keyValMap } from 'graphql/jsutils/keyValMap';
+ *
  * const phoneBook = [
  *   { name: 'Jon', num: '555-1234' },
- *   { name: 'Jenny', num: '867-5309' }
- * ]
+ *   { name: 'Jenny', num: '867-5309' },
+ * ];
  *
- * // { Jon: '555-1234', Jenny: '867-5309' }
  * const phonesByName = keyValMap(
  *   phoneBook,
- *   entry => entry.name,
- *   entry => entry.num
- * )
+ *   (entry) => entry.name,
+ *   (entry) => entry.num,
+ * ); // => { Jon: '555-1234', Jenny: '867-5309' }
  * ```
  */
 function keyValMap(list, keyFn, valFn) {
@@ -7693,6 +8638,8 @@ exports.mapValue = mapValue;
 /**
  * Creates an object map with the same keys as `map` and values generated by
  * running each value of `map` thru `fn`.
+ *
+ * @internal
  */
 function mapValue(map, fn) {
   const result = Object.create(null);
@@ -7720,6 +8667,8 @@ exports.memoize3 = memoize3;
 
 /**
  * Memoizes the provided three-argument function.
+ *
+ * @internal
  */
 function memoize3(fn) {
   let cache0;
@@ -7773,6 +8722,8 @@ exports.naturalCompare = naturalCompare;
  *
  * See: https://en.wikipedia.org/wiki/Natural_sort_order
  *
+ *
+ * @internal
  */
 function naturalCompare(aStr, bStr) {
   let aIndex = 0;
@@ -7846,6 +8797,8 @@ exports.printPathArray = printPathArray;
 
 /**
  * Build a string describing the path.
+ *
+ * @internal
  */
 function printPathArray(path) {
   return path
@@ -7875,6 +8828,8 @@ exports.promiseForObject = promiseForObject;
  *
  * This is akin to bluebird's `Promise.props`, but implemented only using
  * `Promise.all` so it will work with any implementation of ES6 promises.
+ *
+ * @internal
  */
 function promiseForObject(object) {
   return Promise.all(Object.values(object)).then((resolvedValues) => {
@@ -7910,6 +8865,8 @@ var _isPromise = __nccwpck_require__(4091);
  *
  * If the callback does not return a Promise, then this function will also not
  * return a Promise.
+ *
+ * @internal
  */
 function promiseReduce(values, callbackFn, initialValue) {
   let accumulator = initialValue;
@@ -7942,6 +8899,8 @@ var _naturalCompare = __nccwpck_require__(3428);
 /**
  * Given an invalid input string and a list of valid options, returns a filtered
  * list of valid options sorted based on their similarity with the input.
+ *
+ * @internal
  */
 function suggestionList(input, options) {
   const optionsByDistance = Object.create(null);
@@ -7976,6 +8935,8 @@ function suggestionList(input, options) {
  * of 1.
  *
  * This distance can be useful for detecting typos in input or sorting
+ *
+ * @internal
  */
 
 class LexicalDistance {
@@ -8088,6 +9049,8 @@ var _inspect = __nccwpck_require__(5742);
 
 /**
  * Sometimes a non-error is thrown, wrap it as an Error instance to ensure a consistent Error interface.
+ *
+ * @internal
  */
 function toError(thrownValue) {
   return thrownValue instanceof Error
@@ -8117,6 +9080,7 @@ Object.defineProperty(exports, "__esModule", ({
 }));
 exports.toObjMap = toObjMap;
 
+/** @internal */
 function toObjMap(obj) {
   if (obj == null) {
     return Object.create(null);
@@ -8154,29 +9118,41 @@ exports.Token =
     void 0;
 exports.isNode = isNode;
 
+/** @category AST */
+
 /**
  * Contains a range of UTF-8 character offsets and token references that
  * identify the region of the source from which the AST derived.
  */
 class Location {
-  /**
-   * The character offset at which this Node begins.
-   */
+  /** The character offset at which this Node begins. */
+
+  /** The character offset at which this Node ends. */
+
+  /** The Token at which this Node begins. */
+
+  /** The Token at which this Node ends. */
+
+  /** The Source document the AST represents. */
 
   /**
-   * The character offset at which this Node ends.
-   */
-
-  /**
-   * The Token at which this Node begins.
-   */
-
-  /**
-   * The Token at which this Node ends.
-   */
-
-  /**
-   * The Source document the AST represents.
+   * Creates a Location instance.
+   * @param startToken - The start token.
+   * @param endToken - The end token.
+   * @param source - Source document used to derive error locations.
+   * @example
+   * ```ts
+   * import { Location, Source, Token, TokenKind } from 'graphql/language';
+   *
+   * const source = new Source('{ hello }');
+   * const startToken = new Token(TokenKind.BRACE_L, 0, 1, 1, 1);
+   * const endToken = new Token(TokenKind.BRACE_R, 8, 9, 1, 9);
+   * const location = new Location(startToken, endToken, source);
+   *
+   * location.start; // => 0
+   * location.end; // => 9
+   * location.source.body; // => '{ hello }'
+   * ```
    */
   constructor(startToken, endToken, source) {
     this.start = startToken.start;
@@ -8185,10 +9161,25 @@ class Location {
     this.endToken = endToken;
     this.source = source;
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'Location';
   }
+  /**
+   * Returns a JSON representation of this location.
+   * @returns The JSON-serializable representation.
+   * @example
+   * ```ts
+   * import { parse } from 'graphql/language';
+   *
+   * const document = parse('{ hello }');
+   * const location = document.loc?.toJSON(); // => { start: 0, end: 9 }
+   * ```
+   */
 
   toJSON() {
     return {
@@ -8205,25 +9196,15 @@ class Location {
 exports.Location = Location;
 
 class Token {
-  /**
-   * The kind of Token.
-   */
+  /** The kind of Token. */
 
-  /**
-   * The character offset at which this Node begins.
-   */
+  /** The character offset at which this Node begins. */
 
-  /**
-   * The character offset at which this Node ends.
-   */
+  /** The character offset at which this Node ends. */
 
-  /**
-   * The 1-indexed line number on which this Token appears.
-   */
+  /** The 1-indexed line number on which this Token appears. */
 
-  /**
-   * The 1-indexed column number at which this Token begins.
-   */
+  /** The 1-indexed column number at which this Token begins. */
 
   /**
    * For non-punctuation tokens, represents the interpreted value of the token.
@@ -8237,6 +9218,28 @@ class Token {
    * including ignored tokens. <SOF> is always the first node and <EOF>
    * the last.
    */
+
+  /** Next token in the token stream, including ignored tokens. */
+
+  /**
+   * Creates a Token instance.
+   * @param kind - Token kind produced by lexical analysis.
+   * @param start - Character offset where this token begins.
+   * @param end - Character offset where this token ends.
+   * @param line - One-indexed line number where this token begins.
+   * @param column - One-indexed column number where this token begins.
+   * @param value - Interpreted value for non-punctuation tokens.
+   * @example
+   * ```ts
+   * import { Token, TokenKind } from 'graphql/language';
+   *
+   * const token = new Token(TokenKind.NAME, 2, 7, 1, 3, 'hello');
+   *
+   * token.kind; // => TokenKind.NAME
+   * token.value; // => 'hello'
+   * token.toJSON(); // => { kind: 'Name', value: 'hello', line: 1, column: 3 }
+   * ```
+   */
   constructor(kind, start, end, line, column, value) {
     this.kind = kind;
     this.start = start;
@@ -8248,10 +9251,25 @@ class Token {
     this.prev = null;
     this.next = null;
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'Token';
   }
+  /**
+   * Returns a JSON representation of this token.
+   * @returns The JSON-serializable representation.
+   * @example
+   * ```ts
+   * import { Lexer, Source } from 'graphql/language';
+   *
+   * const lexer = new Lexer(new Source('{ hello }'));
+   * const token = lexer.advance().toJSON(); // => { kind: '{', value: undefined, line: 1, column: 1 }
+   * ```
+   */
 
   toJSON() {
     return {
@@ -8262,15 +9280,11 @@ class Token {
     };
   }
 }
-/**
- * The list of all possible AST node types.
- */
+/** The list of all possible AST node types. */
 
 exports.Token = Token;
 
-/**
- * @internal
- */
+/** @internal */
 const QueryDocumentKeys = {
   Name: [],
   Document: ['definitions'],
@@ -8367,17 +9381,19 @@ const QueryDocumentKeys = {
 };
 exports.QueryDocumentKeys = QueryDocumentKeys;
 const kindValues = new Set(Object.keys(QueryDocumentKeys));
-/**
- * @internal
- */
+/** @internal */
 
 function isNode(maybeNode) {
   const maybeKind =
     maybeNode === null || maybeNode === void 0 ? void 0 : maybeNode.kind;
   return typeof maybeKind === 'string' && kindValues.has(maybeKind);
 }
-/** Name */
+/** An identifier in a GraphQL document. */
 
+/**
+ * The operation types supported by GraphQL executable definitions.
+ * @category Kinds
+ */
 var OperationTypeNode;
 exports.OperationTypeNode = OperationTypeNode;
 
@@ -8386,6 +9402,7 @@ exports.OperationTypeNode = OperationTypeNode;
   OperationTypeNode['MUTATION'] = 'mutation';
   OperationTypeNode['SUBSCRIPTION'] = 'subscription';
 })(OperationTypeNode || (exports.OperationTypeNode = OperationTypeNode = {}));
+/** A variable declaration in an operation or legacy fragment definition. */
 
 
 /***/ }),
@@ -8465,9 +9482,7 @@ function leadingWhitespace(str) {
 
   return i;
 }
-/**
- * @internal
- */
+/** @internal */
 
 function isPrintableAsBlockString(value) {
   if (value === '') {
@@ -8687,9 +9702,9 @@ Object.defineProperty(exports, "__esModule", ({
 }));
 exports.DirectiveLocation = void 0;
 
-/**
- * The set of allowed directive location values.
- */
+/** @category Kinds */
+
+/** The set of allowed directive location values. */
 var DirectiveLocation;
 exports.DirectiveLocation = DirectiveLocation;
 
@@ -8716,9 +9731,12 @@ exports.DirectiveLocation = DirectiveLocation;
   DirectiveLocation['DIRECTIVE_DEFINITION'] = 'DIRECTIVE_DEFINITION';
 })(DirectiveLocation || (exports.DirectiveLocation = DirectiveLocation = {}));
 /**
- * The enum type representing the directive location values.
- *
- * @deprecated Please use `DirectiveLocation`. Will be remove in v17.
+ * Deprecated legacy alias for the enum type representing directive location
+ * values. This alias will be removed in v17. In v17, `DirectiveLocation` is
+ * exported as the single public symbol for both the runtime object and the
+ * corresponding TypeScript type.
+ * @deprecated Will be removed in v17. In v17, use `DirectiveLocation` as both
+ * the runtime value and the type.
  */
 
 
@@ -8970,9 +9988,9 @@ Object.defineProperty(exports, "__esModule", ({
 }));
 exports.Kind = void 0;
 
-/**
- * The set of allowed kind values for AST nodes.
- */
+/** @category Kinds */
+
+/** The set of allowed kind values for AST nodes. */
 var Kind;
 exports.Kind = Kind;
 
@@ -9028,9 +10046,12 @@ exports.Kind = Kind;
   Kind['DIRECTIVE_ARGUMENT_COORDINATE'] = 'DirectiveArgumentCoordinate';
 })(Kind || (exports.Kind = Kind = {}));
 /**
- * The enum type representing the possible kind values of AST nodes.
- *
- * @deprecated Please use `Kind`. Will be remove in v17.
+ * Deprecated legacy alias for the enum type representing the possible kind
+ * values of AST nodes. This alias will be removed in v17. In v17, `Kind` is
+ * exported as the single public symbol for both the runtime object and the
+ * corresponding TypeScript type.
+ * @deprecated Will be removed in v17. In v17, use `Kind` as both the runtime
+ * value and the type.
  */
 
 
@@ -9061,6 +10082,8 @@ var _characterClasses = __nccwpck_require__(3271);
 
 var _tokenKind = __nccwpck_require__(1743);
 
+/** @category Lexing */
+
 /**
  * Given a Source object, creates a Lexer for that source.
  * A Lexer is a stateful stream generator in that every time
@@ -9070,20 +10093,34 @@ var _tokenKind = __nccwpck_require__(1743);
  * whenever called.
  */
 class Lexer {
-  /**
-   * The previously focused non-ignored token.
-   */
+  /** Source document used to derive error locations. */
+
+  /** Most recent non-ignored token returned by the lexer. */
+
+  /** Current non-ignored token at the lexer cursor. */
+
+  /** The (1-indexed) line containing the current token. */
+
+  /** Character offset where the current line starts. */
+
+  /** @internal */
+
+  /** @internal */
 
   /**
-   * The currently focused non-ignored token.
-   */
-
-  /**
-   * The (1-indexed) line containing the current token.
-   */
-
-  /**
-   * The character offset at which the current line begins.
+   * Creates a Lexer instance.
+   * @param source - Source document used to derive error locations.
+   * @example
+   * ```ts
+   * import { Lexer, Source, TokenKind } from 'graphql/language';
+   *
+   * const lexer = new Lexer(new Source('{ hello }'));
+   *
+   * lexer.token.kind; // => TokenKind.SOF
+   * lexer.advance().kind; // => TokenKind.BRACE_L
+   * lexer.advance().value; // => 'hello'
+   * lexer.advance().kind; // => TokenKind.BRACE_R
+   * ```
    */
   constructor(source) {
     const startOfFileToken = new _ast.Token(
@@ -9098,13 +10135,30 @@ class Lexer {
     this.token = startOfFileToken;
     this.line = 1;
     this.lineStart = 0;
+    this._maxComments = undefined;
+    this._commentCount = 0;
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'Lexer';
   }
   /**
    * Advances the token stream to the next non-ignored token.
+   * @returns The next non-ignored token.
+   * @example
+   * ```ts
+   * import { Lexer, Source } from 'graphql/language';
+   *
+   * const lexer = new Lexer(new Source('{ hello }'));
+   * const token = lexer.advance();
+   *
+   * token.kind; // => '{'
+   * lexer.token; // => token
+   * ```
    */
 
   advance() {
@@ -9115,6 +10169,17 @@ class Lexer {
   /**
    * Looks ahead and returns the next non-ignored token, but does not change
    * the state of Lexer.
+   * @returns The next non-ignored token without advancing the lexer.
+   * @example
+   * ```ts
+   * import { Lexer, Source } from 'graphql/language';
+   *
+   * const lexer = new Lexer(new Source('{ hello }'));
+   * const token = lexer.lookahead();
+   *
+   * token.kind; // => '{'
+   * lexer.token.kind; // => '<SOF>'
+   * ```
    */
 
   lookahead() {
@@ -9139,9 +10204,7 @@ class Lexer {
     return token;
   }
 }
-/**
- * @internal
- */
+/** @internal */
 
 exports.Lexer = Lexer;
 
@@ -9171,6 +10234,8 @@ function isPunctuatorTokenKind(kind) {
  *
  * SourceCharacter ::
  *   - "Any Unicode scalar value"
+ *
+ * @internal
  */
 
 function isUnicodeScalarValue(code) {
@@ -9185,6 +10250,8 @@ function isUnicodeScalarValue(code) {
  * include surrogates. A surrogate pair is a valid source character as it
  * encodes a supplementary code point (above U+FFFF), but unpaired surrogate
  * code points are not valid source characters.
+ *
+ * @internal
  */
 
 function isSupplementaryCodePoint(body, location) {
@@ -9241,6 +10308,8 @@ function createToken(lexer, kind, start, end, value) {
  * This skips over whitespace until it finds the next lexable token, then lexes
  * punctuators immediately or calls the appropriate helper function for more
  * complicated tokens.
+ *
+ * @internal
  */
 
 function readNextToken(lexer, start) {
@@ -9488,9 +10557,27 @@ function readNextToken(lexer, start) {
  *
  * CommentChar :: SourceCharacter but not LineTerminator
  * ```
+ *
+ * @internal
  */
 
 function readComment(lexer, start) {
+  const maxComments = lexer._maxComments;
+
+  if (maxComments !== undefined) {
+    const nextCommentCount = lexer._commentCount + 1;
+
+    if (nextCommentCount > maxComments) {
+      throw (0, _syntaxError.syntaxError)(
+        lexer.source,
+        start,
+        `Document contains more than ${maxComments} comments. Parsing aborted.`,
+      );
+    }
+
+    lexer._commentCount = nextCommentCount;
+  }
+
   const body = lexer.source.body;
   const bodyLength = body.length;
   let position = start + 1;
@@ -9547,6 +10634,8 @@ function readComment(lexer, start) {
  *
  * Sign :: one of + -
  * ```
+ *
+ * @internal
  */
 
 function readNumber(lexer, start, firstCode) {
@@ -9617,6 +10706,8 @@ function readNumber(lexer, start, firstCode) {
 }
 /**
  * Returns the new position in the source after reading one or more digits.
+ *
+ * @internal
  */
 
 function readDigits(lexer, start, firstCode) {
@@ -9659,6 +10750,8 @@ function readDigits(lexer, start, firstCode) {
  *
  * EscapedCharacter :: one of `"` `\` `/` `b` `f` `n` `r` `t`
  * ```
+ *
+ * @internal
  */
 
 function readString(lexer, start) {
@@ -9807,6 +10900,8 @@ function readEscapedUnicodeFixedWidth(lexer, position) {
  * will return 57005.
  *
  * Returns a negative number if any char was not a valid hexadecimal digit.
+ *
+ * @internal
  */
 
 function read16BitHexCode(body, position) {
@@ -9832,6 +10927,8 @@ function read16BitHexCode(body, position) {
  *   - `0` `1` `2` `3` `4` `5` `6` `7` `8` `9`
  *   - `A` `B` `C` `D` `E` `F`
  *   - `a` `b` `c` `d` `e` `f`
+ *
+ * @internal
  */
 
 function readHexDigit(code) {
@@ -9854,6 +10951,8 @@ function readHexDigit(code) {
  * | `n`               | U+000A     | line feed (new line)         |
  * | `r`               | U+000D     | carriage return              |
  * | `t`               | U+0009     | horizontal tab               |
+ *
+ * @internal
  */
 
 function readEscapedCharacter(lexer, position) {
@@ -9938,6 +11037,8 @@ function readEscapedCharacter(lexer, position) {
  *   - SourceCharacter but not `"""` or `\"""`
  *   - `\"""`
  * ```
+ *
+ * @internal
  */
 
 function readBlockString(lexer, start) {
@@ -10061,7 +11162,7 @@ function readName(lexer, start) {
 /***/ }),
 
 /***/ 2245:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
 
@@ -10070,37 +11171,88 @@ Object.defineProperty(exports, "__esModule", ({
   value: true,
 }));
 exports.getLocation = getLocation;
+exports.getLocations = getLocations;
 
-var _invariant = __nccwpck_require__(3650);
+/** @category Source */
 
-const LineRegExp = /\r\n|[\n\r]/g;
-/**
- * Represents a location in a Source.
- */
+/** Represents a location in a Source. */
 
 /**
  * Takes a Source and a UTF-8 character offset, and returns the corresponding
  * line and column as a SourceLocation.
+ * @param source - The source document that contains the position.
+ * @param position - The UTF-8 character offset in the source body.
+ * @returns The 1-indexed line and column for the given source position.
+ * @example
+ * ```ts
+ * import { Source, getLocation } from 'graphql/language';
+ *
+ * const source = new Source('type Query { hello: String }');
+ * const location = getLocation(source, 13); // => { line: 1, column: 14 }
+ * ```
  */
 function getLocation(source, position) {
-  let lastLineStart = 0;
+  const lineRegexp = /\r\n|[\n\r]/g;
   let line = 1;
+  let column = position + 1;
+  let match;
 
-  for (const match of source.body.matchAll(LineRegExp)) {
-    typeof match.index === 'number' || (0, _invariant.invariant)(false);
-
-    if (match.index >= position) {
-      break;
-    }
-
-    lastLineStart = match.index + match[0].length;
-    line += 1;
+  while ((match = lineRegexp.exec(source.body)) && match.index < position) {
+    line++;
+    column = position + 1 - (match.index + match[0].length);
   }
 
   return {
     line,
-    column: position + 1 - lastLineStart,
+    column,
   };
+}
+/** @internal */
+
+function getLocations(locations) {
+  if (locations.length < 2) {
+    return locations.map(({ source, start }) => getLocation(source, start));
+  }
+
+  const bySource = new Map();
+  locations.forEach(({ source, start }, index) => {
+    let positions = bySource.get(source);
+
+    if (positions === undefined) {
+      positions = [];
+      bySource.set(source, positions);
+    }
+
+    positions.push({
+      position: start,
+      index,
+    });
+  });
+  const result = new Array(locations.length);
+
+  for (const [source, positions] of bySource) {
+    const lineRegexp = /\r\n|[\n\r]/g;
+    let match = lineRegexp.exec(source.body);
+    let line = 1;
+    let lastLineStart = 0; // These arrays are local; sorting never changes the caller's input.
+
+    positions.sort((a, b) => a.position - b.position);
+
+    for (const { position, index } of positions) {
+      while (match !== null && match.index < position) {
+        lastLineStart = match.index + match[0].length;
+        line++;
+        match = lineRegexp.exec(source.body);
+      }
+
+      result[index] = {
+        line,
+        column: position + 1 - lastLineStart,
+      };
+    }
+  }
+
+  return result;
 }
 
 
@@ -10138,9 +11290,44 @@ var _source = __nccwpck_require__(203);
 
 var _tokenKind = __nccwpck_require__(1743);
 
+/** @category Parsing */
+
 /**
  * Given a GraphQL source, parses it into a Document.
  * Throws GraphQLError if a syntax error is encountered.
+ * @param source - A GraphQL source string or source object.
+ * @param options - Optional parser configuration.
+ * @returns The parsed GraphQL document AST.
+ * @example
+ * ```ts
+ * // Parse a GraphQL document with the default parser options.
+ * import { parse } from 'graphql/language';
+ *
+ * const document = parse('{ hero { name } }');
+ *
+ * document.kind; // => 'Document'
+ * ```
+ * @example
+ * ```ts
+ * // This variant enables parser options and provides an explicit lexer.
+ * import { Lexer, Source, parse } from 'graphql/language';
+ *
+ * const document = parse('fragment A($var: Boolean) on Query { field }', {
+ *   allowLegacyFragmentVariables: true,
+ *   maxLexicalTokens: 20,
+ *   noLocation: true,
+ * });
+ * const directiveDocument = parse('directive @foo @bar on FIELD', {
+ *   experimentalDirectivesOnDirectiveDefinitions: true,
+ * });
+ * const source = new Source('{ hero }');
+ * const lexerDocument = parse(source, { lexer: new Lexer(source) });
+ *
+ * document.definitions[0].kind; // => 'FragmentDefinition'
+ * document.loc; // => undefined
+ * directiveDocument.definitions[0].kind; // => 'DirectiveDefinition'
+ * lexerDocument.definitions[0].kind; // => 'OperationDefinition'
+ * ```
  */
 function parse(source, options) {
   const parser = new Parser(source, options);
@@ -10160,6 +11347,17 @@ function parse(source, options) {
  * in isolation of complete GraphQL documents.
  *
  * Consider providing the results to the utility function: valueFromAST().
+ * @param source - A GraphQL source string or source object containing a value.
+ * @param options - Optional parser configuration.
+ * @returns The parsed GraphQL value AST.
+ * @example
+ * ```ts
+ * import { parseValue } from 'graphql/language';
+ *
+ * const value = parseValue('[42]');
+ *
+ * value.kind; // => 'ListValue'
+ * ```
  */
 
 function parseValue(source, options) {
@@ -10172,6 +11370,18 @@ function parseValue(source, options) {
 /**
  * Similar to parseValue(), but raises a parse error if it encounters a
  * variable. The return type will be a constant value.
+ * @param source - A GraphQL source string or source object containing a constant value.
+ * @param options - Optional parser configuration.
+ * @returns The parsed GraphQL constant value AST.
+ * @example
+ * ```ts
+ * import { parseConstValue } from 'graphql/language';
+ *
+ * const value = parseConstValue('{ enabled: true }');
+ *
+ * value.kind; // => 'ObjectValue'
+ * parseConstValue('$variable'); // throws an error
+ * ```
  */
 
 function parseConstValue(source, options) {
@@ -10190,6 +11400,17 @@ function parseConstValue(source, options) {
  * in isolation of complete GraphQL documents.
  *
  * Consider providing the results to the utility function: typeFromAST().
+ * @param source - A GraphQL source string or source object containing a type reference.
+ * @param options - Optional parser configuration.
+ * @returns The parsed GraphQL type AST.
+ * @example
+ * ```ts
+ * import { parseType } from 'graphql/language';
+ *
+ * const type = parseType('[String!]');
+ *
+ * type.kind; // => 'ListType'
+ * ```
  */
 
 function parseType(source, options) {
@@ -10207,6 +11428,16 @@ function parseType(source, options) {
  * Consider providing the results to the utility function:
  * resolveASTSchemaCoordinate(). Or calling resolveSchemaCoordinate() directly
  * with an unparsed source.
+ * @param source - A GraphQL source string or source object containing a schema coordinate.
+ * @returns The parsed GraphQL schema coordinate AST.
+ * @example
+ * ```ts
+ * import { parseSchemaCoordinate } from 'graphql/language';
+ *
+ * const coordinate = parseSchemaCoordinate('Query.hero');
+ *
+ * coordinate.kind; // => 'MemberCoordinate'
+ * ```
  */
 
 function parseSchemaCoordinate(source) {
@@ -10249,6 +11480,22 @@ class Parser {
 
     this._options = _options;
     this._tokenCounter = 0;
+    this._lexer._maxComments =
+      options === null || options === void 0 ? void 0 : options.maxComments;
+    this._lexer._commentCount = 0;
+    const maxSourceLength =
+      options === null || options === void 0 ? void 0 : options.maxSourceLength;
+
+    if (
+      maxSourceLength !== undefined &&
+      this._lexer.source.body.length > maxSourceLength
+    ) {
+      throw (0, _syntaxError.syntaxError)(
+        this._lexer.source,
+        maxSourceLength,
+        `Source contains more than ${maxSourceLength} UTF-16 code units. Parsing aborted.`,
+      );
+    }
   }
 
   get tokenCount() {
@@ -10256,6 +11503,8 @@ class Parser {
   }
   /**
    * Converts a name lex token into a name parse node.
+   *
+   * @internal
    */
 
   parseName() {
@@ -10268,6 +11517,8 @@ class Parser {
 
   /**
    * Document : Definition+
+   *
+   * @internal
    */
 
   parseDocument() {
@@ -10302,6 +11553,8 @@ class Parser {
    *   - UnionTypeDefinition
    *   - EnumTypeDefinition
    *   - InputObjectTypeDefinition
+   *
+   * @internal
    */
 
   parseDefinition() {
@@ -10380,6 +11633,8 @@ class Parser {
    * OperationDefinition :
    *  - SelectionSet
    *  - OperationType Name? VariableDefinitions? Directives? SelectionSet
+   *
+   * @internal
    */
 
   parseOperationDefinition() {
@@ -10417,6 +11672,8 @@ class Parser {
   }
   /**
    * OperationType : one of query mutation subscription
+   *
+   * @internal
    */
 
   parseOperationType() {
@@ -10437,6 +11694,8 @@ class Parser {
   }
   /**
    * VariableDefinitions : ( VariableDefinition+ )
+   *
+   * @internal
    */
 
   parseVariableDefinitions() {
@@ -10448,6 +11707,8 @@ class Parser {
   }
   /**
    * VariableDefinition : Variable : Type DefaultValue? Directives[Const]?
+   *
+   * @internal
    */
 
   parseVariableDefinition() {
@@ -10466,6 +11727,8 @@ class Parser {
   }
   /**
    * Variable : $ Name
+   *
+   * @internal
    */
 
   parseVariable() {
@@ -10480,6 +11743,8 @@ class Parser {
    * ```
    * SelectionSet : { Selection+ }
    * ```
+   *
+   * @internal
    */
 
   parseSelectionSet() {
@@ -10497,6 +11762,8 @@ class Parser {
    *   - Field
    *   - FragmentSpread
    *   - InlineFragment
+   *
+   * @internal
    */
 
   parseSelection() {
@@ -10508,6 +11775,8 @@ class Parser {
    * Field : Alias? Name Arguments? Directives? SelectionSet?
    *
    * Alias : Name :
+   *
+   * @internal
    */
 
   parseField() {
@@ -10536,6 +11805,8 @@ class Parser {
   }
   /**
    * Arguments[Const] : ( Argument[?Const]+ )
+   *
+   * @internal
    */
 
   parseArguments(isConst) {
@@ -10548,6 +11819,8 @@ class Parser {
   }
   /**
    * Argument[Const] : Name : Value[?Const]
+   *
+   * @internal
    */
 
   parseArgument(isConst = false) {
@@ -10571,6 +11844,8 @@ class Parser {
    * FragmentSpread : ... FragmentName Directives?
    *
    * InlineFragment : ... TypeCondition? Directives? SelectionSet
+   *
+   * @internal
    */
 
   parseFragment() {
@@ -10598,6 +11873,8 @@ class Parser {
    *   - fragment FragmentName on TypeCondition Directives? SelectionSet
    *
    * TypeCondition : NamedType
+   *
+   * @internal
    */
 
   parseFragmentDefinition() {
@@ -10630,6 +11907,8 @@ class Parser {
   }
   /**
    * FragmentName : Name but not `on`
+   *
+   * @internal
    */
 
   parseFragmentName() {
@@ -10657,6 +11936,8 @@ class Parser {
    * NullValue : `null`
    *
    * EnumValue : Name but not `true`, `false` or `null`
+   *
+   * @internal
    */
 
   parseValueLiteral(isConst) {
@@ -10755,6 +12036,8 @@ class Parser {
    * ListValue[Const] :
    *   - [ ]
    *   - [ Value[?Const]+ ]
+   *
+   * @internal
    */
 
   parseList(isConst) {
@@ -10775,6 +12058,8 @@ class Parser {
    *   - { }
    *   - { ObjectField[?Const]+ }
    * ```
+   *
+   * @internal
    */
 
   parseObject(isConst) {
@@ -10791,6 +12076,8 @@ class Parser {
   }
   /**
    * ObjectField[Const] : Name : Value[?Const]
+   *
+   * @internal
    */
 
   parseObjectField(isConst) {
@@ -10806,6 +12093,8 @@ class Parser {
 
   /**
    * Directives[Const] : Directive[?Const]+
+   *
+   * @internal
    */
 
   parseDirectives(isConst) {
@@ -10825,6 +12114,8 @@ class Parser {
    * ```
    * Directive[Const] : @ Name Arguments[?Const]?
    * ```
+   *
+   * @internal
    */
 
   parseDirective(isConst) {
@@ -10842,6 +12133,8 @@ class Parser {
    *   - NamedType
    *   - ListType
    *   - NonNullType
+   *
+   * @internal
    */
 
   parseTypeReference() {
@@ -10870,6 +12163,8 @@ class Parser {
   }
   /**
    * NamedType : Name
+   *
+   * @internal
    */
 
   parseNamedType() {
@@ -10887,6 +12182,8 @@ class Parser {
   }
   /**
    * Description : StringValue
+   *
+   * @internal
    */
 
   parseDescription() {
@@ -10898,6 +12195,8 @@ class Parser {
    * ```
    * SchemaDefinition : Description? schema Directives[Const]? { OperationTypeDefinition+ }
    * ```
+   *
+   * @internal
    */
 
   parseSchemaDefinition() {
@@ -10919,6 +12218,8 @@ class Parser {
   }
   /**
    * OperationTypeDefinition : OperationType : NamedType
+   *
+   * @internal
    */
 
   parseOperationTypeDefinition() {
@@ -10934,6 +12235,8 @@ class Parser {
   }
   /**
    * ScalarTypeDefinition : Description? scalar Name Directives[Const]?
+   *
+   * @internal
    */
 
   parseScalarTypeDefinition() {
@@ -10953,6 +12256,8 @@ class Parser {
    * ObjectTypeDefinition :
    *   Description?
    *   type Name ImplementsInterfaces? Directives[Const]? FieldsDefinition?
+   *
+   * @internal
    */
 
   parseObjectTypeDefinition() {
@@ -10976,6 +12281,8 @@ class Parser {
    * ImplementsInterfaces :
    *   - implements `&`? NamedType
    *   - ImplementsInterfaces & NamedType
+   *
+   * @internal
    */
 
   parseImplementsInterfaces() {
@@ -10987,6 +12294,8 @@ class Parser {
    * ```
    * FieldsDefinition : { FieldDefinition+ }
    * ```
+   *
+   * @internal
    */
 
   parseFieldsDefinition() {
@@ -10999,6 +12308,8 @@ class Parser {
   /**
    * FieldDefinition :
    *   - Description? Name ArgumentsDefinition? : Type Directives[Const]?
+   *
+   * @internal
    */
 
   parseFieldDefinition() {
@@ -11020,6 +12331,8 @@ class Parser {
   }
   /**
    * ArgumentsDefinition : ( InputValueDefinition+ )
+   *
+   * @internal
    */
 
   parseArgumentDefs() {
@@ -11032,6 +12345,8 @@ class Parser {
   /**
    * InputValueDefinition :
    *   - Description? Name : Type DefaultValue? Directives[Const]?
+   *
+   * @internal
    */
 
   parseInputValueDef() {
@@ -11059,6 +12374,8 @@ class Parser {
   /**
    * InterfaceTypeDefinition :
    *   - Description? interface Name Directives[Const]? FieldsDefinition?
+   *
+   * @internal
    */
 
   parseInterfaceTypeDefinition() {
@@ -11081,6 +12398,8 @@ class Parser {
   /**
    * UnionTypeDefinition :
    *   - Description? union Name Directives[Const]? UnionMemberTypes?
+   *
+   * @internal
    */
 
   parseUnionTypeDefinition() {
@@ -11102,6 +12421,8 @@ class Parser {
    * UnionMemberTypes :
    *   - = `|`? NamedType
    *   - UnionMemberTypes | NamedType
+   *
+   * @internal
    */
 
   parseUnionMemberTypes() {
@@ -11112,6 +12433,8 @@ class Parser {
   /**
    * EnumTypeDefinition :
    *   - Description? enum Name Directives[Const]? EnumValuesDefinition?
+   *
+   * @internal
    */
 
   parseEnumTypeDefinition() {
@@ -11133,6 +12456,8 @@ class Parser {
    * ```
    * EnumValuesDefinition : { EnumValueDefinition+ }
    * ```
+   *
+   * @internal
    */
 
   parseEnumValuesDefinition() {
@@ -11144,6 +12469,8 @@ class Parser {
   }
   /**
    * EnumValueDefinition : Description? EnumValue Directives[Const]?
+   *
+   * @internal
    */
 
   parseEnumValueDefinition() {
@@ -11160,6 +12487,8 @@ class Parser {
   }
   /**
    * EnumValue : Name but not `true`, `false` or `null`
+   *
+   * @internal
    */
 
   parseEnumValueName() {
@@ -11182,6 +12511,8 @@ class Parser {
   /**
    * InputObjectTypeDefinition :
    *   - Description? input Name Directives[Const]? InputFieldsDefinition?
+   *
+   * @internal
    */
 
   parseInputObjectTypeDefinition() {
@@ -11203,6 +12534,8 @@ class Parser {
    * ```
    * InputFieldsDefinition : { InputValueDefinition+ }
    * ```
+   *
+   * @internal
    */
 
   parseInputFieldsDefinition() {
@@ -11225,6 +12558,8 @@ class Parser {
    *   - EnumTypeExtension
    *   - InputObjectTypeDefinition
    *   - DirectiveDefinitionExtension
+   *
+   * @internal
    */
 
   parseTypeSystemExtension() {
@@ -11270,6 +12605,8 @@ class Parser {
    *  - extend schema Directives[Const]? { OperationTypeDefinition+ }
    *  - extend schema Directives[Const]
    * ```
+   *
+   * @internal
    */
 
   parseSchemaExtension() {
@@ -11296,6 +12633,8 @@ class Parser {
   /**
    * ScalarTypeExtension :
    *   - extend scalar Name Directives[Const]
+   *
+   * @internal
    */
 
   parseScalarTypeExtension() {
@@ -11320,6 +12659,8 @@ class Parser {
    *  - extend type Name ImplementsInterfaces? Directives[Const]? FieldsDefinition
    *  - extend type Name ImplementsInterfaces? Directives[Const]
    *  - extend type Name ImplementsInterfaces
+   *
+   * @internal
    */
 
   parseObjectTypeExtension() {
@@ -11352,6 +12693,8 @@ class Parser {
    *  - extend interface Name ImplementsInterfaces? Directives[Const]? FieldsDefinition
    *  - extend interface Name ImplementsInterfaces? Directives[Const]
    *  - extend interface Name ImplementsInterfaces
+   *
+   * @internal
    */
 
   parseInterfaceTypeExtension() {
@@ -11383,6 +12726,8 @@ class Parser {
    * UnionTypeExtension :
    *   - extend union Name Directives[Const]? UnionMemberTypes
    *   - extend union Name Directives[Const]
+   *
+   * @internal
    */
 
   parseUnionTypeExtension() {
@@ -11408,6 +12753,8 @@ class Parser {
    * EnumTypeExtension :
    *   - extend enum Name Directives[Const]? EnumValuesDefinition
    *   - extend enum Name Directives[Const]
+   *
+   * @internal
    */
 
   parseEnumTypeExtension() {
@@ -11433,6 +12780,8 @@ class Parser {
    * InputObjectTypeExtension :
    *   - extend input Name Directives[Const]? InputFieldsDefinition
    *   - extend input Name Directives[Const]
+   *
+   * @internal
    */
 
   parseInputObjectTypeExtension() {
@@ -11478,6 +12827,8 @@ class Parser {
    * DirectiveDefinition :
    *   - Description? directive @ Name ArgumentsDefinition? `repeatable`? on DirectiveLocations
    * ```
+   *
+   * @internal
    */
 
   parseDirectiveDefinition() {
@@ -11508,6 +12859,8 @@ class Parser {
    * DirectiveLocations :
    *   - `|`? DirectiveLocation
    *   - DirectiveLocations | DirectiveLocation
+   *
+   * @internal
    */
 
   parseDirectiveLocations() {
@@ -11568,6 +12921,22 @@ class Parser {
    *   - Name . Name ( Name : )
    *   - \@ Name
    *   - \@ Name ( Name : )
+   * @returns Parsed schema coordinate AST.
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * import { Kind, parseSchemaCoordinate } from 'graphql/language';
+   *
+   * const typeCoordinate = parseSchemaCoordinate('User.name');
+   * const directiveCoordinate = parseSchemaCoordinate('@include(if:)');
+   * assert(typeCoordinate.kind === Kind.MEMBER_COORDINATE);
+   * assert(directiveCoordinate.kind === Kind.DIRECTIVE_ARGUMENT_COORDINATE);
+   *
+   * typeCoordinate.name.value; // => 'User'
+   * typeCoordinate.memberName?.value; // => 'name'
+   * directiveCoordinate.name.value; // => 'include'
+   * directiveCoordinate.argumentName?.value; // => 'if'
+   * ```
    */
 
   parseSchemaCoordinate() {
@@ -11631,6 +13000,8 @@ class Parser {
    * Returns a node that, if configured to do so, sets a "loc" field as a
    * location object, used to identify the place in the source that created a
    * given parsed object.
+   *
+   * @internal
    */
 
   node(startToken, node) {
@@ -11646,6 +13017,8 @@ class Parser {
   }
   /**
    * Determines if the next token is of a given kind
+   *
+   * @internal
    */
 
   peek(kind) {
@@ -11654,6 +13027,8 @@ class Parser {
   /**
    * If the next token is of the given kind, return that token after advancing the lexer.
    * Otherwise, do not change the parser state and throw an error.
+   *
+   * @internal
    */
 
   expectToken(kind) {
@@ -11673,6 +13048,8 @@ class Parser {
   /**
    * If the next token is of the given kind, return "true" after advancing the lexer.
    * Otherwise, do not change the parser state and return "false".
+   *
+   * @internal
    */
 
   expectOptionalToken(kind) {
@@ -11688,6 +13065,8 @@ class Parser {
   /**
    * If the next token is a given keyword, advance the lexer.
    * Otherwise, do not change the parser state and throw an error.
+   *
+   * @internal
    */
 
   expectKeyword(value) {
@@ -11706,6 +13085,8 @@ class Parser {
   /**
    * If the next token is a given keyword, return "true" after advancing the lexer.
    * Otherwise, do not change the parser state and return "false".
+   *
+   * @internal
    */
 
   expectOptionalKeyword(value) {
@@ -11720,6 +13101,8 @@ class Parser {
   }
   /**
    * Helper function for creating an error when an unexpected lexed token is encountered.
+   *
+   * @internal
    */
 
   unexpected(atToken) {
@@ -11735,6 +13118,8 @@ class Parser {
    * Returns a possibly empty list of parse nodes, determined by the parseFn.
    * This list begins with a lex token of openKind and ends with a lex token of closeKind.
    * Advances the parser to the next lex token after the closing token.
+   *
+   * @internal
    */
 
   any(openKind, parseFn, closeKind) {
@@ -11752,6 +13137,8 @@ class Parser {
    * It can be empty only if open token is missing otherwise it will always return non-empty list
    * that begins with a lex token of openKind and ends with a lex token of closeKind.
    * Advances the parser to the next lex token after the closing token.
+   *
+   * @internal
    */
 
   optionalMany(openKind, parseFn, closeKind) {
@@ -11771,6 +13158,8 @@ class Parser {
    * Returns a non-empty list of parse nodes, determined by the parseFn.
    * This list begins with a lex token of openKind and ends with a lex token of closeKind.
    * Advances the parser to the next lex token after the closing token.
+   *
+   * @internal
    */
 
   many(openKind, parseFn, closeKind) {
@@ -11787,6 +13176,8 @@ class Parser {
    * Returns a non-empty list of parse nodes, determined by the parseFn.
    * This list may begin with a lex token of delimiterKind followed by items separated by lex tokens of tokenKind.
    * Advances the parser to the next lex token after last item in the list.
+   *
+   * @internal
    */
 
   delimitedMany(delimiterKind, parseFn) {
@@ -11801,18 +13192,21 @@ class Parser {
   }
 
   advanceLexer() {
-    const { maxTokens } = this._options;
+    const { maxLexicalTokens = this._options.maxTokens } = this._options;
 
     const token = this._lexer.advance();
 
     if (token.kind !== _tokenKind.TokenKind.EOF) {
       ++this._tokenCounter;
 
-      if (maxTokens !== undefined && this._tokenCounter > maxTokens) {
+      if (
+        maxLexicalTokens !== undefined &&
+        this._tokenCounter > maxLexicalTokens
+      ) {
         throw (0, _syntaxError.syntaxError)(
           this._lexer.source,
           token.start,
-          `Document contains more that ${maxTokens} tokens. Parsing aborted.`,
+          `Document contains more that ${maxLexicalTokens} tokens. Parsing aborted.`,
         );
       }
     }
@@ -11820,6 +13214,8 @@ class Parser {
 }
 /**
  * A helper function to describe a token as a string for debugging.
+ *
+ * @internal
  */
 
 exports.Parser = Parser;
@@ -11830,6 +13226,8 @@ function getTokenDesc(token) {
 }
 /**
  * A helper function to describe a token kind as a string for debugging.
+ *
+ * @internal
  */
 
 function getTokenKindDesc(kind) {
@@ -11862,6 +13260,22 @@ exports.isValueNode = isValueNode;
 
 var _kinds = __nccwpck_require__(1123);
 
+/** @category AST Predicates */
+
+/**
+ * Returns true when the AST node is a definition node.
+ * @param node - The AST node to test.
+ * @returns True when the AST node is a definition node.
+ * @example
+ * ```ts
+ * import { parse, isDefinitionNode } from 'graphql/language';
+ *
+ * const document = parse('{ hello }');
+ *
+ * isDefinitionNode(document.definitions[0]); // => true
+ * isDefinitionNode(document); // => false
+ * ```
+ */
 function isDefinitionNode(node) {
   return (
     isExecutableDefinitionNode(node) ||
@@ -11869,6 +13283,21 @@ function isDefinitionNode(node) {
     isTypeSystemExtensionNode(node)
   );
 }
+/**
+ * Returns true when the AST node is an executable definition node.
+ * @param node - The AST node to test.
+ * @returns True when the AST node is an executable definition node.
+ * @example
+ * ```ts
+ * import { parse, isExecutableDefinitionNode } from 'graphql/language';
+ *
+ * const query = parse('{ hello }');
+ * const schema = parse('type Query { hello: String }');
+ *
+ * isExecutableDefinitionNode(query.definitions[0]); // => true
+ * isExecutableDefinitionNode(schema.definitions[0]); // => false
+ * ```
+ */
 
 function isExecutableDefinitionNode(node) {
   return (
@@ -11876,6 +13305,24 @@ function isExecutableDefinitionNode(node) {
     node.kind === _kinds.Kind.FRAGMENT_DEFINITION
   );
 }
+/**
+ * Returns true when the AST node is a selection node.
+ * @param node - The AST node to test.
+ * @returns True when the AST node is a selection node.
+ * @example
+ * ```ts
+ * import { Kind, isSelectionNode } from 'graphql/language';
+ *
+ * const field = {
+ *   kind: Kind.FIELD,
+ *   name: { kind: Kind.NAME, value: 'hello' },
+ * } as const;
+ * const document = { kind: Kind.DOCUMENT, definitions: [] } as const;
+ *
+ * isSelectionNode(field); // => true
+ * isSelectionNode(document); // => false
+ * ```
+ */
 
 function isSelectionNode(node) {
   return (
@@ -11884,6 +13331,21 @@ function isSelectionNode(node) {
     node.kind === _kinds.Kind.INLINE_FRAGMENT
   );
 }
+/**
+ * Returns true when the AST node is a value node.
+ * @param node - The AST node to test.
+ * @returns True when the AST node is a value node.
+ * @example
+ * ```ts
+ * import { parseType, parseValue, isValueNode } from 'graphql/language';
+ *
+ * const value = parseValue('[42]');
+ * const type = parseType('[String!]');
+ *
+ * isValueNode(value); // => true
+ * isValueNode(type); // => false
+ * ```
+ */
 
 function isValueNode(node) {
   return (
@@ -11898,6 +13360,25 @@ function isValueNode(node) {
     node.kind === _kinds.Kind.OBJECT
   );
 }
+/**
+ * Returns true when the AST node is a constant value node.
+ * @param node - The AST node to test.
+ * @returns True when the AST node is a constant value node.
+ * @example
+ * ```ts
+ * import {
+ *   parseConstValue,
+ *   parseValue,
+ *   isConstValueNode,
+ * } from 'graphql/language';
+ *
+ * const value = parseConstValue('[42]');
+ * const variable = parseValue('$id');
+ *
+ * isConstValueNode(value); // => true
+ * isConstValueNode(variable); // => false
+ * ```
+ */
 
 function isConstValueNode(node) {
   return (
@@ -11909,6 +13390,21 @@ function isConstValueNode(node) {
       : node.kind !== _kinds.Kind.VARIABLE)
   );
 }
+/**
+ * Returns true when the AST node is a type node.
+ * @param node - The AST node to test.
+ * @returns True when the AST node is a type node.
+ * @example
+ * ```ts
+ * import { parseType, parseValue, isTypeNode } from 'graphql/language';
+ *
+ * const type = parseType('[String!]');
+ * const value = parseValue('[42]');
+ *
+ * isTypeNode(type); // => true
+ * isTypeNode(value); // => false
+ * ```
+ */
 
 function isTypeNode(node) {
   return (
@@ -11917,6 +13413,21 @@ function isTypeNode(node) {
     node.kind === _kinds.Kind.NON_NULL_TYPE
   );
 }
+/**
+ * Returns true when the AST node is a type system definition node.
+ * @param node - The AST node to test.
+ * @returns True when the AST node is a type system definition node.
+ * @example
+ * ```ts
+ * import { parse, isTypeSystemDefinitionNode } from 'graphql/language';
+ *
+ * const schema = parse('type Query { hello: String }');
+ * const query = parse('{ hello }');
+ *
+ * isTypeSystemDefinitionNode(schema.definitions[0]); // => true
+ * isTypeSystemDefinitionNode(query.definitions[0]); // => false
+ * ```
+ */
 
 function isTypeSystemDefinitionNode(node) {
   return (
@@ -11925,6 +13436,21 @@ function isTypeSystemDefinitionNode(node) {
     node.kind === _kinds.Kind.DIRECTIVE_DEFINITION
   );
 }
+/**
+ * Returns true when the AST node is a type definition node.
+ * @param node - The AST node to test.
+ * @returns True when the AST node is a type definition node.
+ * @example
+ * ```ts
+ * import { parse, isTypeDefinitionNode } from 'graphql/language';
+ *
+ * const typeDefinition = parse('type Query { hello: String }');
+ * const directiveDefinition = parse('directive @cache on FIELD');
+ *
+ * isTypeDefinitionNode(typeDefinition.definitions[0]); // => true
+ * isTypeDefinitionNode(directiveDefinition.definitions[0]); // => false
+ * ```
+ */
 
 function isTypeDefinitionNode(node) {
   return (
@@ -11936,6 +13462,21 @@ function isTypeDefinitionNode(node) {
     node.kind === _kinds.Kind.INPUT_OBJECT_TYPE_DEFINITION
   );
 }
+/**
+ * Returns true when the AST node is a type system extension node.
+ * @param node - The AST node to test.
+ * @returns True when the AST node is a type system extension node.
+ * @example
+ * ```ts
+ * import { parse, isTypeSystemExtensionNode } from 'graphql/language';
+ *
+ * const extension = parse('extend type Query { hello: String }');
+ * const definition = parse('type Query { hello: String }');
+ *
+ * isTypeSystemExtensionNode(extension.definitions[0]); // => true
+ * isTypeSystemExtensionNode(definition.definitions[0]); // => false
+ * ```
+ */
 
 function isTypeSystemExtensionNode(node) {
   return (
@@ -11944,6 +13485,21 @@ function isTypeSystemExtensionNode(node) {
     isTypeExtensionNode(node)
   );
 }
+/**
+ * Returns true when the AST node is a type extension node.
+ * @param node - The AST node to test.
+ * @returns True when the AST node is a type extension node.
+ * @example
+ * ```ts
+ * import { parse, isTypeExtensionNode } from 'graphql/language';
+ *
+ * const extension = parse('extend type Query { hello: String }');
+ * const schemaExtension = parse('extend schema { query: Query }');
+ *
+ * isTypeExtensionNode(extension.definitions[0]); // => true
+ * isTypeExtensionNode(schemaExtension.definitions[0]); // => false
+ * ```
+ */
 
 function isTypeExtensionNode(node) {
   return (
@@ -11955,6 +13511,25 @@ function isTypeExtensionNode(node) {
     node.kind === _kinds.Kind.INPUT_OBJECT_TYPE_EXTENSION
   );
 }
+/**
+ * Returns true when the AST node is a schema coordinate node.
+ * @param node - The AST node to test.
+ * @returns True when the AST node is a schema coordinate node.
+ * @example
+ * ```ts
+ * import {
+ *   parse,
+ *   parseSchemaCoordinate,
+ *   isSchemaCoordinateNode,
+ * } from 'graphql/language';
+ *
+ * const coordinate = parseSchemaCoordinate('Query.hero');
+ * const document = parse('{ hero }');
+ *
+ * isSchemaCoordinateNode(coordinate); // => true
+ * isSchemaCoordinateNode(document); // => false
+ * ```
+ */
 
 function isSchemaCoordinateNode(node) {
   return (
@@ -11983,8 +13558,23 @@ exports.printSourceLocation = printSourceLocation;
 
 var _location = __nccwpck_require__(2245);
 
+/** @category Source */
+
 /**
  * Render a helpful description of the location in the GraphQL Source document.
+ * @param location - The AST location to print.
+ * @returns A formatted source excerpt with line and column information.
+ * @example
+ * ```ts
+ * import { parse, printLocation } from 'graphql/language';
+ *
+ * const document = parse('type Query { hello: String }');
+ * const location = document.definitions[0].loc;
+ *
+ * if (location) {
+ *   const printed = printLocation(location); // => 'GraphQL request:1:1\n1 | type Query { hello: String }\n  | ^'
+ * }
+ * ```
  */
 function printLocation(location) {
   return printSourceLocation(
@@ -11994,6 +13584,16 @@ function printLocation(location) {
 }
 /**
  * Render a helpful description of the location in the GraphQL Source document.
+ * @param source - The source document that contains the location.
+ * @param sourceLocation - The 1-indexed line and column to print.
+ * @returns A formatted source excerpt with line and column information.
+ * @example
+ * ```ts
+ * import { Source, printSourceLocation } from 'graphql/language';
+ *
+ * const source = new Source('type Query { hello: String }');
+ * const printed = printSourceLocation(source, { line: 1, column: 14 }); // => 'GraphQL request:1:14\n1 | type Query { hello: String }\n  |              ^'
+ * ```
  */
 
 function printSourceLocation(source, sourceLocation) {
@@ -12065,10 +13665,14 @@ exports.printString = printString;
 /**
  * Prints a string as a GraphQL StringValue literal. Replaces control characters
  * and excluded characters (" U+0022 and \\ U+005C) with escape sequences.
+ *
+ * @internal
  */
 function printString(str) {
   return `"${str.replace(escapedRegExp, escapedReplacer)}"`;
-} // eslint-disable-next-line no-control-regex
+}
+/** @internal */
+// eslint-disable-next-line no-control-regex
 
 const escapedRegExp = /[\x00-\x1f\x22\x5c\x7f-\x9f]/g;
 
@@ -12252,175 +13856,254 @@ Object.defineProperty(exports, "__esModule", ({
   value: true,
 }));
 exports.print = print;
+exports.printForError = printForError;
 
 var _blockString = __nccwpck_require__(7508);
 
 var _printString = __nccwpck_require__(9934);
 
-var _visitor = __nccwpck_require__(638);
+var _reducer = __nccwpck_require__(1824);
 
-/**
- * Converts an AST into a string, using one set of reasonable
- * formatting rules.
- */
-function print(ast) {
-  return (0, _visitor.visit)(ast, printDocASTReducer);
+/** @category Printing */
+
+/** @internal */
+function print(ast, options) {
+  var _options$maxIndentDep;
+
+  return render(
+    (0, _reducer.reduce)(ast, printDocASTReducer),
+    (_options$maxIndentDep =
+      options === null || options === void 0
+        ? void 0
+        : options.maxIndentDepth) !== null && _options$maxIndentDep !== void 0
+      ? _options$maxIndentDep
+      : Infinity,
+  );
 }
+/** @internal */
+
+function printForError(ast) {
+  return print(ast, {
+    maxIndentDepth: 100,
+  });
+} // The wrapping limit applies to total string length, including newlines.
 
 const MAX_LINE_LENGTH = 80;
-const printDocASTReducer = {
-  Name: {
-    leave: (node) => node.value,
-  },
-  Variable: {
-    leave: (node) => '$' + node.name,
-  },
-  // Document
-  Document: {
-    leave: (node) => join(node.definitions, '\n\n'),
-  },
-  OperationDefinition: {
-    leave(node) {
-      const varDefs = hasMultilineItems(node.variableDefinitions)
-        ? wrap('(\n', join(node.variableDefinitions, '\n'), '\n)')
-        : wrap('(', join(node.variableDefinitions, ', '), ')');
-      const prefix =
-        wrap('', node.description, '\n') +
-        join(
-          [
-            node.operation,
-            join([node.name, varDefs]),
-            join(node.directives, ' '),
-          ],
-          ' ',
-        ); // Anonymous queries with no directives or variable definitions can use
-      // the query short form.
 
-      return (prefix === 'query' ? '' : prefix + ' ') + node.selectionSet;
-    },
-  },
-  VariableDefinition: {
-    leave: ({ variable, type, defaultValue, directives, description }) =>
-      wrap('', description, '\n') +
-      variable +
-      ': ' +
-      type +
-      wrap(' = ', defaultValue) +
-      wrap(' ', join(directives, ' ')),
-  },
-  SelectionSet: {
-    leave: ({ selections }) => block(selections),
-  },
-  Field: {
-    leave({ alias, name, arguments: args, directives, selectionSet }) {
-      const prefix = wrap('', alias, ': ') + name;
-      let argsLine = prefix + wrap('(', join(args, ', '), ')');
+class PrintBuffer {
+  next = undefined;
+  tail = this;
+  indentBefore = false;
+  dedentAfter = false;
 
-      if (argsLine.length > MAX_LINE_LENGTH) {
-        argsLine = prefix + wrap('(\n', indent(join(args, '\n')), '\n)');
+  constructor(value = '', isBlockString = false) {
+    this.length = value.length;
+    this.lines = value.includes('\n') ? value.split('\n') : value;
+    this.newlines = typeof this.lines === 'string' ? 0 : this.lines.length - 1;
+    this.isBlockString = isBlockString;
+  }
+
+  append(result) {
+    if (result.length === 0) {
+      return this;
+    }
+
+    const next = typeof result === 'string' ? new PrintBuffer(result) : result;
+    this.tail.next = next;
+    this.tail = next.tail;
+    this.length += next.length;
+    this.newlines += next.newlines;
+    return this;
+  }
+
+  indent() {
+    if (this.length === 0) {
+      return this;
+    }
+
+    this.indentBefore = true;
+    this.tail.dedentAfter = true;
+    this.length += 2 * (this.newlines + 1);
+    return this;
+  }
+}
+
+const EMPTY = new PrintBuffer();
+
+function render(buffer, maxDepth) {
+  let output = '';
+  let text = '';
+  let depth = 0;
+  let indentation = '';
+  let part = buffer;
+
+  while (part !== undefined) {
+    const lines = part.lines;
+
+    if (part.indentBefore) {
+      if (depth < maxDepth) {
+        indentation += '  ';
+        text += '  ';
       }
 
-      return join([argsLine, join(directives, ' '), selectionSet], ' ');
-    },
-  },
-  Argument: {
-    leave: ({ name, value }) => name + ': ' + value,
-  },
-  // Fragments
-  FragmentSpread: {
-    leave: ({ name, directives }) =>
-      '...' + name + wrap(' ', join(directives, ' ')),
-  },
-  InlineFragment: {
-    leave: ({ typeCondition, directives, selectionSet }) =>
+      depth++;
+    }
+
+    if (typeof lines === 'string') {
+      text += lines;
+    } else {
+      text += lines[0];
+      const newline =
+        !part.isBlockString && depth >= maxDepth ? ' ' : '\n' + indentation;
+
+      for (let i = 1; i < lines.length; i++) {
+        output += text;
+        text = newline + lines[i];
+      }
+    }
+
+    if (part.dedentAfter) {
+      depth--;
+      indentation = indentation.slice(0, depth * 2);
+    }
+
+    part = part.next;
+  }
+
+  return output + text;
+}
+
+const printDocASTReducer = {
+  Name: (node) => new PrintBuffer(node.value),
+  Variable: (node) => join(['$', node.name]),
+  // Document
+  Document: (node) => join(node.definitions, '\n\n'),
+
+  OperationDefinition(node) {
+    const varDefs = hasMultilineItems(node.variableDefinitions)
+      ? wrap('(\n', join(node.variableDefinitions, '\n'), '\n)')
+      : wrap('(', join(node.variableDefinitions, ', '), ')');
+    const prefix = join([
+      wrap('', node.description, '\n'),
       join(
         [
-          '...',
-          wrap('on ', typeCondition),
-          join(directives, ' '),
-          selectionSet,
+          node.operation,
+          join([node.name, varDefs]),
+          join(node.directives, ' '),
         ],
         ' ',
       ),
+    ]); // Anonymous queries with no directives or variable definitions can use
+    // the query short form.
+
+    return join([
+      node.operation === 'query' && prefix.length === node.operation.length
+        ? ''
+        : join([prefix, ' ']),
+      node.selectionSet,
+    ]);
   },
-  FragmentDefinition: {
-    leave: ({
-      name,
-      typeCondition,
-      variableDefinitions,
-      directives,
-      selectionSet,
-      description,
-    }) =>
-      wrap('', description, '\n') + // Note: fragment variable definitions are experimental and may be changed
+
+  VariableDefinition: ({
+    variable,
+    type,
+    defaultValue,
+    directives,
+    description,
+  }) =>
+    join([
+      wrap('', description, '\n'),
+      variable,
+      ': ',
+      type,
+      wrap(' = ', defaultValue),
+      wrap(' ', join(directives, ' ')),
+    ]),
+  SelectionSet: ({ selections }) => block(selections),
+
+  Field({ alias, name, arguments: args, directives, selectionSet }) {
+    const prefix = join([wrap('', alias, ': '), name], '');
+    return join([
+      wrappedLineAndArgs(prefix, args),
+      wrap(' ', join(directives, ' ')),
+      wrap(' ', selectionSet),
+    ]);
+  },
+
+  Argument: ({ name, value }) => join([name, ': ', value]),
+  // Fragments
+  FragmentSpread: ({ name, directives }) =>
+    join(['...', name, wrap(' ', join(directives, ' '))]),
+  InlineFragment: ({ typeCondition, directives, selectionSet }) =>
+    join(
+      ['...', wrap('on ', typeCondition), join(directives, ' '), selectionSet],
+      ' ',
+    ),
+  FragmentDefinition: ({
+    name,
+    typeCondition,
+    variableDefinitions,
+    directives,
+    selectionSet,
+    description,
+  }) =>
+    join([
+      wrap('', description, '\n'), // Note: fragment variable definitions are experimental and may be changed
       // or removed in the future.
-      `fragment ${name}${wrap('(', join(variableDefinitions, ', '), ')')} ` +
-      `on ${typeCondition} ${wrap('', join(directives, ' '), ' ')}` +
+      'fragment ',
+      name,
+      wrap('(', join(variableDefinitions, ', '), ')'),
+      ' on ',
+      typeCondition,
+      ' ',
+      wrap('', join(directives, ' '), ' '),
       selectionSet,
-  },
+    ]),
   // Value
-  IntValue: {
-    leave: ({ value }) => value,
-  },
-  FloatValue: {
-    leave: ({ value }) => value,
-  },
-  StringValue: {
-    leave: ({ value, block: isBlockString }) =>
-      isBlockString
+  IntValue: ({ value }) => new PrintBuffer(value),
+  FloatValue: ({ value }) => new PrintBuffer(value),
+  StringValue: ({ value, block: isBlockString }) =>
+    new PrintBuffer(
+      isBlockString === true
         ? (0, _blockString.printBlockString)(value)
         : (0, _printString.printString)(value),
-  },
-  BooleanValue: {
-    leave: ({ value }) => (value ? 'true' : 'false'),
-  },
-  NullValue: {
-    leave: () => 'null',
-  },
-  EnumValue: {
-    leave: ({ value }) => value,
-  },
-  ListValue: {
-    leave: ({ values }) => '[' + join(values, ', ') + ']',
-  },
-  ObjectValue: {
-    leave: ({ fields }) => '{' + join(fields, ', ') + '}',
-  },
-  ObjectField: {
-    leave: ({ name, value }) => name + ': ' + value,
-  },
+      isBlockString === true,
+    ),
+  BooleanValue: ({ value }) => new PrintBuffer(value ? 'true' : 'false'),
+  NullValue: () => new PrintBuffer('null'),
+  EnumValue: ({ value }) => new PrintBuffer(value),
+  ListValue: ({ values }) => join(['[', join(values, ', '), ']']),
+  ObjectValue: ({ fields }) => join(['{', join(fields, ', '), '}']),
+  ObjectField: ({ name, value }) => join([name, ': ', value]),
   // Directive
-  Directive: {
-    leave: ({ name, arguments: args }) =>
-      '@' + name + wrap('(', join(args, ', '), ')'),
-  },
+  Directive: ({ name, arguments: args }) =>
+    join(['@', name, wrap('(', join(args, ', '), ')')]),
   // Type
-  NamedType: {
-    leave: ({ name }) => name,
-  },
-  ListType: {
-    leave: ({ type }) => '[' + type + ']',
-  },
-  NonNullType: {
-    leave: ({ type }) => type + '!',
-  },
+  NamedType: ({ name }) => name,
+  ListType: ({ type }) => join(['[', type, ']']),
+  NonNullType: ({ type }) => join([type, '!']),
   // Type System Definitions
-  SchemaDefinition: {
-    leave: ({ description, directives, operationTypes }) =>
-      wrap('', description, '\n') +
+  SchemaDefinition: ({ description, directives, operationTypes }) =>
+    join([
+      wrap('', description, '\n'),
       join(['schema', join(directives, ' '), block(operationTypes)], ' '),
-  },
-  OperationTypeDefinition: {
-    leave: ({ operation, type }) => operation + ': ' + type,
-  },
-  ScalarTypeDefinition: {
-    leave: ({ description, name, directives }) =>
-      wrap('', description, '\n') +
+    ]),
+  OperationTypeDefinition: ({ operation, type }) =>
+    join([operation, ': ', type]),
+  ScalarTypeDefinition: ({ description, name, directives }) =>
+    join([
+      wrap('', description, '\n'),
       join(['scalar', name, join(directives, ' ')], ' '),
-  },
-  ObjectTypeDefinition: {
-    leave: ({ description, name, interfaces, directives, fields }) =>
-      wrap('', description, '\n') +
+    ]),
+  ObjectTypeDefinition: ({
+    description,
+    name,
+    interfaces,
+    directives,
+    fields,
+  }) =>
+    join([
+      wrap('', description, '\n'),
       join(
         [
           'type',
@@ -12431,29 +14114,42 @@ const printDocASTReducer = {
         ],
         ' ',
       ),
-  },
-  FieldDefinition: {
-    leave: ({ description, name, arguments: args, type, directives }) =>
-      wrap('', description, '\n') +
-      name +
-      (hasMultilineItems(args)
-        ? wrap('(\n', indent(join(args, '\n')), '\n)')
-        : wrap('(', join(args, ', '), ')')) +
-      ': ' +
-      type +
+    ]),
+  FieldDefinition: ({ description, name, arguments: args, type, directives }) =>
+    join([
+      wrap('', description, '\n'),
+      name,
+      hasMultilineItems(args)
+        ? wrap('(\n', join(args, '\n').indent(), '\n)')
+        : wrap('(', join(args, ', '), ')'),
+      ': ',
+      type,
       wrap(' ', join(directives, ' ')),
-  },
-  InputValueDefinition: {
-    leave: ({ description, name, type, defaultValue, directives }) =>
-      wrap('', description, '\n') +
-      join(
-        [name + ': ' + type, wrap('= ', defaultValue), join(directives, ' ')],
-        ' ',
-      ),
-  },
-  InterfaceTypeDefinition: {
-    leave: ({ description, name, interfaces, directives, fields }) =>
-      wrap('', description, '\n') +
+    ]),
+  InputValueDefinition: ({
+    description,
+    name,
+    type,
+    defaultValue,
+    directives,
+  }) =>
+    join([
+      wrap('', description, '\n'),
+      name,
+      ': ',
+      type,
+      wrap(' = ', defaultValue),
+      wrap(' ', join(directives, ' ')),
+    ]),
+  InterfaceTypeDefinition: ({
+    description,
+    name,
+    interfaces,
+    directives,
+    fields,
+  }) =>
+    join([
+      wrap('', description, '\n'),
       join(
         [
           'interface',
@@ -12464,179 +14160,295 @@ const printDocASTReducer = {
         ],
         ' ',
       ),
-  },
-  UnionTypeDefinition: {
-    leave: ({ description, name, directives, types }) =>
-      wrap('', description, '\n') +
+    ]),
+  UnionTypeDefinition: ({ description, name, directives, types }) =>
+    join([
+      wrap('', description, '\n'),
       join(
         ['union', name, join(directives, ' '), wrap('= ', join(types, ' | '))],
         ' ',
       ),
-  },
-  EnumTypeDefinition: {
-    leave: ({ description, name, directives, values }) =>
-      wrap('', description, '\n') +
+    ]),
+  EnumTypeDefinition: ({ description, name, directives, values }) =>
+    join([
+      wrap('', description, '\n'),
       join(['enum', name, join(directives, ' '), block(values)], ' '),
-  },
-  EnumValueDefinition: {
-    leave: ({ description, name, directives }) =>
-      wrap('', description, '\n') + join([name, join(directives, ' ')], ' '),
-  },
-  InputObjectTypeDefinition: {
-    leave: ({ description, name, directives, fields }) =>
-      wrap('', description, '\n') +
+    ]),
+  EnumValueDefinition: ({ description, name, directives }) =>
+    join([
+      wrap('', description, '\n'),
+      join([name, join(directives, ' ')], ' '),
+    ]),
+  InputObjectTypeDefinition: ({ description, name, directives, fields }) =>
+    join([
+      wrap('', description, '\n'),
       join(['input', name, join(directives, ' '), block(fields)], ' '),
-  },
-  DirectiveDefinition: {
-    leave: ({
-      description,
+    ]),
+  DirectiveDefinition: ({
+    description,
+    name,
+    arguments: args,
+    directives,
+    repeatable,
+    locations,
+  }) =>
+    join([
+      wrap('', description, '\n'),
+      'directive @',
       name,
-      arguments: args,
-      directives,
-      repeatable,
-      locations,
-    }) =>
-      wrap('', description, '\n') +
-      'directive @' +
-      name +
-      (hasMultilineItems(args)
-        ? wrap('(\n', indent(join(args, '\n')), '\n)')
-        : wrap('(', join(args, ', '), ')')) +
-      wrap(' ', join(directives, ' ')) +
-      (repeatable ? ' repeatable' : '') +
-      ' on ' +
+      hasMultilineItems(args)
+        ? wrap('(\n', join(args, '\n').indent(), '\n)')
+        : wrap('(', join(args, ', '), ')'),
+      wrap(' ', join(directives, ' ')),
+      repeatable ? ' repeatable' : '',
+      ' on ',
       join(locations, ' | '),
-  },
-  SchemaExtension: {
-    leave: ({ directives, operationTypes }) =>
-      join(
-        ['extend schema', join(directives, ' '), block(operationTypes)],
-        ' ',
-      ),
-  },
-  ScalarTypeExtension: {
-    leave: ({ name, directives }) =>
-      join(['extend scalar', name, join(directives, ' ')], ' '),
-  },
-  ObjectTypeExtension: {
-    leave: ({ name, interfaces, directives, fields }) =>
-      join(
-        [
-          'extend type',
-          name,
-          wrap('implements ', join(interfaces, ' & ')),
-          join(directives, ' '),
-          block(fields),
-        ],
-        ' ',
-      ),
-  },
-  InterfaceTypeExtension: {
-    leave: ({ name, interfaces, directives, fields }) =>
-      join(
-        [
-          'extend interface',
-          name,
-          wrap('implements ', join(interfaces, ' & ')),
-          join(directives, ' '),
-          block(fields),
-        ],
-        ' ',
-      ),
-  },
-  UnionTypeExtension: {
-    leave: ({ name, directives, types }) =>
-      join(
-        [
-          'extend union',
-          name,
-          join(directives, ' '),
-          wrap('= ', join(types, ' | ')),
-        ],
-        ' ',
-      ),
-  },
-  EnumTypeExtension: {
-    leave: ({ name, directives, values }) =>
-      join(['extend enum', name, join(directives, ' '), block(values)], ' '),
-  },
-  InputObjectTypeExtension: {
-    leave: ({ name, directives, fields }) =>
-      join(['extend input', name, join(directives, ' '), block(fields)], ' '),
-  },
-  DirectiveExtension: {
-    leave: ({ name, directives }) =>
-      join(['extend directive @' + name, join(directives, ' ')], ' '),
-  },
+    ]),
+  SchemaExtension: ({ directives, operationTypes }) =>
+    join(['extend schema', join(directives, ' '), block(operationTypes)], ' '),
+  ScalarTypeExtension: ({ name, directives }) =>
+    join(['extend scalar', name, join(directives, ' ')], ' '),
+  ObjectTypeExtension: ({ name, interfaces, directives, fields }) =>
+    join(
+      [
+        'extend type',
+        name,
+        wrap('implements ', join(interfaces, ' & ')),
+        join(directives, ' '),
+        block(fields),
+      ],
+      ' ',
+    ),
+  InterfaceTypeExtension: ({ name, interfaces, directives, fields }) =>
+    join(
+      [
+        'extend interface',
+        name,
+        wrap('implements ', join(interfaces, ' & ')),
+        join(directives, ' '),
+        block(fields),
+      ],
+      ' ',
+    ),
+  UnionTypeExtension: ({ name, directives, types }) =>
+    join(
+      [
+        'extend union',
+        name,
+        join(directives, ' '),
+        wrap('= ', join(types, ' | ')),
+      ],
+      ' ',
+    ),
+  EnumTypeExtension: ({ name, directives, values }) =>
+    join(['extend enum', name, join(directives, ' '), block(values)], ' '),
+  InputObjectTypeExtension: ({ name, directives, fields }) =>
+    join(['extend input', name, join(directives, ' '), block(fields)], ' '),
+  DirectiveExtension: ({ name, directives }) =>
+    join([join(['extend directive @', name]), join(directives, ' ')], ' '),
   // Schema Coordinates
-  TypeCoordinate: {
-    leave: ({ name }) => name,
-  },
-  MemberCoordinate: {
-    leave: ({ name, memberName }) => join([name, wrap('.', memberName)]),
-  },
-  ArgumentCoordinate: {
-    leave: ({ name, fieldName, argumentName }) =>
-      join([name, wrap('.', fieldName), wrap('(', argumentName, ':)')]),
-  },
-  DirectiveCoordinate: {
-    leave: ({ name }) => join(['@', name]),
-  },
-  DirectiveArgumentCoordinate: {
-    leave: ({ name, argumentName }) =>
-      join(['@', name, wrap('(', argumentName, ':)')]),
-  },
+  TypeCoordinate: ({ name }) => name,
+  MemberCoordinate: ({ name, memberName }) =>
+    join([name, wrap('.', memberName)]),
+  ArgumentCoordinate: ({ name, fieldName, argumentName }) =>
+    join([name, wrap('.', fieldName), wrap('(', argumentName, ':)')]),
+  DirectiveCoordinate: ({ name }) => join(['@', name]),
+  DirectiveArgumentCoordinate: ({ name, argumentName }) =>
+    join(['@', name, wrap('(', argumentName, ':)')]),
 };
 /**
  * Given maybeArray, print an empty string if it is null or empty, otherwise
  * print all items together separated by separator if provided
+ *
+ * @internal
  */
 
 function join(maybeArray, separator = '') {
-  var _maybeArray$filter$jo;
+  if (maybeArray == null || maybeArray.length === 0) {
+    return EMPTY;
+  }
 
-  return (_maybeArray$filter$jo =
-    maybeArray === null || maybeArray === void 0
-      ? void 0
-      : maybeArray.filter((x) => x).join(separator)) !== null &&
-    _maybeArray$filter$jo !== void 0
-    ? _maybeArray$filter$jo
-    : '';
+  let result = EMPTY;
+
+  for (const item of maybeArray) {
+    if (item === undefined || item.length === 0) {
+      continue;
+    }
+
+    if (result.length === 0) {
+      result = typeof item === 'string' ? new PrintBuffer(item) : item;
+    } else {
+      if (separator !== '') {
+        result.append(separator);
+      }
+
+      result.append(item);
+    }
+  }
+
+  return result;
+}
+
+function joinedLength(array, separator) {
+  let length = 0;
+
+  for (const item of array) {
+    if (item.length !== 0) {
+      length += (length === 0 ? 0 : separator.length) + item.length;
+    }
+  }
+
+  return length;
 }
 /**
  * Given array, print each item on its own line, wrapped in an indented `{ }` block.
+ *
+ * @internal
  */
 
 function block(array) {
-  return wrap('{\n', indent(join(array, '\n')), '\n}');
+  return wrap('{\n', join(array, '\n').indent(), '\n}');
 }
 /**
- * If maybeString is not null or empty, then wrap with start and end, otherwise print an empty string.
+ * If maybeBuffer is not null or empty, then wrap with start and end, otherwise print an empty string.
+ *
+ * @internal
  */
 
-function wrap(start, maybeString, end = '') {
-  return maybeString != null && maybeString !== ''
-    ? start + maybeString + end
-    : '';
-}
-
-function indent(str) {
-  return wrap('  ', str.replace(/\n/g, '\n  '));
+function wrap(start, maybeBuffer, end = '') {
+  return maybeBuffer != null && maybeBuffer.length !== 0
+    ? start === ''
+      ? maybeBuffer.append(end)
+      : new PrintBuffer(start).append(maybeBuffer).append(end)
+    : EMPTY;
 }
 
 function hasMultilineItems(maybeArray) {
   var _maybeArray$some;
 
-  // FIXME: https://github.com/graphql/graphql-js/issues/2203
-
-  /* c8 ignore next */
   return (_maybeArray$some =
     maybeArray === null || maybeArray === void 0
       ? void 0
-      : maybeArray.some((str) => str.includes('\n'))) !== null &&
+      : maybeArray.some((result) => result.newlines !== 0)) !== null &&
     _maybeArray$some !== void 0
     ? _maybeArray$some
     : false;
+}
+
+function wrappedLineAndArgs(prefix, args) {
+  if (args == null || args.length === 0) {
+    return prefix;
+  }
+
+  return join([
+    prefix,
+    prefix.length + joinedLength(args, ', ') + 2 > MAX_LINE_LENGTH
+      ? wrap('(\n', join(args, '\n').indent(), '\n)')
+      : wrap('(', join(args, ', '), ')'),
+  ]);
+}
+
+
+/***/ }),
+
+/***/ 1824:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true,
+}));
+exports.reduce = reduce;
+
+var _inspect = __nccwpck_require__(5742);
+
+var _ast = __nccwpck_require__(2740);
+
+/** @category Visiting */
+
+/** @internal */
+function reduce(root, reducer) {
+  const stack = [];
+  let frame = {
+    parent: [root],
+    keys: undefined,
+    results: [],
+    index: -1,
+  };
+  let node;
+
+  do {
+    let kind;
+    frame.index++;
+    const length =
+      frame.keys === undefined ? frame.parent.length : frame.keys.length;
+
+    if (frame.index === length) {
+      node = frame.results;
+      kind = frame.keys === undefined ? undefined : frame.results.kind;
+      frame = stack.pop();
+    } else {
+      node =
+        frame.keys === undefined
+          ? frame.parent[frame.index]
+          : frame.parent[frame.keys[frame.index]];
+
+      if (node == null && stack.length !== 0) {
+        continue;
+      }
+
+      if (Array.isArray(node)) {
+        if (node.length !== 0) {
+          stack.push(frame);
+          frame = {
+            parent: node,
+            keys: undefined,
+            results: [],
+            index: -1,
+          };
+          continue;
+        }
+      } else {
+        const parent = node;
+        kind = parent === null || parent === void 0 ? void 0 : parent.kind;
+        const keys =
+          typeof kind === 'string' ? _ast.QueryDocumentKeys[kind] : undefined;
+
+        if (!Array.isArray(keys)) {
+          throw new Error(`Invalid AST Node: ${(0, _inspect.inspect)(node)}.`);
+        }
+
+        if (keys.length !== 0) {
+          stack.push(frame);
+          frame = {
+            parent,
+            keys,
+            results: { ...parent },
+            index: -1,
+          };
+          continue;
+        }
+      }
+    }
+
+    if (kind !== undefined) {
+      const reduceNode = reducer[kind];
+      node =
+        reduceNode === null || reduceNode === void 0
+          ? void 0
+          : reduceNode(node);
+    }
+
+    if (frame.keys === undefined) {
+      frame.results.push(node);
+    } else {
+      frame.results[frame.keys[frame.index]] = node;
+    }
+  } while (stack.length !== 0);
+
+  return node;
 }
 
 
@@ -12670,15 +14482,13 @@ var _tokenKind = __nccwpck_require__(1743);
  * source lexes, the final Token emitted by the lexer will be of kind
  * EOF, after which the lexer will repeatedly return the same EOF token
  * whenever called.
+ *
+ * @internal
  */
 class SchemaCoordinateLexer {
-  /**
-   * The previously focused non-ignored token.
-   */
+  /** The previously focused non-ignored token. */
 
-  /**
-   * The currently focused non-ignored token.
-   */
+  /** The currently focused non-ignored token. */
 
   /**
    * The (1-indexed) line containing the current token.
@@ -12710,6 +14520,8 @@ class SchemaCoordinateLexer {
   }
   /**
    * Advances the token stream to the next non-ignored token.
+   *
+   * @internal
    */
 
   advance() {
@@ -12720,6 +14532,8 @@ class SchemaCoordinateLexer {
   /**
    * Looks ahead and returns the next non-ignored token, but does not change
    * the current Lexer token.
+   *
+   * @internal
    */
 
   lookahead() {
@@ -12740,6 +14554,8 @@ class SchemaCoordinateLexer {
 }
 /**
  * Gets the next token from the source starting at the given position.
+ *
+ * @internal
  */
 
 exports.SchemaCoordinateLexer = SchemaCoordinateLexer;
@@ -12839,6 +14655,8 @@ var _inspect = __nccwpck_require__(5742);
 
 var _instanceOf = __nccwpck_require__(5914);
 
+/** @category Source */
+
 /**
  * A representation of source input to GraphQL. The `name` and `locationOffset` parameters are
  * optional, but they are useful for clients who store GraphQL documents in source files.
@@ -12847,6 +14665,31 @@ var _instanceOf = __nccwpck_require__(5914);
  * The `line` and `column` properties in `locationOffset` are 1-indexed.
  */
 class Source {
+  /** The GraphQL source text. */
+
+  /** Name used in diagnostics for this source, such as a file path or request name. */
+
+  /** One-indexed line and column where this source begins. */
+
+  /**
+   * Creates a Source instance.
+   * @param body - The GraphQL source text.
+   * @param name - Name used in diagnostics for this source.
+   * @param locationOffset - One-indexed line and column where this source begins.
+   * @example
+   * ```ts
+   * import { Source } from 'graphql/language';
+   *
+   * const source = new Source('type Query { greeting: String }', 'schema.graphql', {
+   *   line: 10,
+   *   column: 1,
+   * });
+   *
+   * source.body; // => 'type Query { greeting: String }'
+   * source.name; // => 'schema.graphql'
+   * source.locationOffset; // => { line: 10, column: 1 }
+   * ```
+   */
   constructor(
     body,
     name = 'GraphQL request',
@@ -12874,6 +14717,10 @@ class Source {
         'column in locationOffset is 1-indexed and must be positive.',
       );
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'Source';
@@ -12904,6 +14751,8 @@ Object.defineProperty(exports, "__esModule", ({
   value: true,
 }));
 exports.TokenKind = void 0;
+
+/** @category Lexing */
 
 /**
  * An exported enum describing the different kinds of tokens that the
@@ -12938,9 +14787,12 @@ exports.TokenKind = TokenKind;
   TokenKind['COMMENT'] = 'Comment';
 })(TokenKind || (exports.TokenKind = TokenKind = {}));
 /**
- * The enum type representing the token kinds values.
- *
- * @deprecated Please use `TokenKind`. Will be remove in v17.
+ * Deprecated legacy alias for the enum type representing token kind values.
+ * This alias will be removed in v17. In v17, `TokenKind` is exported as the
+ * single public symbol for both the runtime object and the corresponding
+ * TypeScript type.
+ * @deprecated Will be removed in v17. In v17, use `TokenKind` as both the
+ * runtime value and the type.
  */
 
 
@@ -12969,6 +14821,9 @@ var _ast = __nccwpck_require__(2740);
 
 var _kinds = __nccwpck_require__(1123);
 
+/** @category Visiting */
+
+/** A value that can be returned from a visitor function to stop traversal. */
 const BREAK = Object.freeze({});
 /**
  * visit() will walk through an AST using a depth-first traversal, calling
@@ -12983,74 +14838,96 @@ const BREAK = Object.freeze({});
  * When using visit() to edit an AST, the original AST will not be modified, and
  * a new version of the AST with the changes applied will be returned from the
  * visit function.
- *
+ * @param root - The AST node at which to start traversal.
+ * @param visitor - The visitor or reducer functions to call while traversing.
+ * @param visitorKeys - Optional map of child keys to visit for each AST node kind.
+ * @returns The original AST, an edited AST, or a reduced value depending on the visitor.
+ * @typeParam N - The root AST node type returned when visiting without reducing.
+ * @example
  * ```ts
- * const editedAST = visit(ast, {
- *   enter(node, key, parent, path, ancestors) {
- *     // @return
- *     //   undefined: no action
- *     //   false: skip visiting this node
- *     //   visitor.BREAK: stop visiting altogether
- *     //   null: delete this node
- *     //   any value: replace this node with the returned value
+ * // Return values control traversal: undefined makes no change, false skips
+ * // a subtree, BREAK stops traversal, null removes a node, and any other
+ * // value replaces the current node.
+ * import { Kind, parse, print, visit } from 'graphql/language';
+ *
+ * const document = parse('{ hero { name } }');
+ * const editedAST = visit(document, {
+ *   Field: (node) => {
+ *     if (node.name.value === 'hero') {
+ *       return {
+ *         ...node,
+ *         name: { kind: Kind.NAME, value: 'human' },
+ *       };
+ *     }
  *   },
- *   leave(node, key, parent, path, ancestors) {
- *     // @return
- *     //   undefined: no action
- *     //   false: no action
- *     //   visitor.BREAK: stop visiting altogether
- *     //   null: delete this node
- *     //   any value: replace this node with the returned value
- *   }
  * });
+ *
+ * print(editedAST); // => '{\n  human {\n    name\n  }\n}'
  * ```
- *
- * Alternatively to providing enter() and leave() functions, a visitor can
- * instead provide functions named the same as the kinds of AST nodes, or
- * enter/leave visitors at a named key, leading to three permutations of the
- * visitor API:
- *
- * 1) Named visitors triggered when entering a node of a specific kind.
- *
+ * @example
  * ```ts
- * visit(ast, {
- *   Kind(node) {
- *     // enter the "Kind" node
- *   }
- * })
- * ```
+ * // A named visitor function runs when entering nodes of that kind.
+ * import { parse, visit } from 'graphql/language';
  *
- * 2) Named visitors that trigger upon entering and leaving a node of a specific kind.
+ * const document = parse('{ hero { name } }');
+ * const fieldNames: Array<string> = [];
  *
- * ```ts
- * visit(ast, {
- *   Kind: {
- *     enter(node) {
- *       // enter the "Kind" node
- *     }
- *     leave(node) {
- *       // leave the "Kind" node
- *     }
- *   }
- * })
- * ```
- *
- * 3) Generic visitors that trigger upon entering and leaving any node.
- *
- * ```ts
- * visit(ast, {
- *   enter(node) {
- *     // enter any node
+ * visit(document, {
+ *   Field: (node) => {
+ *     fieldNames.push(node.name.value);
  *   },
- *   leave(node) {
- *     // leave any node
- *   }
- * })
+ * });
+ *
+ * fieldNames; // => ['hero', 'name']
+ * ```
+ * @example
+ * ```ts
+ * // A named visitor object can provide separate enter and leave handlers for
+ * // nodes of that kind.
+ * import { parse, visit } from 'graphql/language';
+ *
+ * const document = parse('{ hero { name } }');
+ * const events: Array<string> = [];
+ *
+ * visit(document, {
+ *   Field: {
+ *     enter: (node) => {
+ *       events.push(`enter:${node.name.value}`);
+ *     },
+ *     leave: (node) => {
+ *       events.push(`leave:${node.name.value}`);
+ *     },
+ *   },
+ * });
+ *
+ * events; // => ['enter:hero', 'enter:name', 'leave:name', 'leave:hero']
+ * ```
+ * @example
+ * ```ts
+ * // Generic enter and leave handlers run for every node.
+ * import { parse, visit } from 'graphql/language';
+ *
+ * const document = parse('{ hero { name } }');
+ * let enterCount = 0;
+ * let leaveCount = 0;
+ *
+ * visit(document, {
+ *   enter: () => {
+ *     enterCount += 1;
+ *   },
+ *   leave: () => {
+ *     leaveCount += 1;
+ *   },
+ * });
+ *
+ * enterCount; // => leaveCount
+ * enterCount > 0; // => true
  * ```
  */
 
 exports.BREAK = BREAK;
 
+/** @internal */
 function visit(root, visitor, visitorKeys = _ast.QueryDocumentKeys) {
   const enterLeaveMap = new Map();
 
@@ -13214,6 +15091,33 @@ function visit(root, visitor, visitorKeys = _ast.QueryDocumentKeys) {
  * parallel. Each visitor will be visited for each node before moving on.
  *
  * If a prior visitor edits a node, no following visitors will see that node.
+ * @param visitors - The visitors to merge into one parallel visitor.
+ * @returns A visitor that delegates traversal to each provided visitor.
+ * @example
+ * ```ts
+ * import { parse, visit, visitInParallel } from 'graphql/language';
+ *
+ * const document = parse('{ hero { name } }');
+ * const events: Array<string> = [];
+ *
+ * visit(
+ *   document,
+ *   visitInParallel([
+ *     {
+ *       Field: (node) => {
+ *         events.push(`field:${node.name.value}`);
+ *       },
+ *     },
+ *     {
+ *       Name: (node) => {
+ *         events.push(`name:${node.value}`);
+ *       },
+ *     },
+ *   ]),
+ * );
+ *
+ * events; // => ['field:hero', 'name:hero', 'field:name', 'name:name']
+ * ```
  */
 
 function visitInParallel(visitors) {
@@ -13290,6 +15194,18 @@ function visitInParallel(visitors) {
 }
 /**
  * Given a visitor instance and a node kind, return EnterLeaveVisitor for that kind.
+ * @param visitor - The visitor object to inspect.
+ * @param kind - The AST node kind to resolve handlers for.
+ * @returns The enter and leave handlers that apply for the given node kind.
+ * @example
+ * ```ts
+ * import { Kind, getEnterLeaveForKind } from 'graphql/language';
+ *
+ * const handlers = getEnterLeaveForKind({ Field: () => {} }, Kind.FIELD);
+ *
+ * typeof handlers.enter; // => 'function'
+ * handlers.leave; // => undefined
+ * ```
  */
 
 function getEnterLeaveForKind(visitor, kind) {
@@ -13313,8 +15229,24 @@ function getEnterLeaveForKind(visitor, kind) {
 }
 /**
  * Given a visitor instance, if it is leaving or not, and a node kind, return
- * the function the visitor runtime should call.
+ * the function the visitor runtime should call. This deprecated compatibility
+ * helper delegates to `getEnterLeaveForKind`; call `getEnterLeaveForKind`
+ * directly because getVisitFn will be removed in v17.
+ * @param visitor - The visitor object to inspect.
+ * @param kind - The AST node kind to resolve a handler for.
+ * @param isLeaving - Whether to resolve the leave handler instead of the enter handler.
+ * @returns The visit function that applies for the given node kind and traversal phase, if one exists.
+ * @example
+ * ```ts
+ * import { Kind, getVisitFn } from 'graphql/language';
  *
+ * const enter = getVisitFn({ Field: () => {} }, Kind.FIELD, false);
+ * const leave = getVisitFn({ Field: () => {} }, Kind.FIELD, true);
+ *
+ * typeof enter; // => 'function'
+ * leave; // => undefined
+ * ```
+ * @category Visiting
  * @deprecated Please use `getEnterLeaveForKind` instead. Will be removed in v17
  */
 
@@ -13346,8 +15278,19 @@ var _GraphQLError = __nccwpck_require__(5939);
 
 var _characterClasses = __nccwpck_require__(3271);
 
+/** @category Names */
+
 /**
  * Upholds the spec rules about naming.
+ * @param name - The GraphQL name to validate.
+ * @returns The validated GraphQL name.
+ * @example
+ * ```ts
+ * import { assertName } from 'graphql/type';
+ *
+ * assertName('User'); // => 'User'
+ * assertName('123User'); // throws an error
+ * ```
  */
 function assertName(name) {
   name != null || (0, _devAssert.devAssert)(false, 'Must provide name.');
@@ -13378,8 +15321,15 @@ function assertName(name) {
 }
 /**
  * Upholds the spec rules about naming enum values.
+ * @param name - The GraphQL name to validate.
+ * @returns The validated GraphQL name.
+ * @example
+ * ```ts
+ * import { assertEnumValueName } from 'graphql/type';
  *
- * @internal
+ * assertEnumValueName('ACTIVE'); // => 'ACTIVE'
+ * assertEnumValueName('true'); // throws an error
+ * ```
  */
 
 function assertEnumValueName(name) {
@@ -13488,6 +15438,29 @@ var _valueFromASTUntyped = __nccwpck_require__(5470);
 
 var _assertName = __nccwpck_require__(8337);
 
+/** @category Types */
+
+/**
+ * Returns true when the value is any GraphQL type.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is any GraphQL type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { GraphQLList, GraphQLString, isType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * isType(GraphQLString); // => true
+ * isType(new GraphQLList(GraphQLString)); // => true
+ * isType(schema.getType('Query')); // => true
+ * isType('String'); // => false
+ * ```
+ */
 function isType(type) {
   return (
     isScalarType(type) ||
@@ -13500,6 +15473,27 @@ function isType(type) {
     isNonNullType(type)
   );
 }
+/**
+ * Returns the value as a GraphQL type, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQL type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const queryType = assertType(schema.getType('Query'));
+ *
+ * queryType.toString(); // => 'Query'
+ * assertType('Query'); // throws an error
+ * ```
+ */
 
 function assertType(type) {
   if (!isType(type)) {
@@ -13512,11 +15506,52 @@ function assertType(type) {
 }
 /**
  * There are predicates for each kind of GraphQL type.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQLScalarType.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { isScalarType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   scalar DateTime
+ *
+ *   type Query {
+ *     createdAt: DateTime
+ *   }
+ * `);
+ *
+ * isScalarType(schema.getType('DateTime')); // => true
+ * isScalarType(schema.getType('Query')); // => false
+ * ```
  */
 
 function isScalarType(type) {
   return (0, _instanceOf.instanceOf)(type, GraphQLScalarType);
 }
+/**
+ * Returns the value as a GraphQLScalarType, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQLScalarType.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertScalarType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   scalar DateTime
+ *
+ *   type Query {
+ *     createdAt: DateTime
+ *   }
+ * `);
+ *
+ * const dateTimeType = assertScalarType(schema.getType('DateTime'));
+ *
+ * dateTimeType.name; // => 'DateTime'
+ * assertScalarType(schema.getType('Query')); // throws an error
+ * ```
+ */
 
 function assertScalarType(type) {
   if (!isScalarType(type)) {
@@ -13527,10 +15562,66 @@ function assertScalarType(type) {
 
   return type;
 }
+/**
+ * Returns true when the value is a GraphQLObjectType.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQLObjectType.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { isObjectType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   input ReviewInput {
+ *     stars: Int!
+ *   }
+ *
+ *   type User {
+ *     name: String
+ *   }
+ *
+ *   type Query {
+ *     user: User
+ *   }
+ * `);
+ *
+ * isObjectType(schema.getType('User')); // => true
+ * isObjectType(schema.getType('ReviewInput')); // => false
+ * ```
+ */
 
 function isObjectType(type) {
   return (0, _instanceOf.instanceOf)(type, GraphQLObjectType);
 }
+/**
+ * Returns the value as a GraphQLObjectType, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQLObjectType.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertObjectType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   input ReviewInput {
+ *     stars: Int!
+ *   }
+ *
+ *   type User {
+ *     name: String
+ *   }
+ *
+ *   type Query {
+ *     user: User
+ *   }
+ * `);
+ *
+ * const userType = assertObjectType(schema.getType('User'));
+ *
+ * Object.keys(userType.getFields()); // => ['name']
+ * assertObjectType(schema.getType('ReviewInput')); // throws an error
+ * ```
+ */
 
 function assertObjectType(type) {
   if (!isObjectType(type)) {
@@ -13541,10 +15632,66 @@ function assertObjectType(type) {
 
   return type;
 }
+/**
+ * Returns true when the value is a GraphQLInterfaceType.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQLInterfaceType.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { isInterfaceType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   interface Node {
+ *     id: ID!
+ *   }
+ *
+ *   type User implements Node {
+ *     id: ID!
+ *   }
+ *
+ *   type Query {
+ *     node: Node
+ *   }
+ * `);
+ *
+ * isInterfaceType(schema.getType('Node')); // => true
+ * isInterfaceType(schema.getType('User')); // => false
+ * ```
+ */
 
 function isInterfaceType(type) {
   return (0, _instanceOf.instanceOf)(type, GraphQLInterfaceType);
 }
+/**
+ * Returns the value as a GraphQLInterfaceType, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQLInterfaceType.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertInterfaceType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   interface Node {
+ *     id: ID!
+ *   }
+ *
+ *   type User implements Node {
+ *     id: ID!
+ *   }
+ *
+ *   type Query {
+ *     node: Node
+ *   }
+ * `);
+ *
+ * const nodeType = assertInterfaceType(schema.getType('Node'));
+ *
+ * nodeType.name; // => 'Node'
+ * assertInterfaceType(schema.getType('User')); // throws an error
+ * ```
+ */
 
 function assertInterfaceType(type) {
   if (!isInterfaceType(type)) {
@@ -13555,10 +15702,70 @@ function assertInterfaceType(type) {
 
   return type;
 }
+/**
+ * Returns true when the value is a GraphQLUnionType.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQLUnionType.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { isUnionType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   type Photo {
+ *     url: String!
+ *   }
+ *
+ *   type Video {
+ *     url: String!
+ *   }
+ *
+ *   union Media = Photo | Video
+ *
+ *   type Query {
+ *     media: [Media]
+ *   }
+ * `);
+ *
+ * isUnionType(schema.getType('Media')); // => true
+ * isUnionType(schema.getType('Photo')); // => false
+ * ```
+ */
 
 function isUnionType(type) {
   return (0, _instanceOf.instanceOf)(type, GraphQLUnionType);
 }
+/**
+ * Returns the value as a GraphQLUnionType, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQLUnionType.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertUnionType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   type Photo {
+ *     url: String!
+ *   }
+ *
+ *   type Video {
+ *     url: String!
+ *   }
+ *
+ *   union Media = Photo | Video
+ *
+ *   type Query {
+ *     media: [Media]
+ *   }
+ * `);
+ *
+ * const mediaType = assertUnionType(schema.getType('Media'));
+ *
+ * mediaType.getTypes().map((type) => type.name); // => ['Photo', 'Video']
+ * assertUnionType(schema.getType('Photo')); // throws an error
+ * ```
+ */
 
 function assertUnionType(type) {
   if (!isUnionType(type)) {
@@ -13569,10 +15776,60 @@ function assertUnionType(type) {
 
   return type;
 }
+/**
+ * Returns true when the value is a GraphQLEnumType.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQLEnumType.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { isEnumType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   enum Episode {
+ *     NEW_HOPE
+ *     EMPIRE
+ *   }
+ *
+ *   type Query {
+ *     favoriteEpisode: Episode
+ *   }
+ * `);
+ *
+ * isEnumType(schema.getType('Episode')); // => true
+ * isEnumType(schema.getType('Query')); // => false
+ * ```
+ */
 
 function isEnumType(type) {
   return (0, _instanceOf.instanceOf)(type, GraphQLEnumType);
 }
+/**
+ * Returns the value as a GraphQLEnumType, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQLEnumType.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertEnumType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   enum Episode {
+ *     NEW_HOPE
+ *     EMPIRE
+ *   }
+ *
+ *   type Query {
+ *     favoriteEpisode: Episode
+ *   }
+ * `);
+ *
+ * const episodeType = assertEnumType(schema.getType('Episode'));
+ *
+ * episodeType.getValues().map((value) => value.name); // => ['NEW_HOPE', 'EMPIRE']
+ * assertEnumType(schema.getType('Query')); // throws an error
+ * ```
+ */
 
 function assertEnumType(type) {
   if (!isEnumType(type)) {
@@ -13583,10 +15840,66 @@ function assertEnumType(type) {
 
   return type;
 }
+/**
+ * Returns true when the value is a GraphQLInputObjectType.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQLInputObjectType.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { isInputObjectType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   input ReviewInput {
+ *     stars: Int!
+ *   }
+ *
+ *   type Review {
+ *     stars: Int!
+ *   }
+ *
+ *   type Query {
+ *     review(input: ReviewInput): Review
+ *   }
+ * `);
+ *
+ * isInputObjectType(schema.getType('ReviewInput')); // => true
+ * isInputObjectType(schema.getType('Review')); // => false
+ * ```
+ */
 
 function isInputObjectType(type) {
   return (0, _instanceOf.instanceOf)(type, GraphQLInputObjectType);
 }
+/**
+ * Returns the value as a GraphQLInputObjectType, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQLInputObjectType.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertInputObjectType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   input ReviewInput {
+ *     stars: Int!
+ *   }
+ *
+ *   type Review {
+ *     stars: Int!
+ *   }
+ *
+ *   type Query {
+ *     review(input: ReviewInput): Review
+ *   }
+ * `);
+ *
+ * const inputType = assertInputObjectType(schema.getType('ReviewInput'));
+ *
+ * Object.keys(inputType.getFields()); // => ['stars']
+ * assertInputObjectType(schema.getType('Review')); // throws an error
+ * ```
+ */
 
 function assertInputObjectType(type) {
   if (!isInputObjectType(type)) {
@@ -13599,10 +15912,47 @@ function assertInputObjectType(type) {
 
   return type;
 }
+/**
+ * Returns true when the value is a GraphQLList.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQLList.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { GraphQLList, GraphQLString, isListType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     tags: [String!]!
+ *   }
+ * `);
+ *
+ * const tagsField = schema.getQueryType()?.getFields().tags;
+ *
+ * isListType(new GraphQLList(GraphQLString)); // => true
+ * isListType(GraphQLString); // => false
+ * isListType(tagsField?.type); // => false
+ * ```
+ */
 
+/** @internal */
 function isListType(type) {
   return (0, _instanceOf.instanceOf)(type, GraphQLList);
 }
+/**
+ * Returns the value as a GraphQLList, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQLList.
+ * @example
+ * ```ts
+ * import { GraphQLList, GraphQLString, assertListType } from 'graphql/type';
+ *
+ * const listType = assertListType(new GraphQLList(GraphQLString));
+ *
+ * listType.ofType; // => GraphQLString
+ * assertListType(GraphQLString); // throws an error
+ * ```
+ */
 
 function assertListType(type) {
   if (!isListType(type)) {
@@ -13613,10 +15963,48 @@ function assertListType(type) {
 
   return type;
 }
+/**
+ * Returns true when the value is a GraphQLNonNull.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQLNonNull.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { GraphQLNonNull, GraphQLString, isNonNullType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String!
+ *     nickname: String
+ *   }
+ * `);
+ *
+ * const fields = schema.getQueryType()?.getFields();
+ *
+ * isNonNullType(new GraphQLNonNull(GraphQLString)); // => true
+ * isNonNullType(fields?.name.type); // => true
+ * isNonNullType(fields?.nickname.type); // => false
+ * ```
+ */
 
+/** @internal */
 function isNonNullType(type) {
   return (0, _instanceOf.instanceOf)(type, GraphQLNonNull);
 }
+/**
+ * Returns the value as a GraphQLNonNull, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQLNonNull.
+ * @example
+ * ```ts
+ * import { GraphQLNonNull, GraphQLString, assertNonNullType } from 'graphql/type';
+ *
+ * const nonNullType = assertNonNullType(new GraphQLNonNull(GraphQLString));
+ *
+ * nonNullType.ofType; // => GraphQLString
+ * assertNonNullType(GraphQLString); // throws an error
+ * ```
+ */
 
 function assertNonNullType(type) {
   if (!isNonNullType(type)) {
@@ -13627,10 +16015,35 @@ function assertNonNullType(type) {
 
   return type;
 }
-/**
- * These types may be used as input types for arguments and directives.
- */
+/** These types may be used as input types for arguments and directives. */
 
+/**
+ * Returns true when the value can be used as a GraphQL input type.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value can be used as a GraphQL input type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { isInputType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   input ReviewInput {
+ *     stars: Int!
+ *   }
+ *
+ *   type Review {
+ *     stars: Int!
+ *   }
+ *
+ *   type Query {
+ *     review(input: ReviewInput): Review
+ *   }
+ * `);
+ *
+ * isInputType(schema.getType('ReviewInput')); // => true
+ * isInputType(schema.getType('Review')); // => false
+ * ```
+ */
 function isInputType(type) {
   return (
     isScalarType(type) ||
@@ -13639,6 +16052,35 @@ function isInputType(type) {
     (isWrappingType(type) && isInputType(type.ofType))
   );
 }
+/**
+ * Returns the value as a GraphQL input type, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQL input type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertInputType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   input ReviewInput {
+ *     stars: Int!
+ *   }
+ *
+ *   type Review {
+ *     stars: Int!
+ *   }
+ *
+ *   type Query {
+ *     review(input: ReviewInput): Review
+ *   }
+ * `);
+ *
+ * const inputType = assertInputType(schema.getType('ReviewInput'));
+ *
+ * inputType.toString(); // => 'ReviewInput'
+ * assertInputType(schema.getType('Review')); // throws an error
+ * ```
+ */
 
 function assertInputType(type) {
   if (!isInputType(type)) {
@@ -13649,10 +16091,35 @@ function assertInputType(type) {
 
   return type;
 }
-/**
- * These types may be used as output types as the result of fields.
- */
+/** These types may be used as output types as the result of fields. */
 
+/**
+ * Returns true when the value can be used as a GraphQL output type.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value can be used as a GraphQL output type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { isOutputType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   input ReviewInput {
+ *     stars: Int!
+ *   }
+ *
+ *   type Review {
+ *     stars: Int!
+ *   }
+ *
+ *   type Query {
+ *     review(input: ReviewInput): Review
+ *   }
+ * `);
+ *
+ * isOutputType(schema.getType('Review')); // => true
+ * isOutputType(schema.getType('ReviewInput')); // => false
+ * ```
+ */
 function isOutputType(type) {
   return (
     isScalarType(type) ||
@@ -13663,6 +16130,35 @@ function isOutputType(type) {
     (isWrappingType(type) && isOutputType(type.ofType))
   );
 }
+/**
+ * Returns the value as a GraphQL output type, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQL output type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertOutputType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   input ReviewInput {
+ *     stars: Int!
+ *   }
+ *
+ *   type Review {
+ *     stars: Int!
+ *   }
+ *
+ *   type Query {
+ *     review(input: ReviewInput): Review
+ *   }
+ * `);
+ *
+ * const outputType = assertOutputType(schema.getType('Review'));
+ *
+ * outputType.toString(); // => 'Review'
+ * assertOutputType(schema.getType('ReviewInput')); // throws an error
+ * ```
+ */
 
 function assertOutputType(type) {
   if (!isOutputType(type)) {
@@ -13673,13 +16169,70 @@ function assertOutputType(type) {
 
   return type;
 }
-/**
- * These types may describe types which may be leaf values.
- */
+/** These types may describe types which may be leaf values. */
 
+/**
+ * Returns true when the value is a GraphQL scalar or enum type.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQL scalar or enum type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { isLeafType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   enum Episode {
+ *     NEW_HOPE
+ *   }
+ *
+ *   type Review {
+ *     stars: Int!
+ *   }
+ *
+ *   type Query {
+ *     episode: Episode
+ *     review: Review
+ *   }
+ * `);
+ *
+ * isLeafType(schema.getType('Episode')); // => true
+ * isLeafType(schema.getType('String')); // => true
+ * isLeafType(schema.getType('Review')); // => false
+ * ```
+ */
 function isLeafType(type) {
   return isScalarType(type) || isEnumType(type);
 }
+/**
+ * Returns the value as a GraphQL leaf type, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQL leaf type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertLeafType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   enum Episode {
+ *     NEW_HOPE
+ *   }
+ *
+ *   type Review {
+ *     stars: Int!
+ *   }
+ *
+ *   type Query {
+ *     episode: Episode
+ *     review: Review
+ *   }
+ * `);
+ *
+ * const episodeType = assertLeafType(schema.getType('Episode'));
+ *
+ * episodeType.toString(); // => 'Episode'
+ * assertLeafType(schema.getType('Review')); // throws an error
+ * ```
+ */
 
 function assertLeafType(type) {
   if (!isLeafType(type)) {
@@ -13690,13 +16243,72 @@ function assertLeafType(type) {
 
   return type;
 }
-/**
- * These types may describe the parent context of a selection set.
- */
+/** These types may describe the parent context of a selection set. */
 
+/**
+ * Returns true when the value is a GraphQL object, interface, or union type.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQL object, interface, or union type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { isCompositeType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   interface Node {
+ *     id: ID!
+ *   }
+ *
+ *   type User implements Node {
+ *     id: ID!
+ *   }
+ *
+ *   union SearchResult = User
+ *
+ *   type Query {
+ *     node: Node
+ *     search: [SearchResult]
+ *   }
+ * `);
+ *
+ * isCompositeType(schema.getType('User')); // => true
+ * isCompositeType(schema.getType('Node')); // => true
+ * isCompositeType(schema.getType('SearchResult')); // => true
+ * isCompositeType(schema.getType('String')); // => false
+ * ```
+ */
 function isCompositeType(type) {
   return isObjectType(type) || isInterfaceType(type) || isUnionType(type);
 }
+/**
+ * Returns the value as a GraphQL composite type, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQL composite type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertCompositeType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   interface Node {
+ *     id: ID!
+ *   }
+ *
+ *   type User implements Node {
+ *     id: ID!
+ *   }
+ *
+ *   type Query {
+ *     node: Node
+ *   }
+ * `);
+ *
+ * const userType = assertCompositeType(schema.getType('User'));
+ *
+ * userType.toString(); // => 'User'
+ * assertCompositeType(schema.getType('String')); // throws an error
+ * ```
+ */
 
 function assertCompositeType(type) {
   if (!isCompositeType(type)) {
@@ -13707,13 +16319,71 @@ function assertCompositeType(type) {
 
   return type;
 }
-/**
- * These types may describe the parent context of a selection set.
- */
+/** These types may describe the parent context of a selection set. */
 
+/**
+ * Returns true when the value is a GraphQL interface or union type.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQL interface or union type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { isAbstractType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   interface Node {
+ *     id: ID!
+ *   }
+ *
+ *   type User implements Node {
+ *     id: ID!
+ *   }
+ *
+ *   union SearchResult = User
+ *
+ *   type Query {
+ *     node: Node
+ *     search: [SearchResult]
+ *   }
+ * `);
+ *
+ * isAbstractType(schema.getType('Node')); // => true
+ * isAbstractType(schema.getType('SearchResult')); // => true
+ * isAbstractType(schema.getType('User')); // => false
+ * ```
+ */
 function isAbstractType(type) {
   return isInterfaceType(type) || isUnionType(type);
 }
+/**
+ * Returns the value as a GraphQL abstract type, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQL abstract type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertAbstractType } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   interface Node {
+ *     id: ID!
+ *   }
+ *
+ *   type User implements Node {
+ *     id: ID!
+ *   }
+ *
+ *   type Query {
+ *     node: Node
+ *   }
+ * `);
+ *
+ * const nodeType = assertAbstractType(schema.getType('Node'));
+ *
+ * nodeType.toString(); // => 'Node'
+ * assertAbstractType(schema.getType('User')); // throws an error
+ * ```
+ */
 
 function assertAbstractType(type) {
   if (!isAbstractType(type)) {
@@ -13730,21 +16400,37 @@ function assertAbstractType(type) {
  * A list is a wrapping type which points to another type.
  * Lists are often created within the context of defining the fields of
  * an object type.
- *
- * Example:
- *
+ * @typeParam T - The GraphQL type wrapped by this list type.
+ * @example
  * ```ts
- * const PersonType = new GraphQLObjectType({
+ * import { GraphQLList, GraphQLObjectType } from 'graphql';
+ *
+ * const PersonType: GraphQLObjectType = new GraphQLObjectType({
  *   name: 'Person',
  *   fields: () => ({
  *     parents: { type: new GraphQLList(PersonType) },
  *     children: { type: new GraphQLList(PersonType) },
- *   })
- * })
+ *   }),
+ * });
  * ```
  */
 
 class GraphQLList {
+  /** The type wrapped by this list or non-null type. */
+
+  /**
+   * Creates a GraphQLList instance.
+   * @param ofType - The type to wrap.
+   * @example
+   * ```ts
+   * import { GraphQLList, GraphQLString } from 'graphql/type';
+   *
+   * const stringList = new GraphQLList(GraphQLString);
+   *
+   * stringList.ofType; // => GraphQLString
+   * String(stringList); // => '[String]'
+   * ```
+   */
   constructor(ofType) {
     isType(ofType) ||
       (0, _devAssert.devAssert)(
@@ -13753,14 +16439,45 @@ class GraphQLList {
       );
     this.ofType = ofType;
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'GraphQLList';
   }
+  /**
+   * Returns this wrapping type as a GraphQL type-reference string.
+   * @returns The GraphQL type-reference string.
+   * @example
+   * ```ts
+   * import { GraphQLList, GraphQLNonNull, GraphQLString } from 'graphql/type';
+   *
+   * const stringList = new GraphQLList(GraphQLString);
+   * const requiredStringList = new GraphQLList(new GraphQLNonNull(GraphQLString));
+   *
+   * stringList.toString(); // => '[String]'
+   * requiredStringList.toString(); // => '[String!]'
+   * ```
+   */
 
   toString() {
     return '[' + String(this.ofType) + ']';
   }
+  /**
+   * Returns the JSON representation used when this object is serialized.
+   * @returns The JSON-serializable representation.
+   * @example
+   * ```ts
+   * import { GraphQLList, GraphQLString } from 'graphql/type';
+   *
+   * const stringList = new GraphQLList(GraphQLString);
+   *
+   * stringList.toJSON(); // => '[String]'
+   * JSON.stringify({ type: stringList }); // => '{"type":"[String]"}'
+   * ```
+   */
 
   toJSON() {
     return this.toString();
@@ -13774,23 +16491,40 @@ class GraphQLList {
  * an error is raised if this ever occurs during a request. It is useful for
  * fields which you can make a strong guarantee on non-nullability, for example
  * usually the id field of a database row will never be null.
- *
- * Example:
- *
+ * @typeParam T - The nullable GraphQL type wrapped by this non-null type.
+ * @example
  * ```ts
+ * import { GraphQLNonNull, GraphQLObjectType, GraphQLString } from 'graphql';
+ *
  * const RowType = new GraphQLObjectType({
  *   name: 'Row',
  *   fields: () => ({
  *     id: { type: new GraphQLNonNull(GraphQLString) },
- *   })
- * })
+ *   }),
+ * });
  * ```
+ *
  * Note: the enforcement of non-nullability occurs within the executor.
  */
 
 exports.GraphQLList = GraphQLList;
 
 class GraphQLNonNull {
+  /** The type wrapped by this list or non-null type. */
+
+  /**
+   * Creates a GraphQLNonNull instance.
+   * @param ofType - The type to wrap.
+   * @example
+   * ```ts
+   * import { GraphQLNonNull, GraphQLString } from 'graphql/type';
+   *
+   * const requiredString = new GraphQLNonNull(GraphQLString);
+   *
+   * requiredString.ofType; // => GraphQLString
+   * String(requiredString); // => 'String!'
+   * ```
+   */
   constructor(ofType) {
     isNullableType(ofType) ||
       (0, _devAssert.devAssert)(
@@ -13801,28 +16535,89 @@ class GraphQLNonNull {
       );
     this.ofType = ofType;
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'GraphQLNonNull';
   }
+  /**
+   * Returns this wrapping type as a GraphQL type-reference string.
+   * @returns The GraphQL type-reference string.
+   * @example
+   * ```ts
+   * import { GraphQLList, GraphQLNonNull, GraphQLString } from 'graphql/type';
+   *
+   * const requiredString = new GraphQLNonNull(GraphQLString);
+   * const requiredStringList = new GraphQLNonNull(new GraphQLList(GraphQLString));
+   *
+   * requiredString.toString(); // => 'String!'
+   * requiredStringList.toString(); // => '[String]!'
+   * ```
+   */
 
   toString() {
     return String(this.ofType) + '!';
   }
+  /**
+   * Returns the JSON representation used when this object is serialized.
+   * @returns The JSON-serializable representation.
+   * @example
+   * ```ts
+   * import { GraphQLNonNull, GraphQLString } from 'graphql/type';
+   *
+   * const requiredString = new GraphQLNonNull(GraphQLString);
+   *
+   * requiredString.toJSON(); // => 'String!'
+   * JSON.stringify({ type: requiredString }); // => '{"type":"String!"}'
+   * ```
+   */
 
   toJSON() {
     return this.toString();
   }
 }
-/**
- * These types wrap and modify other types
- */
+/** These types wrap and modify other types */
 
 exports.GraphQLNonNull = GraphQLNonNull;
 
+/**
+ * Returns true when the value is a GraphQL list or non-null wrapper type.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQL list or non-null wrapper type.
+ * @example
+ * ```ts
+ * import {
+ *   GraphQLList,
+ *   GraphQLNonNull,
+ *   GraphQLString,
+ *   isWrappingType,
+ * } from 'graphql/type';
+ *
+ * isWrappingType(new GraphQLList(GraphQLString)); // => true
+ * isWrappingType(new GraphQLNonNull(GraphQLString)); // => true
+ * isWrappingType(GraphQLString); // => false
+ * ```
+ */
 function isWrappingType(type) {
   return isListType(type) || isNonNullType(type);
 }
+/**
+ * Returns the value as a GraphQL wrapping type, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQL wrapping type.
+ * @example
+ * ```ts
+ * import { GraphQLList, GraphQLString, assertWrappingType } from 'graphql/type';
+ *
+ * const wrappingType = assertWrappingType(new GraphQLList(GraphQLString));
+ *
+ * wrappingType.toString(); // => '[String]'
+ * assertWrappingType(GraphQLString); // throws an error
+ * ```
+ */
 
 function assertWrappingType(type) {
   if (!isWrappingType(type)) {
@@ -13833,13 +16628,40 @@ function assertWrappingType(type) {
 
   return type;
 }
-/**
- * These types can all accept null as a value.
- */
+/** These types can all accept null as a value. */
 
+/**
+ * Returns true when the value is a GraphQL type that can accept null.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQL type that can accept null.
+ * @example
+ * ```ts
+ * import { GraphQLNonNull, GraphQLString, isNullableType } from 'graphql/type';
+ *
+ * isNullableType(GraphQLString); // => true
+ * isNullableType(new GraphQLNonNull(GraphQLString)); // => false
+ * isNullableType(null); // => false
+ * ```
+ */
 function isNullableType(type) {
   return isType(type) && !isNonNullType(type);
 }
+/**
+ * Returns the value as a nullable GraphQL type, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a nullable GraphQL type.
+ * @example
+ * ```ts
+ * import {
+ *   GraphQLNonNull,
+ *   GraphQLString,
+ *   assertNullableType,
+ * } from 'graphql/type';
+ *
+ * const nullableType = assertNullableType(GraphQLString); // => GraphQLString
+ * assertNullableType(new GraphQLNonNull(GraphQLString)); // throws an error
+ * ```
+ */
 
 function assertNullableType(type) {
   if (!isNullableType(type)) {
@@ -13850,16 +16672,40 @@ function assertNullableType(type) {
 
   return type;
 }
+/**
+ * Returns the nullable type.
+ * @param type - The GraphQL type to inspect.
+ * @returns The nullable type after removing one non-null wrapper, if present.
+ * @example
+ * ```ts
+ * import { getNullableType } from 'graphql/type';
+ *
+ * getNullableType(null); // => undefined
+ * getNullableType(undefined); // => undefined
+ * ```
+ */
 
+/** @internal */
 function getNullableType(type) {
   if (type) {
     return isNonNullType(type) ? type.ofType : type;
   }
 }
-/**
- * These named types do not include modifiers like List or NonNull.
- */
+/** These named types do not include modifiers like List or NonNull. */
 
+/**
+ * Returns true when the value is a GraphQL named type.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the value is a GraphQL named type.
+ * @example
+ * ```ts
+ * import { GraphQLList, GraphQLString, isNamedType } from 'graphql/type';
+ *
+ * isNamedType(GraphQLString); // => true
+ * isNamedType(new GraphQLList(GraphQLString)); // => false
+ * isNamedType(null); // => false
+ * ```
+ */
 function isNamedType(type) {
   return (
     isScalarType(type) ||
@@ -13870,6 +16716,20 @@ function isNamedType(type) {
     isInputObjectType(type)
   );
 }
+/**
+ * Returns the value as a GraphQL named type, or throws if it is not one.
+ * @param type - The GraphQL type to inspect.
+ * @returns The value typed as a GraphQL named type.
+ * @example
+ * ```ts
+ * import { GraphQLList, GraphQLString, assertNamedType } from 'graphql/type';
+ *
+ * const namedType = assertNamedType(GraphQLString);
+ *
+ * namedType.name; // => 'String'
+ * assertNamedType(new GraphQLList(GraphQLString)); // throws an error
+ * ```
+ */
 
 function assertNamedType(type) {
   if (!isNamedType(type)) {
@@ -13880,7 +16740,20 @@ function assertNamedType(type) {
 
   return type;
 }
+/**
+ * Returns the named type.
+ * @param type - The GraphQL type to inspect.
+ * @returns The named type after unwrapping all list and non-null wrappers.
+ * @example
+ * ```ts
+ * import { getNamedType } from 'graphql/type';
+ *
+ * getNamedType(null); // => undefined
+ * getNamedType(undefined); // => undefined
+ * ```
+ */
 
+/** @internal */
 function getNamedType(type) {
   if (type) {
     let unwrappedType = type;
@@ -13895,18 +16768,47 @@ function getNamedType(type) {
 /**
  * Used while defining GraphQL types to allow for circular references in
  * otherwise immutable type definitions.
+ * @typeParam T - The element type returned by the thunk or array.
  */
 
+/**
+ * Resolves a thunked readonly array.
+ * @param thunk - The thunk or value to resolve.
+ * @returns The resolved readonly array.
+ * @typeParam T - The element type resolved from the thunk or array.
+ * @example
+ * ```ts
+ * import { GraphQLString, resolveReadonlyArrayThunk } from 'graphql/type';
+ *
+ * const lazyFields = resolveReadonlyArrayThunk(() => [GraphQLString]); // => [GraphQLString]
+ * const fields = resolveReadonlyArrayThunk([GraphQLString]); // => [GraphQLString]
+ * ```
+ */
 function resolveReadonlyArrayThunk(thunk) {
   return typeof thunk === 'function' ? thunk() : thunk;
 }
+/**
+ * Resolves a thunked object map.
+ * @param thunk - The thunk or value to resolve.
+ * @returns The resolved object map.
+ * @typeParam T - The object-map value type resolved from the thunk or map.
+ * @example
+ * ```ts
+ * import { GraphQLString, resolveObjMapThunk } from 'graphql/type';
+ *
+ * const lazyFields = resolveObjMapThunk(() => ({ name: GraphQLString }));
+ * const fields = resolveObjMapThunk({ name: GraphQLString });
+ *
+ * lazyFields.name; // => GraphQLString
+ * fields.name; // => GraphQLString
+ * ```
+ */
 
 function resolveObjMapThunk(thunk) {
   return typeof thunk === 'function' ? thunk() : thunk;
 }
 /**
  * Custom extensions
- *
  * @remarks
  * Use a unique identifier name for your extension, for example the name of
  * your library or project. Do not use a shortened identifier as this increases
@@ -13917,35 +16819,118 @@ function resolveObjMapThunk(thunk) {
 /**
  * Scalar Type Definition
  *
- * The leaf values of any request and input values to arguments are
- * Scalars (or Enums) and are defined with a name and a series of functions
- * used to parse input from ast or variables and to ensure validity.
+ * Scalar types define the leaf values of a GraphQL response and the input
+ * values accepted by arguments and input object fields. A scalar type has a
+ * name and coercion functions that validate and convert runtime values and
+ * GraphQL literals.
  *
  * If a type's serialize function returns `null` or does not return a value
  * (i.e. it returns `undefined`) then an error will be raised and a `null`
- * value will be returned in the response. It is always better to validate
- *
- * Example:
- *
+ * value will be returned in the response. Prefer validating inputs before
+ * execution so clients receive input diagnostics before result coercion fails.
+ * @typeParam TInternal - The internal runtime representation accepted by this scalar.
+ * @typeParam TExternal - The serialized representation exposed in GraphQL results.
+ * @example
  * ```ts
+ * import { GraphQLScalarType } from 'graphql/type';
+ *
  * const OddType = new GraphQLScalarType({
  *   name: 'Odd',
- *   serialize(value) {
- *     if (!Number.isFinite(value)) {
+ *   serialize: (value) => {
+ *     if (typeof value !== 'number' || !Number.isInteger(value)) {
  *       throw new Error(
- *         `Scalar "Odd" cannot represent "${value}" since it is not a finite number.`,
+ *         `Scalar "Odd" cannot represent "${value}" since it is not an integer.`,
  *       );
  *     }
  *
  *     if (value % 2 === 0) {
- *       throw new Error(`Scalar "Odd" cannot represent "${value}" since it is even.`);
+ *       throw new Error(
+ *         `Scalar "Odd" cannot represent "${value}" since it is even.`,
+ *       );
  *     }
  *     return value;
- *   }
+ *   },
  * });
+ *
+ * OddType.serialize(3); // => 3
+ * OddType.serialize(2); // throws an error
+ * OddType.serialize(1.5); // throws an error
  * ```
  */
 class GraphQLScalarType {
+  /** The GraphQL name for this schema element. */
+
+  /** Human-readable description for this schema element, if provided. */
+
+  /** URL identifying the behavior specified for this custom scalar. */
+
+  /** Function that converts internal values to externally visible scalar values. */
+
+  /** Function that converts variable input into this scalar's internal value. */
+
+  /** Function that converts AST input literals into this scalar's internal value. */
+
+  /** Custom extension fields reserved for users. */
+
+  /** AST node from which this schema element was built, if available. */
+
+  /** AST extension nodes applied to this schema element. */
+
+  /**
+   * Creates a GraphQLScalarType instance.
+   * @param config - Configuration describing this object.
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * import { Kind, parse } from 'graphql/language';
+   * import { GraphQLScalarType } from 'graphql/type';
+   *
+   * const document = parse(`
+   *   "Odd integer values."
+   *   scalar Odd @specifiedBy(url: "https://example.com/odd")
+   *
+   *   extend scalar Odd @specifiedBy(url: "https://example.com/odd-v2")
+   * `);
+   * assert(document.definitions[0].kind === Kind.SCALAR_TYPE_DEFINITION);
+   * assert(document.definitions[1].kind === Kind.SCALAR_TYPE_EXTENSION);
+   *
+   * const ensureOdd = (value: unknown) => {
+   *   if (
+   *     typeof value !== 'number' ||
+   *     !Number.isInteger(value) ||
+   *     value % 2 === 0
+   *   ) {
+   *     throw new TypeError('Odd can only accept odd integers.');
+   *   }
+   *   return value;
+   * };
+   *
+   * const Odd = new GraphQLScalarType({
+   *   name: 'Odd',
+   *   description: 'Odd integer values.',
+   *   specifiedByURL: 'https://example.com/odd',
+   *   serialize: ensureOdd,
+   *   parseValue: ensureOdd,
+   *   parseLiteral: (ast) => {
+   *     if (ast.kind !== Kind.INT) {
+   *       throw new TypeError('Odd can only parse integer literals.');
+   *     }
+   *     return ensureOdd(Number(ast.value));
+   *   },
+   *   extensions: { numeric: true },
+   *   astNode: document.definitions[0],
+   *   extensionASTNodes: [document.definitions[1]],
+   * });
+   *
+   * Odd.description; // => 'Odd integer values.'
+   * Odd.specifiedByURL; // => 'https://example.com/odd'
+   * Odd.serialize(3); // => 3
+   * Odd.parseValue(5); // => 5
+   * Odd.parseValue(2); // throws an error
+   * Odd.parseValue(1.5); // throws an error
+   * Odd.extensions; // => { numeric: true }
+   * ```
+   */
   constructor(config) {
     var _config$parseValue,
       _config$serialize,
@@ -14004,10 +16989,35 @@ class GraphQLScalarType {
         );
     }
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'GraphQLScalarType';
   }
+  /**
+   * Returns a normalized configuration object for this object.
+   * @returns A configuration object that can be used to recreate this object.
+   * @example
+   * ```ts
+   * import { GraphQLScalarType } from 'graphql/type';
+   *
+   * const Url = new GraphQLScalarType({
+   *   name: 'Url',
+   *   description: 'An absolute URL string.',
+   *   specifiedByURL: 'https://url.spec.whatwg.org/',
+   * });
+   *
+   * const config = Url.toConfig();
+   * const UrlCopy = new GraphQLScalarType(config);
+   *
+   * config.name; // => 'Url'
+   * config.specifiedByURL; // => 'https://url.spec.whatwg.org/'
+   * UrlCopy.name; // => Url.name
+   * ```
+   */
 
   toConfig() {
     return {
@@ -14022,15 +17032,45 @@ class GraphQLScalarType {
       extensionASTNodes: this.extensionASTNodes,
     };
   }
+  /**
+   * Returns the schema coordinate identifying this scalar type.
+   * @returns The schema coordinate for this scalar type.
+   * @example
+   * ```ts
+   * import { GraphQLScalarType } from 'graphql/type';
+   *
+   * const DateTime = new GraphQLScalarType({ name: 'DateTime' });
+   *
+   * DateTime.toString(); // => 'DateTime'
+   * String(DateTime); // => 'DateTime'
+   * ```
+   */
 
   toString() {
     return this.name;
   }
+  /**
+   * Returns the JSON representation used when this object is serialized.
+   * @returns The JSON-serializable representation.
+   * @example
+   * ```ts
+   * import { GraphQLScalarType } from 'graphql/type';
+   *
+   * const DateTime = new GraphQLScalarType({ name: 'DateTime' });
+   *
+   * DateTime.toJSON(); // => 'DateTime'
+   * JSON.stringify({ type: DateTime }); // => '{"type":"DateTime"}'
+   * ```
+   */
 
   toJSON() {
     return this.toString();
   }
 }
+/**
+ * Serializes a runtime value as a scalar output value.
+ * @typeParam TExternal - The serialized representation returned for GraphQL results.
+ */
 
 exports.GraphQLScalarType = GraphQLScalarType;
 
@@ -14039,10 +17079,12 @@ exports.GraphQLScalarType = GraphQLScalarType;
  *
  * Almost all of the GraphQL types you define will be object types. Object types
  * have a name, but most importantly describe their fields.
- *
- * Example:
- *
+ * @typeParam TSource - Source object type passed to resolvers.
+ * @typeParam TContext - Context object type passed to resolvers.
+ * @example
  * ```ts
+ * import { GraphQLInt, GraphQLObjectType, GraphQLString } from 'graphql';
+ *
  * const AddressType = new GraphQLObjectType({
  *   name: 'Address',
  *   fields: {
@@ -14050,31 +17092,146 @@ exports.GraphQLScalarType = GraphQLScalarType;
  *     number: { type: GraphQLInt },
  *     formatted: {
  *       type: GraphQLString,
- *       resolve(obj) {
- *         return obj.number + ' ' + obj.street
- *       }
- *     }
- *   }
+ *       resolve: (obj) => {
+ *         return obj.number + ' ' + obj.street;
+ *       },
+ *     },
+ *   },
  * });
  * ```
- *
+ * @example
  * When two types need to refer to each other, or a type needs to refer to
  * itself in a field, you can use a function expression (aka a closure or a
  * thunk) to supply the fields lazily.
  *
- * Example:
- *
  * ```ts
- * const PersonType = new GraphQLObjectType({
+ * import { GraphQLObjectType, GraphQLString } from 'graphql';
+ *
+ * const PersonType: GraphQLObjectType = new GraphQLObjectType({
  *   name: 'Person',
  *   fields: () => ({
  *     name: { type: GraphQLString },
  *     bestFriend: { type: PersonType },
- *   })
+ *   }),
  * });
  * ```
  */
 class GraphQLObjectType {
+  /** The GraphQL name for this schema element. */
+
+  /** Human-readable description for this schema element, if provided. */
+
+  /** Predicate used to determine whether a runtime value belongs to this object type. */
+
+  /** Custom extension fields reserved for users. */
+
+  /** AST node from which this schema element was built, if available. */
+
+  /** AST extension nodes applied to this schema element. */
+
+  /**
+   * Creates a GraphQLObjectType instance.
+   * @param config - Configuration describing this object.
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * // Configure an object type with interfaces, fields, arguments, and metadata.
+   * import { parse, Kind } from 'graphql/language';
+   * import {
+   *   GraphQLID,
+   *   GraphQLInterfaceType,
+   *   GraphQLNonNull,
+   *   GraphQLObjectType,
+   *   GraphQLString,
+   * } from 'graphql/type';
+   *
+   * const document = parse(`
+   *   type User implements Node {
+   *     id: ID!
+   *     name(format: String = "short"): String
+   *   }
+   *
+   *   extend type User {
+   *     displayName: String
+   *   }
+   * `);
+   * assert(document.definitions[0].kind === Kind.OBJECT_TYPE_DEFINITION);
+   * assert(document.definitions[1].kind === Kind.OBJECT_TYPE_EXTENSION);
+   * const definition = document.definitions[0];
+   * const nameField = definition.fields?.[1];
+   * const formatArg = nameField?.arguments?.[0];
+   *
+   * const Node = new GraphQLInterfaceType({
+   *   name: 'Node',
+   *   fields: {
+   *     id: { type: new GraphQLNonNull(GraphQLID) },
+   *   },
+   * });
+   *
+   * const User = new GraphQLObjectType({
+   *   name: 'User',
+   *   description: 'A registered user.',
+   *   interfaces: [Node],
+   *   fields: {
+   *     id: { type: new GraphQLNonNull(GraphQLID) },
+   *     name: {
+   *       description: 'The formatted user name.',
+   *       type: GraphQLString,
+   *       args: {
+   *         format: {
+   *           description: 'Controls the name format.',
+   *           type: GraphQLString,
+   *           defaultValue: 'short',
+   *           deprecationReason: 'Use locale instead.',
+   *           extensions: { public: true },
+   *           astNode: formatArg,
+   *         },
+   *       },
+   *       resolve: (user, { format }) => {
+   *         return format === 'long' ? user.fullName : user.name;
+   *       },
+   *       deprecationReason: 'Use displayName.',
+   *       extensions: { cacheSeconds: 60 },
+   *       astNode: nameField,
+   *     },
+   *   },
+   *   isTypeOf: (value) => {
+   *     return typeof value === 'object' && value != null && 'id' in value;
+   *   },
+   *   extensions: { entity: 'User' },
+   *   astNode: definition,
+   *   extensionASTNodes: [document.definitions[1]],
+   * });
+   *
+   * User.name; // => 'User'
+   * User.getInterfaces(); // => [Node]
+   * Object.keys(User.getFields()); // => ['id', 'name']
+   * User.getFields().name.args[0].defaultValue; // => 'short'
+   * User.extensions; // => { entity: 'User' }
+   * ```
+   * @example
+   * ```ts
+   * // This variant configures a subscription field with subscribe and resolve functions.
+   * import { GraphQLObjectType, GraphQLString } from 'graphql/type';
+   *
+   * const Subscription = new GraphQLObjectType({
+   *   name: 'Subscription',
+   *   fields: {
+   *     greeting: {
+   *       type: GraphQLString,
+   *       subscribe: async function* () {
+   *         yield { greeting: 'Hello!' };
+   *       },
+   *       resolve: (event) => {
+   *         return event.greeting;
+   *       },
+   *     },
+   *   },
+   * });
+   *
+   * typeof Subscription.getFields().greeting.subscribe; // => 'function'
+   * ```
+   */
   constructor(config) {
     var _config$extensionASTN2;
 
@@ -14101,10 +17258,40 @@ class GraphQLObjectType {
           `but got: ${(0, _inspect.inspect)(config.isTypeOf)}.`,
       );
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'GraphQLObjectType';
   }
+  /**
+   * Returns the fields defined by this type.
+   * @returns The fields keyed by field name.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertObjectType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   type User {
+   *     id: ID!
+   *     name: String
+   *   }
+   *
+   *   type Query {
+   *     viewer: User
+   *   }
+   * `);
+   *
+   * const User = assertObjectType(schema.getType('User'));
+   * const fields = User.getFields();
+   *
+   * Object.keys(fields); // => ['id', 'name']
+   * String(fields.id.type); // => 'ID!'
+   * ```
+   */
 
   getFields() {
     if (typeof this._fields === 'function') {
@@ -14113,6 +17300,33 @@ class GraphQLObjectType {
 
     return this._fields;
   }
+  /**
+   * Returns the interfaces implemented by this type.
+   * @returns The implemented interfaces.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertObjectType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   interface Node {
+   *     id: ID!
+   *   }
+   *
+   *   type User implements Node {
+   *     id: ID!
+   *   }
+   *
+   *   type Query {
+   *     viewer: User
+   *   }
+   * `);
+   *
+   * const User = assertObjectType(schema.getType('User'));
+   *
+   * User.getInterfaces().map((type) => type.name); // => ['Node']
+   * ```
+   */
 
   getInterfaces() {
     if (typeof this._interfaces === 'function') {
@@ -14121,6 +17335,27 @@ class GraphQLObjectType {
 
     return this._interfaces;
   }
+  /**
+   * Returns a normalized configuration object for this object.
+   * @returns A configuration object that can be used to recreate this object.
+   * @example
+   * ```ts
+   * import { GraphQLObjectType, GraphQLString } from 'graphql/type';
+   *
+   * const User = new GraphQLObjectType({
+   *   name: 'User',
+   *   fields: {
+   *     name: { type: GraphQLString },
+   *   },
+   * });
+   *
+   * const config = User.toConfig();
+   * const UserCopy = new GraphQLObjectType(config);
+   *
+   * config.fields.name.type; // => GraphQLString
+   * UserCopy.getFields().name.type; // => GraphQLString
+   * ```
+   */
 
   toConfig() {
     return {
@@ -14134,10 +17369,49 @@ class GraphQLObjectType {
       extensionASTNodes: this.extensionASTNodes,
     };
   }
+  /**
+   * Returns the schema coordinate identifying this object type.
+   * @returns The schema coordinate for this object type.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertObjectType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   type User {
+   *     name: String
+   *   }
+   *
+   *   type Query {
+   *     viewer: User
+   *   }
+   * `);
+   *
+   * const User = assertObjectType(schema.getType('User'));
+   *
+   * User.toString(); // => 'User'
+   * ```
+   */
 
   toString() {
     return this.name;
   }
+  /**
+   * Returns the JSON representation used when this object is serialized.
+   * @returns The JSON-serializable representation.
+   * @example
+   * ```ts
+   * import { GraphQLObjectType, GraphQLString } from 'graphql/type';
+   *
+   * const User = new GraphQLObjectType({
+   *   name: 'User',
+   *   fields: { name: { type: GraphQLString } },
+   * });
+   *
+   * User.toJSON(); // => 'User'
+   * JSON.stringify({ type: User }); // => '{"type":"User"}'
+   * ```
+   */
 
   toJSON() {
     return this.toString();
@@ -14208,6 +17482,7 @@ function defineFieldMap(config) {
     };
   });
 }
+/** @internal */
 
 function defineArguments(config) {
   return Object.entries(config).map(([argName, argConfig]) => ({
@@ -14237,9 +17512,7 @@ function fieldsToFieldsConfig(fields) {
     astNode: field.astNode,
   }));
 }
-/**
- * @internal
- */
+/** @internal */
 
 function argsToArgsConfig(args) {
   return (0, _keyValMap.keyValMap)(
@@ -14255,10 +17528,55 @@ function argsToArgsConfig(args) {
     }),
   );
 }
+/**
+ * Configuration used to construct a GraphQLObjectType.
+ * @typeParam TSource - Source object type passed to resolvers.
+ * @typeParam TContext - Context object type passed to resolvers.
+ */
 
+/**
+ * Returns true when the argument is non-null and has no default value.
+ * @param arg - The argument definition to inspect.
+ * @returns True when the argument is non-null and has no default value.
+ * @example
+ * ```ts
+ * import {
+ *   GraphQLInt,
+ *   GraphQLNonNull,
+ *   GraphQLObjectType,
+ *   GraphQLString,
+ *   isRequiredArgument,
+ * } from 'graphql/type';
+ *
+ * const Query = new GraphQLObjectType({
+ *   name: 'Query',
+ *   fields: {
+ *     greeting: {
+ *       type: GraphQLString,
+ *       args: {
+ *         id: { type: new GraphQLNonNull(GraphQLInt) },
+ *         name: { type: GraphQLString },
+ *         limit: { type: new GraphQLNonNull(GraphQLInt), defaultValue: 10 },
+ *       },
+ *     },
+ *   },
+ * });
+ * const [requiredArgument, optionalArgument, argumentWithDefault] =
+ *   Query.getFields().greeting.args;
+ *
+ * isRequiredArgument(requiredArgument); // => true
+ * isRequiredArgument(optionalArgument); // => false
+ * isRequiredArgument(argumentWithDefault); // => false
+ * ```
+ */
 function isRequiredArgument(arg) {
   return isNonNullType(arg.type) && arg.defaultValue === undefined;
 }
+/**
+ * A map of field names to resolved field definitions.
+ * @typeParam TSource - Source object type passed to resolvers.
+ * @typeParam TContext - Context object type passed to resolvers.
+ */
 
 /**
  * Interface Type Definition
@@ -14267,19 +17585,86 @@ function isRequiredArgument(arg) {
  * is used to describe what types are possible, what fields are in common across
  * all types, as well as a function to determine which type is actually used
  * when the field is resolved.
- *
- * Example:
- *
+ * @example
  * ```ts
+ * import { GraphQLInterfaceType, GraphQLString } from 'graphql';
+ *
  * const EntityType = new GraphQLInterfaceType({
  *   name: 'Entity',
  *   fields: {
- *     name: { type: GraphQLString }
- *   }
+ *     name: { type: GraphQLString },
+ *   },
  * });
  * ```
  */
 class GraphQLInterfaceType {
+  /** The GraphQL name for this schema element. */
+
+  /** Human-readable description for this schema element, if provided. */
+
+  /** Function that resolves the concrete object type for this abstract type. */
+
+  /** Custom extension fields reserved for users. */
+
+  /** AST node from which this schema element was built, if available. */
+
+  /** AST extension nodes applied to this schema element. */
+
+  /**
+   * Creates a GraphQLInterfaceType instance.
+   * @param config - Configuration describing this object.
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * import { parse, Kind } from 'graphql/language';
+   * import { GraphQLID, GraphQLInterfaceType, GraphQLNonNull } from 'graphql/type';
+   *
+   * const document = parse(`
+   *   interface Node {
+   *     id: ID!
+   *   }
+   *
+   *   interface Resource implements Node {
+   *     id: ID!
+   *   }
+   *
+   *   extend interface Resource {
+   *     url: String
+   *   }
+   * `);
+   * assert(document.definitions[1].kind === Kind.INTERFACE_TYPE_DEFINITION);
+   * assert(document.definitions[2].kind === Kind.INTERFACE_TYPE_EXTENSION);
+   *
+   * const Node = new GraphQLInterfaceType({
+   *   name: 'Node',
+   *   fields: {
+   *     id: { type: new GraphQLNonNull(GraphQLID) },
+   *   },
+   * });
+   *
+   * const Resource = new GraphQLInterfaceType({
+   *   name: 'Resource',
+   *   description: 'An addressable resource.',
+   *   interfaces: [Node],
+   *   fields: {
+   *     id: { type: new GraphQLNonNull(GraphQLID) },
+   *   },
+   *   resolveType: (value) => {
+   *     return typeof value === 'object' && value != null && 'url' in value
+   *       ? 'WebPage'
+   *       : undefined;
+   *   },
+   *   extensions: { abstract: true },
+   *   astNode: document.definitions[1],
+   *   extensionASTNodes: [document.definitions[2]],
+   * });
+   *
+   * Resource.name; // => 'Resource'
+   * Resource.getInterfaces(); // => [Node]
+   * Object.keys(Resource.getFields()); // => ['id']
+   * Resource.extensions; // => { abstract: true }
+   * ```
+   */
   constructor(config) {
     var _config$extensionASTN3;
 
@@ -14303,10 +17688,43 @@ class GraphQLInterfaceType {
           `but got: ${(0, _inspect.inspect)(config.resolveType)}.`,
       );
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'GraphQLInterfaceType';
   }
+  /**
+   * Returns the fields defined by this type.
+   * @returns The fields keyed by field name.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertInterfaceType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   interface Node {
+   *     id: ID!
+   *   }
+   *
+   *   type User implements Node {
+   *     id: ID!
+   *   }
+   *
+   *   type Query {
+   *     node: Node
+   *   }
+   * `);
+   *
+   * const Node = assertInterfaceType(schema.getType('Node'));
+   * const fields = Node.getFields();
+   *
+   * Object.keys(fields); // => ['id']
+   * String(fields.id.type); // => 'ID!'
+   * ```
+   */
 
   getFields() {
     if (typeof this._fields === 'function') {
@@ -14315,6 +17733,39 @@ class GraphQLInterfaceType {
 
     return this._fields;
   }
+  /**
+   * Returns the interfaces implemented by this type.
+   * @returns The implemented interfaces.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertInterfaceType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   interface Resource {
+   *     url: String!
+   *   }
+   *
+   *   interface Image implements Resource {
+   *     url: String!
+   *     width: Int
+   *   }
+   *
+   *   type Photo implements Resource & Image {
+   *     url: String!
+   *     width: Int
+   *   }
+   *
+   *   type Query {
+   *     image: Image
+   *   }
+   * `);
+   *
+   * const Image = assertInterfaceType(schema.getType('Image'));
+   *
+   * Image.getInterfaces().map((type) => type.name); // => ['Resource']
+   * ```
+   */
 
   getInterfaces() {
     if (typeof this._interfaces === 'function') {
@@ -14323,6 +17774,27 @@ class GraphQLInterfaceType {
 
     return this._interfaces;
   }
+  /**
+   * Returns a normalized configuration object for this object.
+   * @returns A configuration object that can be used to recreate this object.
+   * @example
+   * ```ts
+   * import { GraphQLID, GraphQLInterfaceType, GraphQLNonNull } from 'graphql/type';
+   *
+   * const Node = new GraphQLInterfaceType({
+   *   name: 'Node',
+   *   fields: {
+   *     id: { type: new GraphQLNonNull(GraphQLID) },
+   *   },
+   * });
+   *
+   * const config = Node.toConfig();
+   * const NodeCopy = new GraphQLInterfaceType(config);
+   *
+   * String(config.fields.id.type); // => 'ID!'
+   * String(NodeCopy.getFields().id.type); // => 'ID!'
+   * ```
+   */
 
   toConfig() {
     return {
@@ -14336,15 +17808,63 @@ class GraphQLInterfaceType {
       extensionASTNodes: this.extensionASTNodes,
     };
   }
+  /**
+   * Returns the schema coordinate identifying this interface type.
+   * @returns The schema coordinate for this interface type.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertInterfaceType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   interface Node {
+   *     id: ID!
+   *   }
+   *
+   *   type User implements Node {
+   *     id: ID!
+   *   }
+   *
+   *   type Query {
+   *     node: Node
+   *   }
+   * `);
+   *
+   * const Node = assertInterfaceType(schema.getType('Node'));
+   *
+   * Node.toString(); // => 'Node'
+   * ```
+   */
 
   toString() {
     return this.name;
   }
+  /**
+   * Returns the JSON representation used when this object is serialized.
+   * @returns The JSON-serializable representation.
+   * @example
+   * ```ts
+   * import { GraphQLInterfaceType, GraphQLString } from 'graphql/type';
+   *
+   * const Named = new GraphQLInterfaceType({
+   *   name: 'Named',
+   *   fields: { name: { type: GraphQLString } },
+   * });
+   *
+   * Named.toJSON(); // => 'Named'
+   * JSON.stringify({ type: Named }); // => '{"type":"Named"}'
+   * ```
+   */
 
   toJSON() {
     return this.toString();
   }
 }
+/**
+ * Configuration used to construct a GraphQLInterfaceType.
+ * @typeParam TSource - Source object type passed to resolvers.
+ * @typeParam TContext - Context object type passed to resolvers.
+ */
 
 exports.GraphQLInterfaceType = GraphQLInterfaceType;
 
@@ -14354,25 +17874,97 @@ exports.GraphQLInterfaceType = GraphQLInterfaceType;
  * When a field can return one of a heterogeneous set of types, a Union type
  * is used to describe what types are possible as well as providing a function
  * to determine which type is actually used when the field is resolved.
- *
- * Example:
- *
+ * @example
  * ```ts
+ * import { GraphQLObjectType, GraphQLString, GraphQLUnionType } from 'graphql';
+ *
+ * class Dog {}
+ * class Cat {}
+ * const DogType = new GraphQLObjectType({
+ *   name: 'Dog',
+ *   fields: { name: { type: GraphQLString } },
+ * });
+ * const CatType = new GraphQLObjectType({
+ *   name: 'Cat',
+ *   fields: { name: { type: GraphQLString } },
+ * });
+ *
  * const PetType = new GraphQLUnionType({
  *   name: 'Pet',
- *   types: [ DogType, CatType ],
- *   resolveType(value) {
+ *   types: [DogType, CatType],
+ *   resolveType: (value) => {
  *     if (value instanceof Dog) {
- *       return DogType;
+ *       return 'Dog';
  *     }
  *     if (value instanceof Cat) {
- *       return CatType;
+ *       return 'Cat';
  *     }
- *   }
+ *   },
  * });
  * ```
  */
 class GraphQLUnionType {
+  /** The GraphQL name for this schema element. */
+
+  /** Human-readable description for this schema element, if provided. */
+
+  /** Function that resolves the concrete object type for this abstract type. */
+
+  /** Custom extension fields reserved for users. */
+
+  /** AST node from which this schema element was built, if available. */
+
+  /** AST extension nodes applied to this schema element. */
+
+  /**
+   * Creates a GraphQLUnionType instance.
+   * @param config - Configuration describing this object.
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * import { parse, Kind } from 'graphql/language';
+   * import {
+   *   GraphQLObjectType,
+   *   GraphQLString,
+   *   GraphQLUnionType,
+   * } from 'graphql/type';
+   *
+   * const document = parse(`
+   *   union Media = Photo | Video
+   *
+   *   extend union Media = Audio
+   * `);
+   * assert(document.definitions[0].kind === Kind.UNION_TYPE_DEFINITION);
+   * assert(document.definitions[1].kind === Kind.UNION_TYPE_EXTENSION);
+   *
+   * const Photo = new GraphQLObjectType({
+   *   name: 'Photo',
+   *   fields: { url: { type: GraphQLString } },
+   * });
+   * const Video = new GraphQLObjectType({
+   *   name: 'Video',
+   *   fields: { url: { type: GraphQLString } },
+   * });
+   *
+   * const Media = new GraphQLUnionType({
+   *   name: 'Media',
+   *   description: 'Media that can appear in a search result.',
+   *   types: [Photo, Video],
+   *   resolveType: (value) => {
+   *     return typeof value === 'object' && value != null && 'duration' in value
+   *       ? 'Video'
+   *       : 'Photo';
+   *   },
+   *   extensions: { searchable: true },
+   *   astNode: document.definitions[0],
+   *   extensionASTNodes: [document.definitions[1]],
+   * });
+   *
+   * Media.description; // => 'Media that can appear in a search result.'
+   * Media.getTypes().map((type) => type.name); // => ['Photo', 'Video']
+   * Media.extensions; // => { searchable: true }
+   * ```
+   */
   constructor(config) {
     var _config$extensionASTN4;
 
@@ -14395,10 +17987,43 @@ class GraphQLUnionType {
           `but got: ${(0, _inspect.inspect)(config.resolveType)}.`,
       );
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'GraphQLUnionType';
   }
+  /**
+   * Returns the object types included in this union.
+   * @returns The union member object types.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertUnionType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   type Photo {
+   *     url: String!
+   *   }
+   *
+   *   type Video {
+   *     url: String!
+   *   }
+   *
+   *   union Media = Photo | Video
+   *
+   *   type Query {
+   *     media: [Media]
+   *   }
+   * `);
+   *
+   * const Media = assertUnionType(schema.getType('Media'));
+   *
+   * Media.getTypes().map((type) => type.name); // => ['Photo', 'Video']
+   * ```
+   */
 
   getTypes() {
     if (typeof this._types === 'function') {
@@ -14407,6 +18032,36 @@ class GraphQLUnionType {
 
     return this._types;
   }
+  /**
+   * Returns a normalized configuration object for this object.
+   * @returns A configuration object that can be used to recreate this object.
+   * @example
+   * ```ts
+   * import {
+   *   GraphQLObjectType,
+   *   GraphQLString,
+   *   GraphQLUnionType,
+   * } from 'graphql/type';
+   *
+   * const Photo = new GraphQLObjectType({
+   *   name: 'Photo',
+   *   fields: { url: { type: GraphQLString } },
+   * });
+   * const Video = new GraphQLObjectType({
+   *   name: 'Video',
+   *   fields: { url: { type: GraphQLString } },
+   * });
+   * const Media = new GraphQLUnionType({
+   *   name: 'Media',
+   *   types: [Photo, Video],
+   * });
+   *
+   * const config = Media.toConfig();
+   * const MediaCopy = new GraphQLUnionType(config);
+   *
+   * MediaCopy.getTypes().map((type) => type.name); // => ['Photo', 'Video']
+   * ```
+   */
 
   toConfig() {
     return {
@@ -14419,10 +18074,59 @@ class GraphQLUnionType {
       extensionASTNodes: this.extensionASTNodes,
     };
   }
+  /**
+   * Returns the schema coordinate identifying this union type.
+   * @returns The schema coordinate for this union type.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertUnionType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   type Photo {
+   *     url: String!
+   *   }
+   *
+   *   union SearchResult = Photo
+   *
+   *   type Query {
+   *     search: [SearchResult]
+   *   }
+   * `);
+   *
+   * const SearchResult = assertUnionType(schema.getType('SearchResult'));
+   *
+   * SearchResult.toString(); // => 'SearchResult'
+   * ```
+   */
 
   toString() {
     return this.name;
   }
+  /**
+   * Returns the JSON representation used when this object is serialized.
+   * @returns The JSON-serializable representation.
+   * @example
+   * ```ts
+   * import {
+   *   GraphQLObjectType,
+   *   GraphQLString,
+   *   GraphQLUnionType,
+   * } from 'graphql/type';
+   *
+   * const Photo = new GraphQLObjectType({
+   *   name: 'Photo',
+   *   fields: { url: { type: GraphQLString } },
+   * });
+   * const SearchResult = new GraphQLUnionType({
+   *   name: 'SearchResult',
+   *   types: [Photo],
+   * });
+   *
+   * SearchResult.toJSON(); // => 'SearchResult'
+   * JSON.stringify({ type: SearchResult }); // => '{"type":"SearchResult"}'
+   * ```
+   */
 
   toJSON() {
     return this.toString();
@@ -14440,25 +18144,32 @@ function defineTypes(config) {
     );
   return types;
 }
+/**
+ * Configuration used to construct a GraphQLUnionType.
+ * @typeParam TSource - Source object type passed to resolvers.
+ * @typeParam TContext - Context object type passed to resolvers.
+ */
 
 /**
  * Enum Type Definition
  *
- * Some leaf values of requests and input values are Enums. GraphQL serializes
- * Enum values as strings, however internally Enums can be represented by any
- * kind of type, often integers.
- *
- * Example:
- *
+ * Enum types define leaf values whose serialized form is one of a fixed set
+ * of GraphQL enum names. Internally, enum values can map to any runtime value,
+ * often integers.
+ * @example
  * ```ts
+ * import { GraphQLEnumType } from 'graphql/type';
+ *
  * const RGBType = new GraphQLEnumType({
  *   name: 'RGB',
  *   values: {
  *     RED: { value: 0 },
  *     GREEN: { value: 1 },
- *     BLUE: { value: 2 }
- *   }
+ *     BLUE: { value: 2 },
+ *   },
  * });
+ *
+ * RGBType.getValue('GREEN')?.value; // => 1
  * ```
  *
  * Note: If a value is not provided in a definition, the name of the enum value
@@ -14466,6 +18177,69 @@ function defineTypes(config) {
  */
 class GraphQLEnumType {
   /* <T> */
+  /** The GraphQL name for this schema element. */
+
+  /** Human-readable description for this schema element, if provided. */
+
+  /** Custom extension fields reserved for users. */
+
+  /** AST node from which this schema element was built, if available. */
+
+  /** AST extension nodes applied to this schema element. */
+
+  /**
+   * Creates a GraphQLEnumType instance.
+   * @param config - Configuration describing this object.
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * import { parse, Kind } from 'graphql/language';
+   * import { GraphQLEnumType } from 'graphql/type';
+   *
+   * const document = parse(`
+   *   enum Episode {
+   *     NEW_HOPE
+   *     EMPIRE
+   *     JEDI
+   *   }
+   *
+   *   extend enum Episode {
+   *     FORCE_AWAKENS
+   *   }
+   * `);
+   * assert(document.definitions[0].kind === Kind.ENUM_TYPE_DEFINITION);
+   * assert(document.definitions[1].kind === Kind.ENUM_TYPE_EXTENSION);
+   * const definition = document.definitions[0];
+   *
+   * const Episode = new GraphQLEnumType({
+   *   name: 'Episode',
+   *   description: 'A Star Wars film episode.',
+   *   values: {
+   *     NEW_HOPE: {
+   *       value: 4,
+   *       description: 'Released in 1977.',
+   *       extensions: { trilogy: 'original' },
+   *       astNode: definition.values?.[0],
+   *     },
+   *     EMPIRE: { value: 5, astNode: definition.values?.[1] },
+   *     JEDI: {
+   *       value: 6,
+   *       deprecationReason: 'Use RETURN_OF_THE_JEDI.',
+   *       astNode: definition.values?.[2],
+   *     },
+   *   },
+   *   extensions: { catalog: 'films' },
+   *   astNode: definition,
+   *   extensionASTNodes: [document.definitions[1]],
+   * });
+   *
+   * Episode.description; // => 'A Star Wars film episode.'
+   * Episode.serialize(5); // => 'EMPIRE'
+   * Episode.parseValue('JEDI'); // => 6
+   * Episode.getValue('JEDI')?.deprecationReason; // => 'Use RETURN_OF_THE_JEDI.'
+   * Episode.extensions; // => { catalog: 'films' }
+   * ```
+   */
   constructor(config) {
     var _config$extensionASTN5;
 
@@ -14485,10 +18259,39 @@ class GraphQLEnumType {
     this._valueLookup = null;
     this._nameLookup = null;
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'GraphQLEnumType';
   }
+  /**
+   * Returns the values defined by this enum type.
+   * @returns Enum value definitions in schema order.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertEnumType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   enum Episode {
+   *     NEW_HOPE
+   *     EMPIRE
+   *     JEDI
+   *   }
+   *
+   *   type Query {
+   *     episode: Episode
+   *   }
+   * `);
+   *
+   * const Episode = assertEnumType(schema.getType('Episode'));
+   *
+   * Episode.getValues().map((value) => value.name); // => ['NEW_HOPE', 'EMPIRE', 'JEDI']
+   * ```
+   */
 
   getValues() {
     if (typeof this._values === 'function') {
@@ -14497,6 +18300,32 @@ class GraphQLEnumType {
 
     return this._values;
   }
+  /**
+   * Returns the enum value definition for a value name.
+   * @param name - The GraphQL name to look up.
+   * @returns The matching enum value definition, if it exists.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertEnumType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   enum Episode {
+   *     NEW_HOPE
+   *     EMPIRE
+   *   }
+   *
+   *   type Query {
+   *     episode: Episode
+   *   }
+   * `);
+   *
+   * const Episode = assertEnumType(schema.getType('Episode'));
+   *
+   * Episode.getValue('EMPIRE')?.name; // => 'EMPIRE'
+   * Episode.getValue('JEDI'); // => undefined
+   * ```
+   */
 
   getValue(name) {
     if (this._nameLookup === null) {
@@ -14508,6 +18337,27 @@ class GraphQLEnumType {
 
     return this._nameLookup[name];
   }
+  /**
+   * Serializes a runtime enum value as a GraphQL enum name.
+   * @param outputValue - Runtime enum value to serialize.
+   * @returns The GraphQL enum name for the runtime value.
+   * @example
+   * ```ts
+   * import { GraphQLEnumType } from 'graphql/type';
+   *
+   * const RGB = new GraphQLEnumType({
+   *   name: 'RGB',
+   *   values: {
+   *     RED: { value: 0 },
+   *     GREEN: { value: 1 },
+   *     BLUE: { value: 2 },
+   *   },
+   * });
+   *
+   * RGB.serialize(1); // => 'GREEN'
+   * RGB.serialize(3); // throws an error
+   * ```
+   */
 
   serialize(outputValue) {
     if (this._valueLookup === null) {
@@ -14528,14 +18378,37 @@ class GraphQLEnumType {
 
     return enumValue.name;
   }
+  /**
+   * Parses a GraphQL enum name from variable input.
+   * @param inputValue - Runtime input value to parse.
+   * @param hideSuggestions - Omit suggestions from error messages.
+   * @returns The internal enum value represented by the input name.
+   * @example
+   * ```ts
+   * import { GraphQLEnumType } from 'graphql/type';
+   *
+   * const RGB = new GraphQLEnumType({
+   *   name: 'RGB',
+   *   values: {
+   *     RED: { value: 0 },
+   *     GREEN: { value: 1 },
+   *     BLUE: { value: 2 },
+   *   },
+   * });
+   *
+   * RGB.parseValue('BLUE'); // => 2
+   * RGB.parseValue('PURPLE'); // throws an error
+   * RGB.parseValue(2); // throws an error
+   * ```
+   */
 
-  parseValue(inputValue) /* T */
+  parseValue(inputValue, hideSuggestions) /* T */
   {
     if (typeof inputValue !== 'string') {
       const valueStr = (0, _inspect.inspect)(inputValue);
       throw new _GraphQLError.GraphQLError(
         `Enum "${this.name}" cannot represent non-string value: ${valueStr}.` +
-          didYouMeanEnumValue(this, valueStr),
+          (hideSuggestions ? '' : didYouMeanEnumValue(this, valueStr)),
       );
     }
 
@@ -14544,21 +18417,45 @@ class GraphQLEnumType {
     if (enumValue == null) {
       throw new _GraphQLError.GraphQLError(
         `Value "${inputValue}" does not exist in "${this.name}" enum.` +
-          didYouMeanEnumValue(this, inputValue),
+          (hideSuggestions ? '' : didYouMeanEnumValue(this, inputValue)),
       );
     }
 
     return enumValue.value;
   }
+  /**
+   * Parses a GraphQL enum name from an AST value literal.
+   * @param valueNode - AST value literal to parse.
+   * @param _variables - Runtime variable values; ignored because enum literals cannot contain variables.
+   * @param hideSuggestions - Omit suggestions from error messages.
+   * @returns The internal enum value represented by the literal.
+   * @example
+   * ```ts
+   * import { parseValue } from 'graphql/language';
+   * import { GraphQLEnumType } from 'graphql/type';
+   *
+   * const RGB = new GraphQLEnumType({
+   *   name: 'RGB',
+   *   values: {
+   *     RED: { value: 0 },
+   *     GREEN: { value: 1 },
+   *     BLUE: { value: 2 },
+   *   },
+   * });
+   *
+   * RGB.parseLiteral(parseValue('RED'), undefined); // => 0
+   * RGB.parseLiteral(parseValue('"RED"'), undefined); // throws an error
+   * ```
+   */
 
-  parseLiteral(valueNode, _variables) /* T */
+  parseLiteral(valueNode, _variables, hideSuggestions) /* T */
   {
     // Note: variables will be resolved to a value before calling this function.
     if (valueNode.kind !== _kinds.Kind.ENUM) {
-      const valueStr = (0, _printer.print)(valueNode);
+      const valueStr = (0, _printer.printForError)(valueNode);
       throw new _GraphQLError.GraphQLError(
         `Enum "${this.name}" cannot represent non-enum value: ${valueStr}.` +
-          didYouMeanEnumValue(this, valueStr),
+          (hideSuggestions ? '' : didYouMeanEnumValue(this, valueStr)),
         {
           nodes: valueNode,
         },
@@ -14568,10 +18465,10 @@ class GraphQLEnumType {
     const enumValue = this.getValue(valueNode.value);
 
     if (enumValue == null) {
-      const valueStr = (0, _printer.print)(valueNode);
+      const valueStr = (0, _printer.printForError)(valueNode);
       throw new _GraphQLError.GraphQLError(
         `Value "${valueStr}" does not exist in "${this.name}" enum.` +
-          didYouMeanEnumValue(this, valueStr),
+          (hideSuggestions ? '' : didYouMeanEnumValue(this, valueStr)),
         {
           nodes: valueNode,
         },
@@ -14580,6 +18477,29 @@ class GraphQLEnumType {
 
     return enumValue.value;
   }
+  /**
+   * Returns a normalized configuration object for this object.
+   * @returns A configuration object that can be used to recreate this object.
+   * @example
+   * ```ts
+   * import { GraphQLEnumType } from 'graphql/type';
+   *
+   * const RGB = new GraphQLEnumType({
+   *   name: 'RGB',
+   *   values: {
+   *     RED: { value: 0 },
+   *     GREEN: { value: 1 },
+   *     BLUE: { value: 2 },
+   *   },
+   * });
+   *
+   * const config = RGB.toConfig();
+   * const RGBCopy = new GraphQLEnumType(config);
+   *
+   * config.values.GREEN.value; // => 1
+   * RGBCopy.serialize(2); // => 'BLUE'
+   * ```
+   */
 
   toConfig() {
     const values = (0, _keyValMap.keyValMap)(
@@ -14602,10 +18522,51 @@ class GraphQLEnumType {
       extensionASTNodes: this.extensionASTNodes,
     };
   }
+  /**
+   * Returns the schema coordinate identifying this enum type.
+   * @returns The schema coordinate for this enum type.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertEnumType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   enum Episode {
+   *     NEW_HOPE
+   *   }
+   *
+   *   type Query {
+   *     episode: Episode
+   *   }
+   * `);
+   *
+   * const Episode = assertEnumType(schema.getType('Episode'));
+   *
+   * Episode.toString(); // => 'Episode'
+   * ```
+   */
 
   toString() {
     return this.name;
   }
+  /**
+   * Returns the JSON representation used when this object is serialized.
+   * @returns The JSON-serializable representation.
+   * @example
+   * ```ts
+   * import { GraphQLEnumType } from 'graphql/type';
+   *
+   * const Episode = new GraphQLEnumType({
+   *   name: 'Episode',
+   *   values: {
+   *     NEW_HOPE: {},
+   *   },
+   * });
+   *
+   * Episode.toJSON(); // => 'Episode'
+   * JSON.stringify({ type: Episode }); // => '{"type":"Episode"}'
+   * ```
+   */
 
   toJSON() {
     return this.toString();
@@ -14648,6 +18609,7 @@ function defineEnumValues(typeName, valueMap) {
     };
   });
 }
+/** Configuration used to construct a GraphQLEnumType. */
 
 /**
  * Input Object Type Definition
@@ -14656,21 +18618,104 @@ function defineEnumValues(typeName, valueMap) {
  * supplied to a field argument.
  *
  * Using `NonNull` will ensure that a value must be provided by the query
- *
- * Example:
- *
+ * @example
  * ```ts
+ * import { GraphQLFloat, GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
+ *
  * const GeoPoint = new GraphQLInputObjectType({
  *   name: 'GeoPoint',
  *   fields: {
  *     lat: { type: new GraphQLNonNull(GraphQLFloat) },
  *     lon: { type: new GraphQLNonNull(GraphQLFloat) },
  *     alt: { type: GraphQLFloat, defaultValue: 0 },
- *   }
+ *   },
  * });
  * ```
  */
 class GraphQLInputObjectType {
+  /** The GraphQL name for this schema element. */
+
+  /** Human-readable description for this schema element, if provided. */
+
+  /** Custom extension fields reserved for users. */
+
+  /** AST node from which this schema element was built, if available. */
+
+  /** AST extension nodes applied to this schema element. */
+
+  /** Whether this input object uses the experimental OneOf input object semantics. */
+
+  /**
+   * Creates a GraphQLInputObjectType instance.
+   * @param config - Configuration describing this object.
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * import { parse, Kind } from 'graphql/language';
+   * import {
+   *   GraphQLID,
+   *   GraphQLInputObjectType,
+   *   GraphQLInt,
+   *   GraphQLNonNull,
+   *   GraphQLString,
+   * } from 'graphql/type';
+   *
+   * const document = parse(`
+   *   input ReviewInput {
+   *     stars: Int!
+   *     commentary: String
+   *   }
+   *
+   *   extend input ReviewInput {
+   *     body: String
+   *   }
+   * `);
+   * assert(document.definitions[0].kind === Kind.INPUT_OBJECT_TYPE_DEFINITION);
+   * assert(document.definitions[1].kind === Kind.INPUT_OBJECT_TYPE_EXTENSION);
+   * const definition = document.definitions[0];
+   *
+   * const ReviewInput = new GraphQLInputObjectType({
+   *   name: 'ReviewInput',
+   *   description: 'Input collected when reviewing a product.',
+   *   fields: {
+   *     stars: {
+   *       description: 'Star rating from one to five.',
+   *       type: new GraphQLNonNull(GraphQLInt),
+   *       extensions: { min: 1, max: 5 },
+   *       astNode: definition.fields?.[0],
+   *     },
+   *     commentary: {
+   *       type: GraphQLString,
+   *       defaultValue: '',
+   *       deprecationReason: 'Use body.',
+   *       astNode: definition.fields?.[1],
+   *     },
+   *   },
+   *   extensions: { form: 'review' },
+   *   astNode: definition,
+   *   extensionASTNodes: [document.definitions[1]],
+   *   isOneOf: false,
+   * });
+   * const SearchBy = new GraphQLInputObjectType({
+   *   name: 'SearchBy',
+   *   fields: {
+   *     id: { type: GraphQLID },
+   *     slug: { type: GraphQLString },
+   *   },
+   *   isOneOf: true,
+   * });
+   *
+   * const fields = ReviewInput.getFields();
+   *
+   * ReviewInput.description; // => 'Input collected when reviewing a product.'
+   * String(fields.stars.type); // => 'Int!'
+   * fields.stars.extensions; // => { min: 1, max: 5 }
+   * fields.commentary.defaultValue; // => ''
+   * fields.commentary.deprecationReason; // => 'Use body.'
+   * ReviewInput.isOneOf; // => false
+   * SearchBy.isOneOf; // => true
+   * ```
+   */
   constructor(config) {
     var _config$extensionASTN6, _config$isOneOf;
 
@@ -14689,10 +18734,40 @@ class GraphQLInputObjectType {
         : false;
     this._fields = defineInputFieldMap.bind(undefined, config);
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'GraphQLInputObjectType';
   }
+  /**
+   * Returns the fields defined by this type.
+   * @returns The fields keyed by field name.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertInputObjectType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   input ReviewInput {
+   *     stars: Int!
+   *     commentary: String = ""
+   *   }
+   *
+   *   type Query {
+   *     reviews(filter: ReviewInput): [String]
+   *   }
+   * `);
+   *
+   * const ReviewInput = assertInputObjectType(schema.getType('ReviewInput'));
+   * const fields = ReviewInput.getFields();
+   *
+   * Object.keys(fields); // => ['stars', 'commentary']
+   * fields.commentary.defaultValue; // => ''
+   * ```
+   */
 
   getFields() {
     if (typeof this._fields === 'function') {
@@ -14701,6 +18776,31 @@ class GraphQLInputObjectType {
 
     return this._fields;
   }
+  /**
+   * Returns a normalized configuration object for this object.
+   * @returns A configuration object that can be used to recreate this object.
+   * @example
+   * ```ts
+   * import {
+   *   GraphQLInputObjectType,
+   *   GraphQLInt,
+   *   GraphQLNonNull,
+   * } from 'graphql/type';
+   *
+   * const ReviewInput = new GraphQLInputObjectType({
+   *   name: 'ReviewInput',
+   *   fields: {
+   *     stars: { type: new GraphQLNonNull(GraphQLInt) },
+   *   },
+   * });
+   *
+   * const config = ReviewInput.toConfig();
+   * const ReviewInputCopy = new GraphQLInputObjectType(config);
+   *
+   * String(config.fields.stars.type); // => 'Int!'
+   * String(ReviewInputCopy.getFields().stars.type); // => 'Int!'
+   * ```
+   */
 
   toConfig() {
     const fields = (0, _mapValue.mapValue)(this.getFields(), (field) => ({
@@ -14721,10 +18821,51 @@ class GraphQLInputObjectType {
       isOneOf: this.isOneOf,
     };
   }
+  /**
+   * Returns the schema coordinate identifying this input object type.
+   * @returns The schema coordinate for this input object type.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertInputObjectType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   input ReviewInput {
+   *     stars: Int!
+   *   }
+   *
+   *   type Query {
+   *     reviews(filter: ReviewInput): [String]
+   *   }
+   * `);
+   *
+   * const ReviewInput = assertInputObjectType(schema.getType('ReviewInput'));
+   *
+   * ReviewInput.toString(); // => 'ReviewInput'
+   * ```
+   */
 
   toString() {
     return this.name;
   }
+  /**
+   * Returns the JSON representation used when this object is serialized.
+   * @returns The JSON-serializable representation.
+   * @example
+   * ```ts
+   * import { GraphQLInputObjectType, GraphQLString } from 'graphql/type';
+   *
+   * const ReviewInput = new GraphQLInputObjectType({
+   *   name: 'ReviewInput',
+   *   fields: {
+   *     commentary: { type: GraphQLString },
+   *   },
+   * });
+   *
+   * ReviewInput.toJSON(); // => 'ReviewInput'
+   * JSON.stringify({ type: ReviewInput }); // => '{"type":"ReviewInput"}'
+   * ```
+   */
 
   toJSON() {
     return this.toString();
@@ -14757,10 +18898,45 @@ function defineInputFieldMap(config) {
     };
   });
 }
+/** Configuration used to construct a GraphQLInputObjectType. */
 
+/**
+ * Returns true when the input field is non-null and has no default value.
+ * @param field - The input field definition to inspect.
+ * @returns True when the input field is non-null and has no default value.
+ * @example
+ * ```ts
+ * import {
+ *   GraphQLInputObjectType,
+ *   GraphQLInt,
+ *   GraphQLNonNull,
+ *   GraphQLString,
+ *   isRequiredInputField,
+ * } from 'graphql/type';
+ *
+ * const Input = new GraphQLInputObjectType({
+ *   name: 'Input',
+ *   fields: {
+ *     id: { type: new GraphQLNonNull(GraphQLInt) },
+ *     name: { type: GraphQLString },
+ *     limit: { type: new GraphQLNonNull(GraphQLInt), defaultValue: 10 },
+ *   },
+ * });
+ * const {
+ *   id: requiredField,
+ *   name: optionalField,
+ *   limit: fieldWithDefault,
+ * } = Input.getFields();
+ *
+ * isRequiredInputField(requiredField); // => true
+ * isRequiredInputField(optionalField); // => false
+ * isRequiredInputField(fieldWithDefault); // => false
+ * ```
+ */
 function isRequiredInputField(field) {
   return isNonNullType(field.type) && field.defaultValue === undefined;
 }
+/** A map of input field names to resolved input field definitions. */
 
 
 /***/ }),
@@ -14805,12 +18981,47 @@ var _definition = __nccwpck_require__(4169);
 
 var _scalars = __nccwpck_require__(3571);
 
+/** @category Directives */
+
 /**
  * Test if the given value is a GraphQL directive.
+ * @param directive - Value to inspect.
+ * @returns True when the value is a GraphQLDirective.
+ * @example
+ * ```ts
+ * import { DirectiveLocation } from 'graphql/language';
+ * import { GraphQLDirective, GraphQLString, isDirective } from 'graphql/type';
+ *
+ * const upper = new GraphQLDirective({
+ *   name: 'upper',
+ *   locations: [DirectiveLocation.FIELD_DEFINITION],
+ * });
+ *
+ * isDirective(upper); // => true
+ * isDirective(GraphQLString); // => false
+ * ```
  */
 function isDirective(directive) {
   return (0, _instanceOf.instanceOf)(directive, GraphQLDirective);
 }
+/**
+ * Returns the value as a GraphQLDirective, or throws if it is not a directive.
+ * @param directive - Value to inspect.
+ * @returns The value typed as a GraphQLDirective.
+ * @example
+ * ```ts
+ * import { DirectiveLocation } from 'graphql/language';
+ * import { assertDirective, GraphQLDirective, GraphQLString } from 'graphql/type';
+ *
+ * const upper = new GraphQLDirective({
+ *   name: 'upper',
+ *   locations: [DirectiveLocation.FIELD_DEFINITION],
+ * });
+ *
+ * assertDirective(upper); // => upper
+ * assertDirective(GraphQLString); // throws an error
+ * ```
+ */
 
 function assertDirective(directive) {
   if (!isDirective(directive)) {
@@ -14823,7 +19034,6 @@ function assertDirective(directive) {
 }
 /**
  * Custom extensions
- *
  * @remarks
  * Use a unique identifier name for your extension, for example the name of
  * your library or project. Do not use a shortened identifier as this increases
@@ -14836,6 +19046,81 @@ function assertDirective(directive) {
  * behavior. Type system creators will usually not create these directly.
  */
 class GraphQLDirective {
+  /** The GraphQL name for this schema element. */
+
+  /** Human-readable description for this schema element, if provided. */
+
+  /** Locations where this directive may be applied. */
+
+  /** Arguments accepted by this field or directive. */
+
+  /** Whether this directive may appear more than once at the same location. */
+
+  /** Reason this element is deprecated, if one was provided. */
+
+  /** Custom extension fields reserved for users. */
+
+  /** AST node from which this schema element was built, if available. */
+
+  /** AST extension nodes applied to this schema element. */
+
+  /**
+   * Creates a GraphQLDirective instance.
+   * @param config - Configuration describing this object.
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * import { DirectiveLocation, parse, Kind } from 'graphql/language';
+   * import {
+   *   GraphQLBoolean,
+   *   GraphQLDirective,
+   *   GraphQLInt,
+   *   GraphQLNonNull,
+   * } from 'graphql/type';
+   *
+   * const document = parse(
+   *   `
+   *   directive @cacheControl(maxAge: Int) repeatable on FIELD_DEFINITION
+   *   extend directive @cacheControl @tag
+   * `,
+   *   { experimentalDirectivesOnDirectiveDefinitions: true },
+   * );
+   * assert(document.definitions[0].kind === Kind.DIRECTIVE_DEFINITION);
+   * assert(document.definitions[1].kind === Kind.DIRECTIVE_EXTENSION);
+   * const definition = document.definitions[0];
+   *
+   * const cacheControl = new GraphQLDirective({
+   *   name: 'cacheControl',
+   *   description: 'Controls HTTP cache hints for a field.',
+   *   locations: [DirectiveLocation.FIELD_DEFINITION],
+   *   args: {
+   *     inheritMaxAge: {
+   *       description: 'Inherit the parent cache hint.',
+   *       type: new GraphQLNonNull(GraphQLBoolean),
+   *       defaultValue: false,
+   *       deprecationReason: 'Use maxAge instead.',
+   *       extensions: { scope: 'cache' },
+   *     },
+   *     maxAge: {
+   *       type: GraphQLInt,
+   *       astNode: definition.arguments?.[0],
+   *     },
+   *   },
+   *   isRepeatable: true,
+   *   deprecationReason: 'Use @cache instead.',
+   *   extensions: { scope: 'cache' },
+   *   astNode: definition,
+   *   extensionASTNodes: [document.definitions[1]],
+   * });
+   *
+   * cacheControl.name; // => 'cacheControl'
+   * cacheControl.description; // => 'Controls HTTP cache hints for a field.'
+   * cacheControl.args[0].name; // => 'inheritMaxAge'
+   * cacheControl.args[0].defaultValue; // => false
+   * cacheControl.isRepeatable; // => true
+   * cacheControl.extensions; // => { scope: 'cache' }
+   * ```
+   */
   constructor(config) {
     var _config$isRepeatable, _config$extensionASTN, _config$args;
 
@@ -14871,10 +19156,37 @@ class GraphQLDirective {
       );
     this.args = (0, _definition.defineArguments)(args);
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'GraphQLDirective';
   }
+  /**
+   * Returns a normalized configuration object for this object.
+   * @returns A configuration object that can be used to recreate this object.
+   * @example
+   * ```ts
+   * import { DirectiveLocation } from 'graphql/language';
+   * import { GraphQLDirective, GraphQLString } from 'graphql/type';
+   *
+   * const tag = new GraphQLDirective({
+   *   name: 'tag',
+   *   locations: [DirectiveLocation.FIELD_DEFINITION],
+   *   args: {
+   *     name: { type: GraphQLString },
+   *   },
+   * });
+   *
+   * const config = tag.toConfig();
+   * const tagCopy = new GraphQLDirective(config);
+   *
+   * config.args.name.type; // => GraphQLString
+   * tagCopy.args[0].name; // => 'name'
+   * ```
+   */
 
   toConfig() {
     return {
@@ -14889,21 +19201,53 @@ class GraphQLDirective {
       extensionASTNodes: this.extensionASTNodes,
     };
   }
+  /**
+   * Returns the schema coordinate identifying this directive.
+   * @returns The directive schema coordinate.
+   * @example
+   * ```ts
+   * import { DirectiveLocation } from 'graphql/language';
+   * import { GraphQLDirective } from 'graphql/type';
+   *
+   * const tag = new GraphQLDirective({
+   *   name: 'tag',
+   *   locations: [DirectiveLocation.FIELD_DEFINITION],
+   * });
+   *
+   * tag.toString(); // => '@tag'
+   * ```
+   */
 
   toString() {
     return '@' + this.name;
   }
+  /**
+   * Returns the JSON representation used when this object is serialized.
+   * @returns The JSON-serializable representation.
+   * @example
+   * ```ts
+   * import { DirectiveLocation } from 'graphql/language';
+   * import { GraphQLDirective } from 'graphql/type';
+   *
+   * const tag = new GraphQLDirective({
+   *   name: 'tag',
+   *   locations: [DirectiveLocation.FIELD_DEFINITION],
+   * });
+   *
+   * tag.toJSON(); // => '@tag'
+   * JSON.stringify({ directive: tag }); // => '{"directive":"@tag"}'
+   * ```
+   */
 
   toJSON() {
     return this.toString();
   }
 }
+/** Configuration used to construct a GraphQLDirective. */
 
 exports.GraphQLDirective = GraphQLDirective;
 
-/**
- * Used to conditionally include fields or fragments.
- */
+/** Used to conditionally include fields or fragments. */
 const GraphQLIncludeDirective = new GraphQLDirective({
   name: 'include',
   description:
@@ -14920,9 +19264,7 @@ const GraphQLIncludeDirective = new GraphQLDirective({
     },
   },
 });
-/**
- * Used to conditionally skip (exclude) fields or fragments.
- */
+/** Used to conditionally skip (exclude) fields or fragments. */
 
 exports.GraphQLIncludeDirective = GraphQLIncludeDirective;
 const GraphQLSkipDirective = new GraphQLDirective({
@@ -14941,14 +19283,14 @@ const GraphQLSkipDirective = new GraphQLDirective({
     },
   },
 });
-/**
- * Constant string used for default reason for a deprecation.
- */
+/** Constant string used for default reason for a deprecation. */
 
 exports.GraphQLSkipDirective = GraphQLSkipDirective;
 const DEFAULT_DEPRECATION_REASON = 'No longer supported';
 /**
  * Used to declare element of a GraphQL schema as deprecated.
+ *
+ * The optional `reason` argument defaults to `DEFAULT_DEPRECATION_REASON`.
  */
 
 exports.DEFAULT_DEPRECATION_REASON = DEFAULT_DEPRECATION_REASON;
@@ -14971,9 +19313,7 @@ const GraphQLDeprecatedDirective = new GraphQLDirective({
     },
   },
 });
-/**
- * Used to provide a URL for specifying the behavior of custom scalar definitions.
- */
+/** Used to provide a URL for specifying the behavior of custom scalar definitions. */
 
 exports.GraphQLDeprecatedDirective = GraphQLDeprecatedDirective;
 const GraphQLSpecifiedByDirective = new GraphQLDirective({
@@ -14987,9 +19327,7 @@ const GraphQLSpecifiedByDirective = new GraphQLDirective({
     },
   },
 });
-/**
- * Used to indicate an Input Object is a OneOf Input Object.
- */
+/** Used to indicate an Input Object is a OneOf Input Object. */
 
 exports.GraphQLSpecifiedByDirective = GraphQLSpecifiedByDirective;
 const GraphQLOneOfDirective = new GraphQLDirective({
@@ -14999,9 +19337,7 @@ const GraphQLOneOfDirective = new GraphQLDirective({
   locations: [_directiveLocation.DirectiveLocation.INPUT_OBJECT],
   args: {},
 });
-/**
- * The full list of specified directives.
- */
+/** Full list of stable directives specified by GraphQL.js. */
 
 exports.GraphQLOneOfDirective = GraphQLOneOfDirective;
 const specifiedDirectives = Object.freeze([
@@ -15011,6 +19347,29 @@ const specifiedDirectives = Object.freeze([
   GraphQLSpecifiedByDirective,
   GraphQLOneOfDirective,
 ]);
+/**
+ * Returns true when the directive is one of the directives specified by GraphQL.
+ * @param directive - Directive to inspect.
+ * @returns True when the directive is specified by GraphQL.
+ * @example
+ * ```ts
+ * import {
+ *   GraphQLDirective,
+ *   GraphQLIncludeDirective,
+ *   isSpecifiedDirective,
+ * } from 'graphql/type';
+ * import { DirectiveLocation } from 'graphql/language';
+ *
+ * const customDirective = new GraphQLDirective({
+ *   name: 'auth',
+ *   locations: [DirectiveLocation.FIELD_DEFINITION],
+ * });
+ *
+ * isSpecifiedDirective(GraphQLIncludeDirective); // => true
+ * isSpecifiedDirective(customDirective); // => false
+ * ```
+ */
+
 exports.specifiedDirectives = specifiedDirectives;
 
 function isSpecifiedDirective(directive) {
@@ -15620,6 +19979,9 @@ var _definition = __nccwpck_require__(4169);
 
 var _scalars = __nccwpck_require__(3571);
 
+/** @category Introspection */
+
+/** The introspection type describing a GraphQL schema. */
 const __Schema = new _definition.GraphQLObjectType({
   name: '__Schema',
   description:
@@ -15678,6 +20040,7 @@ const __Schema = new _definition.GraphQLObjectType({
     },
   }),
 });
+/** The introspection type describing a GraphQL directive. */
 
 exports.__Schema = __Schema;
 
@@ -15735,6 +20098,7 @@ const __Directive = new _definition.GraphQLObjectType({
     },
   }),
 });
+/** The introspection enum describing directive locations. */
 
 exports.__Directive = __Directive;
 
@@ -15825,6 +20189,7 @@ const __DirectiveLocation = new _definition.GraphQLEnumType({
     },
   },
 });
+/** The introspection type describing GraphQL types. */
 
 exports.__DirectiveLocation = __DirectiveLocation;
 
@@ -15993,6 +20358,7 @@ const __Type = new _definition.GraphQLObjectType({
     },
   }),
 });
+/** The introspection type describing object and interface fields. */
 
 exports.__Type = __Type;
 
@@ -16042,6 +20408,7 @@ const __Field = new _definition.GraphQLObjectType({
     },
   }),
 });
+/** The introspection type describing arguments and input fields. */
 
 exports.__Field = __Field;
 
@@ -16083,6 +20450,7 @@ const __InputValue = new _definition.GraphQLObjectType({
     },
   }),
 });
+/** The introspection type describing enum values. */
 
 exports.__InputValue = __InputValue;
 
@@ -16109,6 +20477,10 @@ const __EnumValue = new _definition.GraphQLObjectType({
     },
   }),
 });
+/**
+ * The introspection enum describing the different kinds of GraphQL types.
+ * @category Introspection
+ */
 
 exports.__EnumValue = __EnumValue;
 var TypeKind;
@@ -16125,6 +20497,7 @@ exports.TypeKind = TypeKind;
   TypeKind['NON_NULL'] = 'NON_NULL';
 })(TypeKind || (exports.TypeKind = TypeKind = {}));
 
+/** The introspection enum describing GraphQL type kinds. */
 const __TypeKind = new _definition.GraphQLEnumType({
   name: '__TypeKind',
   description: 'An enum describing what kind of type a given `__Type` is.',
@@ -16185,6 +20558,8 @@ const SchemaMetaFieldDef = {
   extensions: Object.create(null),
   astNode: undefined,
 };
+/** The `__type` meta field definition used by introspection. */
+
 exports.SchemaMetaFieldDef = SchemaMetaFieldDef;
 const TypeMetaFieldDef = {
   name: '__type',
@@ -16206,6 +20581,8 @@ const TypeMetaFieldDef = {
   extensions: Object.create(null),
   astNode: undefined,
 };
+/** The `__typename` meta field definition used by execution and introspection. */
+
 exports.TypeMetaFieldDef = TypeMetaFieldDef;
 const TypeNameMetaFieldDef = {
   name: '__typename',
@@ -16217,6 +20594,8 @@ const TypeNameMetaFieldDef = {
   extensions: Object.create(null),
   astNode: undefined,
 };
+/** All introspection types defined by the GraphQL specification. */
+
 exports.TypeNameMetaFieldDef = TypeNameMetaFieldDef;
 const introspectionTypes = Object.freeze([
   __Schema,
@@ -16228,6 +20607,19 @@ const introspectionTypes = Object.freeze([
   __EnumValue,
   __TypeKind,
 ]);
+/**
+ * Returns true when the type is one of the built-in introspection types.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the type is one of the built-in introspection types.
+ * @example
+ * ```ts
+ * import { GraphQLString, isIntrospectionType, __Type } from 'graphql/type';
+ *
+ * isIntrospectionType(__Type); // => true
+ * isIntrospectionType(GraphQLString); // => false
+ * ```
+ */
+
 exports.introspectionTypes = introspectionTypes;
 
 function isIntrospectionType(type) {
@@ -16269,18 +20661,22 @@ var _printer = __nccwpck_require__(9936);
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Scalars */
+
 /**
  * Maximum possible Int value as per GraphQL Spec (32-bit signed integer).
  * n.b. This differs from JavaScript's numbers that are IEEE 754 doubles safe up-to 2^53 - 1
- * */
+ */
 const GRAPHQL_MAX_INT = 2147483647;
 /**
  * Minimum possible Int value as per GraphQL Spec (32-bit signed integer).
  * n.b. This differs from JavaScript's numbers that are IEEE 754 doubles safe starting at -(2^53 - 1)
- * */
+ */
 
 exports.GRAPHQL_MAX_INT = GRAPHQL_MAX_INT;
 const GRAPHQL_MIN_INT = -2147483648;
+/** The built-in `Int` scalar type. */
+
 exports.GRAPHQL_MIN_INT = GRAPHQL_MIN_INT;
 const GraphQLInt = new _definition.GraphQLScalarType({
   name: 'Int',
@@ -16339,7 +20735,7 @@ const GraphQLInt = new _definition.GraphQLScalarType({
   parseLiteral(valueNode) {
     if (valueNode.kind !== _kinds.Kind.INT) {
       throw new _GraphQLError.GraphQLError(
-        `Int cannot represent non-integer value: ${(0, _printer.print)(
+        `Int cannot represent non-integer value: ${(0, _printer.printForError)(
           valueNode,
         )}`,
         {
@@ -16362,6 +20758,8 @@ const GraphQLInt = new _definition.GraphQLScalarType({
     return num;
   },
 });
+/** The built-in `Float` scalar type. */
+
 exports.GraphQLInt = GraphQLInt;
 const GraphQLFloat = new _definition.GraphQLScalarType({
   name: 'Float',
@@ -16410,9 +20808,8 @@ const GraphQLFloat = new _definition.GraphQLScalarType({
       valueNode.kind !== _kinds.Kind.INT
     ) {
       throw new _GraphQLError.GraphQLError(
-        `Float cannot represent non numeric value: ${(0, _printer.print)(
-          valueNode,
-        )}`,
+        `Float cannot represent non numeric value: ${(0,
+        _printer.printForError)(valueNode)}`,
         valueNode,
       );
     }
@@ -16420,6 +20817,8 @@ const GraphQLFloat = new _definition.GraphQLScalarType({
     return parseFloat(valueNode.value);
   },
 });
+/** The built-in `String` scalar type. */
+
 exports.GraphQLFloat = GraphQLFloat;
 const GraphQLString = new _definition.GraphQLScalarType({
   name: 'String',
@@ -16462,9 +20861,8 @@ const GraphQLString = new _definition.GraphQLScalarType({
   parseLiteral(valueNode) {
     if (valueNode.kind !== _kinds.Kind.STRING) {
       throw new _GraphQLError.GraphQLError(
-        `String cannot represent a non string value: ${(0, _printer.print)(
-          valueNode,
-        )}`,
+        `String cannot represent a non string value: ${(0,
+        _printer.printForError)(valueNode)}`,
         {
           nodes: valueNode,
         },
@@ -16474,6 +20872,8 @@ const GraphQLString = new _definition.GraphQLScalarType({
     return valueNode.value;
   },
 });
+/** The built-in `Boolean` scalar type. */
+
 exports.GraphQLString = GraphQLString;
 const GraphQLBoolean = new _definition.GraphQLScalarType({
   name: 'Boolean',
@@ -16512,9 +20912,8 @@ const GraphQLBoolean = new _definition.GraphQLScalarType({
   parseLiteral(valueNode) {
     if (valueNode.kind !== _kinds.Kind.BOOLEAN) {
       throw new _GraphQLError.GraphQLError(
-        `Boolean cannot represent a non boolean value: ${(0, _printer.print)(
-          valueNode,
-        )}`,
+        `Boolean cannot represent a non boolean value: ${(0,
+        _printer.printForError)(valueNode)}`,
         {
           nodes: valueNode,
         },
@@ -16524,6 +20923,8 @@ const GraphQLBoolean = new _definition.GraphQLScalarType({
     return valueNode.value;
   },
 });
+/** The built-in `ID` scalar type. */
+
 exports.GraphQLBoolean = GraphQLBoolean;
 const GraphQLID = new _definition.GraphQLScalarType({
   name: 'ID',
@@ -16567,7 +20968,7 @@ const GraphQLID = new _definition.GraphQLScalarType({
     ) {
       throw new _GraphQLError.GraphQLError(
         'ID cannot represent a non-string and non-integer value: ' +
-          (0, _printer.print)(valueNode),
+          (0, _printer.printForError)(valueNode),
         {
           nodes: valueNode,
         },
@@ -16577,6 +20978,8 @@ const GraphQLID = new _definition.GraphQLScalarType({
     return valueNode.value;
   },
 });
+/** All built-in scalar types defined by the GraphQL specification. */
+
 exports.GraphQLID = GraphQLID;
 const specifiedScalarTypes = Object.freeze([
   GraphQLString,
@@ -16585,6 +20988,27 @@ const specifiedScalarTypes = Object.freeze([
   GraphQLBoolean,
   GraphQLID,
 ]);
+/**
+ * Returns true when the scalar type is one of the scalars specified by GraphQL.
+ * @param type - The GraphQL type to inspect.
+ * @returns True when the scalar type is one of the scalars specified by GraphQL.
+ * @example
+ * ```ts
+ * import {
+ *   GraphQLScalarType,
+ *   GraphQLString,
+ *   isSpecifiedScalarType,
+ * } from 'graphql/type';
+ *
+ * const DateTime = new GraphQLScalarType({
+ *   name: 'DateTime',
+ * });
+ *
+ * isSpecifiedScalarType(GraphQLString); // => true
+ * isSpecifiedScalarType(DateTime); // => false
+ * ```
+ */
+
 exports.specifiedScalarTypes = specifiedScalarTypes;
 
 function isSpecifiedScalarType(type) {
@@ -16645,12 +21069,49 @@ var _directives = __nccwpck_require__(1058);
 
 var _introspection = __nccwpck_require__(317);
 
+/** @category Schema */
+
 /**
  * Test if the given value is a GraphQL schema.
+ * @param schema - Value to inspect.
+ * @returns True when the value is a GraphQLSchema.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { GraphQLString, isSchema } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting: String
+ *   }
+ * `);
+ *
+ * isSchema(schema); // => true
+ * isSchema(GraphQLString); // => false
+ * ```
  */
 function isSchema(schema) {
   return (0, _instanceOf.instanceOf)(schema, GraphQLSchema);
 }
+/**
+ * Returns the value as a GraphQLSchema, or throws if it is not a schema.
+ * @param schema - GraphQL schema to use.
+ * @returns The value typed as a GraphQLSchema.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertSchema, GraphQLString } from 'graphql/type';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting: String
+ *   }
+ * `);
+ *
+ * assertSchema(schema); // => schema
+ * assertSchema(GraphQLString); // throws an error
+ * ```
+ */
 
 function assertSchema(schema) {
   if (!isSchema(schema)) {
@@ -16663,7 +21124,6 @@ function assertSchema(schema) {
 }
 /**
  * Custom extensions
- *
  * @remarks
  * Use a unique identifier name for your extension, for example the name of
  * your library or project. Do not use a shortened identifier as this increases
@@ -16677,70 +21137,215 @@ function assertSchema(schema) {
  * A Schema is created by supplying the root types of each type of operation,
  * query and mutation (optional). A schema definition is then supplied to the
  * validator and executor.
- *
- * Example:
- *
+ * @example
  * ```ts
+ * import { GraphQLObjectType, GraphQLSchema, GraphQLString } from 'graphql';
+ *
+ * const MyAppQueryRootType = new GraphQLObjectType({
+ *   name: 'Query',
+ *   fields: {
+ *     greeting: { type: GraphQLString },
+ *   },
+ * });
+ *
+ * const MyAppMutationRootType = new GraphQLObjectType({
+ *   name: 'Mutation',
+ *   fields: {
+ *     setGreeting: { type: GraphQLString },
+ *   },
+ * });
+ *
  * const MyAppSchema = new GraphQLSchema({
  *   query: MyAppQueryRootType,
  *   mutation: MyAppMutationRootType,
- * })
+ * });
  * ```
- *
- * Note: When the schema is constructed, by default only the types that are
- * reachable by traversing the root types are included, other types must be
- * explicitly referenced.
- *
- * Example:
+ * @example
+ * When the schema is constructed, by default only the types that are reachable
+ * by traversing the root types are included, other types must be explicitly
+ * referenced.
  *
  * ```ts
+ * import {
+ *   GraphQLInterfaceType,
+ *   GraphQLObjectType,
+ *   GraphQLSchema,
+ *   GraphQLString,
+ * } from 'graphql';
+ *
  * const characterInterface = new GraphQLInterfaceType({
  *   name: 'Character',
- *   ...
+ *   fields: {
+ *     name: { type: GraphQLString },
+ *   },
  * });
  *
  * const humanType = new GraphQLObjectType({
  *   name: 'Human',
  *   interfaces: [characterInterface],
- *   ...
+ *   fields: {
+ *     name: { type: GraphQLString },
+ *   },
  * });
  *
  * const droidType = new GraphQLObjectType({
  *   name: 'Droid',
  *   interfaces: [characterInterface],
- *   ...
+ *   fields: {
+ *     name: { type: GraphQLString },
+ *   },
  * });
  *
  * const schema = new GraphQLSchema({
  *   query: new GraphQLObjectType({
  *     name: 'Query',
  *     fields: {
- *       hero: { type: characterInterface, ... },
- *     }
+ *       hero: { type: characterInterface },
+ *     },
  *   }),
- *   ...
  *   // Since this schema references only the `Character` interface it's
  *   // necessary to explicitly list the types that implement it if
  *   // you want them to be included in the final schema.
  *   types: [humanType, droidType],
- * })
+ * });
  * ```
- *
- * Note: If an array of `directives` are provided to GraphQLSchema, that will be
- * the exact list of directives represented and allowed. If `directives` is not
+ * @example
+ * If an array of `directives` are provided to GraphQLSchema, that will be the
+ * exact list of directives represented and allowed. If `directives` is not
  * provided then a default set of the specified directives (e.g. `@include` and
- * `@skip`) will be used. If you wish to provide *additional* directives to these
- * specified directives, you must explicitly declare them. Example:
+ * `@skip`) will be used. If you wish to provide *additional* directives to
+ * these specified directives, you must explicitly declare them.
  *
  * ```ts
+ * import {
+ *   DirectiveLocation,
+ *   GraphQLDirective,
+ *   GraphQLObjectType,
+ *   GraphQLSchema,
+ *   GraphQLString,
+ *   specifiedDirectives,
+ * } from 'graphql';
+ *
  * const MyAppSchema = new GraphQLSchema({
- *   ...
- *   directives: specifiedDirectives.concat([ myCustomDirective ]),
- * })
+ *   query: new GraphQLObjectType({
+ *     name: 'Query',
+ *     fields: { greeting: { type: GraphQLString } },
+ *   }),
+ *   directives: specifiedDirectives.concat([
+ *     new GraphQLDirective({
+ *       name: 'custom',
+ *       locations: [DirectiveLocation.FIELD],
+ *     }),
+ *   ]),
+ * });
  * ```
  */
 class GraphQLSchema {
-  // Used as a cache for validateSchema().
+  /** Human-readable description for this schema element, if provided. */
+
+  /** Custom extension fields reserved for users. */
+
+  /** AST node from which this schema element was built, if available. */
+
+  /** AST extension nodes applied to this schema element. */
+
+  /**
+   * Cached schema validation errors, if validation has already run.
+   * @internal
+   */
+
+  /**
+   * Creates a GraphQLSchema instance.
+   * @param config - Configuration describing this object.
+   * @example
+   * ```ts
+   * // Create a schema with the required query root.
+   * import { GraphQLObjectType, GraphQLSchema, GraphQLString } from 'graphql/type';
+   *
+   * const Query = new GraphQLObjectType({
+   *   name: 'Query',
+   *   fields: {
+   *     greeting: {
+   *       type: GraphQLString,
+   *       resolve: () => 'Hello',
+   *     },
+   *   },
+   * });
+   *
+   * const schema = new GraphQLSchema({
+   *   description: 'The application schema.',
+   *   query: Query,
+   * });
+   *
+   * schema.getQueryType(); // => Query
+   * schema.description; // => 'The application schema.'
+   * ```
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * // This variant configures every schema option, including directives and extensions.
+   * import { DirectiveLocation, parse, Kind } from 'graphql/language';
+   * import {
+   *   GraphQLBoolean,
+   *   GraphQLDirective,
+   *   GraphQLObjectType,
+   *   GraphQLSchema,
+   *   GraphQLString,
+   * } from 'graphql/type';
+   *
+   * const Query = new GraphQLObjectType({
+   *   name: 'Query',
+   *   fields: { greeting: { type: GraphQLString } },
+   * });
+   * const Mutation = new GraphQLObjectType({
+   *   name: 'Mutation',
+   *   fields: { setGreeting: { type: GraphQLString } },
+   * });
+   * const Subscription = new GraphQLObjectType({
+   *   name: 'Subscription',
+   *   fields: { greetingChanged: { type: GraphQLString } },
+   * });
+   * const AuditEvent = new GraphQLObjectType({
+   *   name: 'AuditEvent',
+   *   fields: { message: { type: GraphQLString } },
+   * });
+   * const authDirective = new GraphQLDirective({
+   *   name: 'auth',
+   *   locations: [DirectiveLocation.FIELD_DEFINITION],
+   *   args: { required: { type: GraphQLBoolean } },
+   * });
+   * const schemaDocument = parse(`
+   *   schema {
+   *     query: Query
+   *     mutation: Mutation
+   *     subscription: Subscription
+   *   }
+   *
+   *   extend schema @auth
+   * `);
+   * assert(schemaDocument.definitions[0].kind === Kind.SCHEMA_DEFINITION);
+   * assert(schemaDocument.definitions[1].kind === Kind.SCHEMA_EXTENSION);
+   *
+   * const schema = new GraphQLSchema({
+   *   description: 'Operations exposed by the application.',
+   *   query: Query,
+   *   mutation: Mutation,
+   *   subscription: Subscription,
+   *   types: [AuditEvent],
+   *   directives: [authDirective],
+   *   extensions: { owner: 'platform' },
+   *   astNode: schemaDocument.definitions[0],
+   *   extensionASTNodes: [schemaDocument.definitions[1]],
+   *   assumeValid: true,
+   * });
+   *
+   * schema.getMutationType(); // => Mutation
+   * schema.getSubscriptionType(); // => Subscription
+   * schema.getType('AuditEvent'); // => AuditEvent
+   * schema.getDirective('auth'); // => authDirective
+   * schema.extensions; // => { owner: 'platform' }
+   * ```
+   */
   constructor(config) {
     var _config$extensionASTN, _config$directives;
 
@@ -16878,22 +21483,106 @@ class GraphQLSchema {
       }
     }
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'GraphQLSchema';
   }
+  /**
+   * Returns the root object type for query operations.
+   * @returns The query root type, if this schema defines one.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   *
+   * schema.getQueryType()?.name; // => 'Query'
+   * ```
+   */
 
   getQueryType() {
     return this._queryType;
   }
+  /**
+   * Returns the root object type for mutation operations.
+   * @returns The mutation root type, if this schema defines one.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   *
+   *   type Mutation {
+   *     setGreeting(value: String!): String
+   *   }
+   * `);
+   *
+   * schema.getMutationType()?.name; // => 'Mutation'
+   * ```
+   */
 
   getMutationType() {
     return this._mutationType;
   }
+  /**
+   * Returns the root object type for subscription operations.
+   * @returns The subscription root type, if this schema defines one.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   *
+   *   type Subscription {
+   *     greetings: String
+   *   }
+   * `);
+   *
+   * schema.getSubscriptionType()?.name; // => 'Subscription'
+   * ```
+   */
 
   getSubscriptionType() {
     return this._subscriptionType;
   }
+  /**
+   * Returns the root object type for the requested operation kind.
+   * @param operation - Operation kind to resolve.
+   * @returns The root object type for the operation kind, if this schema defines one.
+   * @example
+   * ```ts
+   * import { OperationTypeNode } from 'graphql/language';
+   * import { buildSchema } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   *
+   *   type Mutation {
+   *     setGreeting(value: String!): String
+   *   }
+   * `);
+   *
+   * schema.getRootType(OperationTypeNode.QUERY)?.name; // => 'Query'
+   * schema.getRootType(OperationTypeNode.MUTATION)?.name; // => 'Mutation'
+   * schema.getRootType(OperationTypeNode.SUBSCRIPTION); // => undefined
+   * ```
+   */
 
   getRootType(operation) {
     switch (operation) {
@@ -16907,20 +21596,139 @@ class GraphQLSchema {
         return this.getSubscriptionType();
     }
   }
+  /**
+   * Returns all named types known to this schema.
+   * @returns A map of schema types keyed by type name.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type User {
+   *     name: String
+   *   }
+   *
+   *   type Query {
+   *     viewer: User
+   *   }
+   * `);
+   *
+   * const typeMap = schema.getTypeMap();
+   *
+   * typeMap.User.name; // => 'User'
+   * typeMap.Query.name; // => 'Query'
+   * typeMap.String.name; // => 'String'
+   * ```
+   */
 
   getTypeMap() {
     return this._typeMap;
   }
+  /**
+   * Returns the named type with the provided name.
+   * @param name - The GraphQL name to look up.
+   * @returns The named schema type, if one exists.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type User {
+   *     name: String
+   *   }
+   *
+   *   type Query {
+   *     viewer: User
+   *   }
+   * `);
+   *
+   * schema.getType('User')?.toString(); // => 'User'
+   * schema.getType('Missing'); // => undefined
+   * ```
+   */
 
   getType(name) {
     return this.getTypeMap()[name];
   }
+  /**
+   * Returns object types that may be returned for an abstract type.
+   * @param abstractType - Interface or union type to inspect.
+   * @returns Object types that may satisfy the abstract type.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertInterfaceType, assertUnionType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   interface Node {
+   *     id: ID!
+   *   }
+   *
+   *   type User implements Node {
+   *     id: ID!
+   *   }
+   *
+   *   type Organization implements Node {
+   *     id: ID!
+   *   }
+   *
+   *   union SearchResult = User | Organization
+   *
+   *   type Query {
+   *     node: Node
+   *     search: [SearchResult]
+   *   }
+   * `);
+   *
+   * const Node = assertInterfaceType(schema.getType('Node'));
+   * const SearchResult = assertUnionType(schema.getType('SearchResult'));
+   *
+   * schema.getPossibleTypes(Node).map((type) => type.name); // => ['User', 'Organization']
+   * schema.getPossibleTypes(SearchResult).map((type) => type.name); // => ['User', 'Organization']
+   * ```
+   */
 
   getPossibleTypes(abstractType) {
     return (0, _definition.isUnionType)(abstractType)
       ? abstractType.getTypes()
       : this.getImplementations(abstractType).objects;
   }
+  /**
+   * Returns objects and interfaces that implement an interface type.
+   * @param interfaceType - Interface type to inspect.
+   * @returns Object and interface implementations of the interface.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertInterfaceType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   interface Resource {
+   *     url: String!
+   *   }
+   *
+   *   interface Image implements Resource {
+   *     url: String!
+   *     width: Int
+   *   }
+   *
+   *   type Photo implements Resource & Image {
+   *     url: String!
+   *     width: Int
+   *   }
+   *
+   *   type Query {
+   *     resource: Resource
+   *   }
+   * `);
+   *
+   * const Resource = assertInterfaceType(schema.getType('Resource'));
+   * const implementations = schema.getImplementations(Resource);
+   *
+   * implementations.interfaces.map((type) => type.name); // => ['Image']
+   * implementations.objects.map((type) => type.name); // => ['Photo']
+   * ```
+   */
 
   getImplementations(interfaceType) {
     const implementations = this._implementationsMap[interfaceType.name];
@@ -16931,6 +21739,43 @@ class GraphQLSchema {
           interfaces: [],
         };
   }
+  /**
+   * Returns whether one type is a possible runtime subtype of an abstract type.
+   * @param abstractType - Interface or union type to inspect.
+   * @param maybeSubType - Object or interface type to test as a possible subtype.
+   * @returns True when the subtype may satisfy the abstract type.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { assertInterfaceType, assertObjectType } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   interface Node {
+   *     id: ID!
+   *   }
+   *
+   *   type User implements Node {
+   *     id: ID!
+   *   }
+   *
+   *   type Review {
+   *     body: String
+   *   }
+   *
+   *   type Query {
+   *     node: Node
+   *     review: Review
+   *   }
+   * `);
+   *
+   * const Node = assertInterfaceType(schema.getType('Node'));
+   * const User = assertObjectType(schema.getType('User'));
+   * const Review = assertObjectType(schema.getType('Review'));
+   *
+   * schema.isSubType(Node, User); // => true
+   * schema.isSubType(Node, Review); // => false
+   * ```
+   */
 
   isSubType(abstractType, maybeSubType) {
     let map = this._subTypeMap[abstractType.name];
@@ -16959,14 +21804,76 @@ class GraphQLSchema {
 
     return map[maybeSubType.name] !== undefined;
   }
+  /**
+   * Returns directives available in this schema.
+   * @returns Directives available in this schema.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   directive @upper on FIELD_DEFINITION
+   *
+   *   type Query {
+   *     greeting: String @upper
+   *   }
+   * `);
+   *
+   * schema.getDirectives().map((directive) => directive.name); // => ['upper', 'include', 'skip', 'deprecated', 'specifiedBy', 'oneOf']
+   * ```
+   */
 
   getDirectives() {
     return this._directives;
   }
+  /**
+   * Returns the current directive definition.
+   * @param name - The GraphQL name to look up.
+   * @returns The current directive definition, if known.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   directive @upper on FIELD_DEFINITION
+   *
+   *   type Query {
+   *     greeting: String @upper
+   *   }
+   * `);
+   *
+   * schema.getDirective('upper')?.name; // => 'upper'
+   * schema.getDirective('missing'); // => undefined
+   * ```
+   */
 
   getDirective(name) {
     return this.getDirectives().find((directive) => directive.name === name);
   }
+  /**
+   * Returns a normalized configuration object for this object.
+   *
+   * The returned config preserves the original `assumeValid` flag so the schema
+   * can be recreated with the same validation behavior.
+   * @returns A configuration object that can be used to recreate this object.
+   * @example
+   * ```ts
+   * import { buildSchema } from 'graphql/utilities';
+   * import { GraphQLSchema } from 'graphql/type';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   *
+   * const config = schema.toConfig();
+   * const schemaCopy = new GraphQLSchema(config);
+   *
+   * config.query?.name; // => 'Query'
+   * schemaCopy.getQueryType()?.name; // => 'Query'
+   * ```
+   */
 
   toConfig() {
     return {
@@ -17052,12 +21959,28 @@ var _introspection = __nccwpck_require__(317);
 
 var _schema = __nccwpck_require__(9299);
 
+/** @category Validation */
+
 /**
  * Implements the "Type Validation" sub-sections of the specification's
  * "Type System" section.
  *
  * Validation runs synchronously, returning an array of encountered errors, or
  * an empty array if no errors were encountered and the Schema is valid.
+ * @param schema - GraphQL schema to use.
+ * @returns Schema validation errors, or an empty array when the schema is valid.
+ * @example
+ * ```ts
+ * import { validateSchema } from 'graphql/type';
+ * import { buildSchema } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ * const errors = validateSchema(schema); // => []
+ * ```
  */
 function validateSchema(schema) {
   // First check to ensure the provided value is in fact a GraphQLSchema.
@@ -17080,6 +22003,20 @@ function validateSchema(schema) {
 /**
  * Utility function which asserts a schema is valid by throwing an error if
  * it is invalid.
+ * @param schema - GraphQL schema to use.
+ * @example
+ * ```ts
+ * import { assertValidSchema } from 'graphql/type';
+ * import { buildSchema } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * assertValidSchema(schema); // does not throw
+ * ```
  */
 
 function assertValidSchema(schema) {
@@ -17762,12 +22699,82 @@ var _introspection = __nccwpck_require__(317);
 
 var _typeFromAST = __nccwpck_require__(6738);
 
+/** @category Type Info */
+
 /**
  * TypeInfo is a utility class which, given a GraphQL schema, can keep track
  * of the current field and type definitions at any point in a GraphQL document
  * AST during a recursive descent by calling `enter(node)` and `leave(node)`.
  */
 class TypeInfo {
+  /**
+   * Creates a TypeInfo instance.
+   * @param schema - Schema used for type lookups.
+   * @param initialType - Optional type to use at the start of traversal.
+   * @param getFieldDefFn - Optional field definition lookup override.
+   * @example
+   * ```ts
+   * // Track field types during a visitWithTypeInfo traversal.
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema } from 'graphql/utilities';
+   * import { TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   * const typeInfo = new TypeInfo(schema);
+   * const seenTypes: Array<string> = [];
+   *
+   * visit(
+   *   parse('{ greeting }'),
+   *   visitWithTypeInfo(typeInfo, {
+   *     Field: () => {
+   *       seenTypes.push(String(typeInfo.getType()));
+   *     },
+   *   }),
+   * );
+   *
+   * seenTypes; // => ['String']
+   * ```
+   * @example
+   * ```ts
+   * // This variant starts from an initial type and supplies a field definition resolver.
+   * import { Kind } from 'graphql/language';
+   * import { GraphQLString } from 'graphql/type';
+   * import { buildSchema, TypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   * const typeInfo = new TypeInfo(schema, schema.getQueryType(), () => ({
+   *   name: 'virtualGreeting',
+   *   description: undefined,
+   *   type: GraphQLString,
+   *   args: [],
+   *   resolve: undefined,
+   *   subscribe: undefined,
+   *   deprecationReason: undefined,
+   *   extensions: Object.create(null),
+   *   astNode: undefined,
+   * }));
+   *
+   * typeInfo.enter({
+   *   kind: Kind.SELECTION_SET,
+   *   selections: [],
+   * });
+   * typeInfo.enter({
+   *   kind: Kind.FIELD,
+   *   name: { kind: Kind.NAME, value: 'ignored' },
+   * });
+   *
+   * typeInfo.getFieldDef()?.name; // => 'virtualGreeting'
+   * String(typeInfo.getType()); // => 'String'
+   * ```
+   */
   constructor(
     schema,
     /**
@@ -17775,7 +22782,11 @@ class TypeInfo {
      *  beginning somewhere other than documents.
      */
     initialType,
-    /** @deprecated will be removed in 17.0.0 */
+    /**
+     * Deprecated field definition lookup override. Use TypeInfo's built-in
+     * field definition lookup instead because this hook will be removed in v17.
+     * @deprecated will be removed in 17.0.0
+     */
     getFieldDefFn,
   ) {
     this._schema = schema;
@@ -17806,58 +22817,367 @@ class TypeInfo {
       }
     }
   }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'TypeInfo';
   }
+  /**
+   * Returns the current output type at this point in traversal.
+   * @returns The current output type, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     viewer: User
+   *   }
+   *
+   *   type User {
+   *     name: String
+   *   }
+   * `);
+   * const typeInfo = new TypeInfo(schema);
+   * const fieldTypes: Record<string, string> = {};
+   *
+   * visit(
+   *   parse('{ viewer { name } }'),
+   *   visitWithTypeInfo(typeInfo, {
+   *     Field: (node) => {
+   *       fieldTypes[node.name.value] = String(typeInfo.getType());
+   *     },
+   *   }),
+   * );
+   *
+   * fieldTypes; // => { viewer: 'User', name: 'String' }
+   * ```
+   */
 
   getType() {
     if (this._typeStack.length > 0) {
       return this._typeStack[this._typeStack.length - 1];
     }
   }
+  /**
+   * Returns the current parent composite type.
+   * @returns The current parent composite type, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     viewer: User
+   *   }
+   *
+   *   type User {
+   *     name: String
+   *   }
+   * `);
+   * const typeInfo = new TypeInfo(schema);
+   * const parentTypes: Record<string, string> = {};
+   *
+   * visit(
+   *   parse('{ viewer { name } }'),
+   *   visitWithTypeInfo(typeInfo, {
+   *     Field: (node) => {
+   *       parentTypes[node.name.value] = String(typeInfo.getParentType());
+   *     },
+   *   }),
+   * );
+   *
+   * parentTypes; // => { viewer: 'Query', name: 'User' }
+   * ```
+   */
 
   getParentType() {
     if (this._parentTypeStack.length > 0) {
       return this._parentTypeStack[this._parentTypeStack.length - 1];
     }
   }
+  /**
+   * Returns the current input type at this point in traversal.
+   * @returns The current input type, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     reviews(stars: Int!, sort: Sort = NEWEST): [String]
+   *   }
+   *
+   *   enum Sort {
+   *     NEWEST
+   *     OLDEST
+   *   }
+   * `);
+   * const typeInfo = new TypeInfo(schema);
+   * const inputTypes: Record<string, string> = {};
+   *
+   * visit(
+   *   parse('{ reviews(stars: 5, sort: OLDEST) }'),
+   *   visitWithTypeInfo(typeInfo, {
+   *     Argument: (node) => {
+   *       inputTypes[node.name.value] = String(typeInfo.getInputType());
+   *     },
+   *   }),
+   * );
+   *
+   * inputTypes; // => { stars: 'Int!', sort: 'Sort' }
+   * ```
+   */
 
   getInputType() {
     if (this._inputTypeStack.length > 0) {
       return this._inputTypeStack[this._inputTypeStack.length - 1];
     }
   }
+  /**
+   * Returns the parent input type for the current input position.
+   * @returns The parent input type, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   input ReviewFilter {
+   *     stars: Int!
+   *   }
+   *
+   *   type Query {
+   *     reviews(filter: ReviewFilter): [String]
+   *   }
+   * `);
+   * const typeInfo = new TypeInfo(schema);
+   * const parentInputTypes: Record<string, string> = {};
+   *
+   * visit(
+   *   parse('{ reviews(filter: { stars: 5 }) }'),
+   *   visitWithTypeInfo(typeInfo, {
+   *     ObjectField: (node) => {
+   *       parentInputTypes[node.name.value] = String(typeInfo.getParentInputType());
+   *     },
+   *   }),
+   * );
+   *
+   * parentInputTypes; // => { stars: 'ReviewFilter' }
+   * ```
+   */
 
   getParentInputType() {
     if (this._inputTypeStack.length > 1) {
       return this._inputTypeStack[this._inputTypeStack.length - 2];
     }
   }
+  /**
+   * Returns the current field definition.
+   * @returns The current field definition, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   * const typeInfo = new TypeInfo(schema);
+   * let fieldName;
+   *
+   * visit(
+   *   parse('{ greeting }'),
+   *   visitWithTypeInfo(typeInfo, {
+   *     Field: () => {
+   *       fieldName = typeInfo.getFieldDef()?.name;
+   *     },
+   *   }),
+   * );
+   *
+   * fieldName; // => 'greeting'
+   * ```
+   */
 
   getFieldDef() {
     if (this._fieldDefStack.length > 0) {
       return this._fieldDefStack[this._fieldDefStack.length - 1];
     }
   }
+  /**
+   * Returns the default value for the current input position.
+   * @returns The current default value, if one is available.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     reviews(limit: Int = 10): [String]
+   *   }
+   * `);
+   * const typeInfo = new TypeInfo(schema);
+   * let defaultLimit: unknown;
+   *
+   * visit(
+   *   parse('{ reviews(limit: 5) }'),
+   *   visitWithTypeInfo(typeInfo, {
+   *     Argument: () => {
+   *       defaultLimit = typeInfo.getDefaultValue();
+   *     },
+   *   }),
+   * );
+   *
+   * defaultLimit; // => 10
+   * ```
+   */
 
   getDefaultValue() {
     if (this._defaultValueStack.length > 0) {
       return this._defaultValueStack[this._defaultValueStack.length - 1];
     }
   }
+  /**
+   * Returns the current directive definition.
+   * @returns The current directive definition, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   * const typeInfo = new TypeInfo(schema);
+   * let directiveName;
+   *
+   * visit(
+   *   parse('{ greeting @include(if: true) }'),
+   *   visitWithTypeInfo(typeInfo, {
+   *     Directive: () => {
+   *       directiveName = typeInfo.getDirective()?.name;
+   *     },
+   *   }),
+   * );
+   *
+   * directiveName; // => 'include'
+   * ```
+   */
 
   getDirective() {
     return this._directive;
   }
+  /**
+   * Returns the current argument definition.
+   * @returns The current argument definition, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     reviews(limit: Int = 10): [String]
+   *   }
+   * `);
+   * const typeInfo = new TypeInfo(schema);
+   * let argumentName;
+   *
+   * visit(
+   *   parse('{ reviews(limit: 5) }'),
+   *   visitWithTypeInfo(typeInfo, {
+   *     Argument: () => {
+   *       argumentName = typeInfo.getArgument()?.name;
+   *     },
+   *   }),
+   * );
+   *
+   * argumentName; // => 'limit'
+   * ```
+   */
 
   getArgument() {
     return this._argument;
   }
+  /**
+   * Returns the current enum value definition.
+   * @returns The current enum value definition, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   enum Sort {
+   *     NEWEST
+   *     OLDEST
+   *   }
+   *
+   *   type Query {
+   *     reviews(sort: Sort = NEWEST): [String]
+   *   }
+   * `);
+   * const typeInfo = new TypeInfo(schema);
+   * let enumValueName;
+   *
+   * visit(
+   *   parse('{ reviews(sort: OLDEST) }'),
+   *   visitWithTypeInfo(typeInfo, {
+   *     EnumValue: () => {
+   *       enumValueName = typeInfo.getEnumValue()?.name;
+   *     },
+   *   }),
+   * );
+   *
+   * enumValueName; // => 'OLDEST'
+   * ```
+   */
 
   getEnumValue() {
     return this._enumValue;
   }
+  /**
+   * Updates this TypeInfo instance for an entered AST node.
+   * @param node - AST node being entered.
+   * @returns Nothing.
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * import { Kind, parse } from 'graphql/language';
+   * import { buildSchema, TypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   * const document = parse('{ greeting }');
+   * const operation = document.definitions[0];
+   * assert(operation.kind === Kind.OPERATION_DEFINITION);
+   * const selectionSet = operation.selectionSet;
+   * const field = selectionSet.selections[0];
+   * const typeInfo = new TypeInfo(schema);
+   *
+   * typeInfo.enter(operation);
+   * typeInfo.enter(selectionSet);
+   * typeInfo.enter(field);
+   *
+   * field.kind; // => Kind.FIELD
+   * typeInfo.getParentType()?.name; // => 'Query'
+   * String(typeInfo.getType()); // => 'String'
+   * ```
+   */
 
   enter(node) {
     const schema = this._schema; // Note: many of the types below are explicitly typed as "unknown" to drop
@@ -18024,6 +23344,37 @@ class TypeInfo {
       default: // Ignore other nodes
     }
   }
+  /**
+   * Updates this TypeInfo instance when leaving an AST node.
+   * @param node - AST node being left.
+   * @returns Nothing.
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * import { parse, Kind } from 'graphql/language';
+   * import { buildSchema, TypeInfo } from 'graphql/utilities';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   * const document = parse('{ greeting }');
+   * const operation = document.definitions[0];
+   * assert(operation.kind === Kind.OPERATION_DEFINITION);
+   * const selectionSet = operation.selectionSet;
+   * const field = selectionSet.selections[0];
+   * const typeInfo = new TypeInfo(schema);
+   *
+   * typeInfo.enter(operation);
+   * typeInfo.enter(selectionSet);
+   * typeInfo.enter(field);
+   * String(typeInfo.getType()); // => 'String'
+   *
+   * typeInfo.leave(field);
+   * String(typeInfo.getType()); // => 'Query'
+   * ```
+   */
 
   leave(node) {
     switch (node.kind) {
@@ -18087,6 +23438,8 @@ exports.TypeInfo = TypeInfo;
  * Not exactly the same as the executor's definition of getFieldDef, in this
  * statically evaluated environment we do not always have an Object type,
  * and need to handle Interface and Union types.
+ *
+ * @internal
  */
 function getFieldDef(schema, parentType, fieldNode) {
   const name = fieldNode.name.value;
@@ -18122,6 +23475,37 @@ function getFieldDef(schema, parentType, fieldNode) {
 /**
  * Creates a new visitor instance which maintains a provided TypeInfo instance
  * along with visiting visitor.
+ * @param typeInfo - TypeInfo instance to update during traversal.
+ * @param visitor - Visitor callbacks to wrap with TypeInfo updates.
+ * @returns A visitor that keeps TypeInfo in sync while delegating callbacks.
+ * @example
+ * ```ts
+ * import { parse, visit } from 'graphql/language';
+ * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting: String
+ *   }
+ * `);
+ * const typeInfo = new TypeInfo(schema);
+ * const fields: Array<{ name: string; parentType: string; type: string }> = [];
+ *
+ * visit(
+ *   parse('{ greeting }'),
+ *   visitWithTypeInfo(typeInfo, {
+ *     Field: (node) => {
+ *       fields.push({
+ *         name: node.name.value,
+ *         parentType: String(typeInfo.getParentType()),
+ *         type: String(typeInfo.getType()),
+ *       });
+ *     },
+ *   }),
+ * );
+ *
+ * fields; // => [{ name: 'greeting', parentType: 'Query', type: 'String' }]
+ * ```
  */
 
 function visitWithTypeInfo(typeInfo, visitor) {
@@ -18182,10 +23566,23 @@ var _GraphQLError = __nccwpck_require__(5939);
 
 var _assertName = __nccwpck_require__(8337);
 
+/** @category Validation */
+
 /* c8 ignore start */
 
 /**
- * Upholds the spec rules about naming.
+ * Upholds the spec rules about naming. This deprecated helper is retained for
+ * backwards compatibility; call `assertName` instead because assertValidName
+ * will be removed in v17.
+ * @param name - The GraphQL name to validate.
+ * @returns The validated GraphQL name.
+ * @example
+ * ```ts
+ * import { assertValidName } from 'graphql/utilities';
+ *
+ * assertValidName('User'); // => 'User'
+ * assertValidName('__typename'); // throws an error
+ * ```
  * @deprecated Please use `assertName` instead. Will be removed in v17
  */
 function assertValidName(name) {
@@ -18198,7 +23595,20 @@ function assertValidName(name) {
   return name;
 }
 /**
- * Returns an Error if a name is invalid.
+ * Returns an Error if a name is invalid. This deprecated helper is retained for
+ * backwards compatibility; call `assertName` and catch the thrown GraphQLError
+ * instead because isValidNameError will be removed in v17.
+ * @param name - The GraphQL name to validate.
+ * @returns A GraphQLError if the name is invalid; otherwise undefined.
+ * @example
+ * ```ts
+ * import { isValidNameError } from 'graphql/utilities';
+ *
+ * isValidNameError('User'); // => undefined
+ *
+ * const error = isValidNameError('__typename');
+ * error?.message; // => 'Name "__typename" must not begin with "__", which is reserved by GraphQL introspection.'
+ * ```
  * @deprecated Please use `assertName` instead. Will be removed in v17
  */
 
@@ -18248,12 +23658,12 @@ var _definition = __nccwpck_require__(4169);
 
 var _scalars = __nccwpck_require__(3571);
 
+/** @category Values */
+
 /**
  * Produces a GraphQL Value AST given a JavaScript object.
  * Function will match JavaScript/JSON values to GraphQL AST schema format
- * by using suggested GraphQLInputType. For example:
- *
- *     astFromValue("value", GraphQLString)
+ * by using suggested GraphQLInputType.
  *
  * A GraphQL type must be provided, which will be used to interpret different
  * JavaScript values.
@@ -18267,7 +23677,40 @@ var _scalars = __nccwpck_require__(3571);
  * | Number        | Int / Float          |
  * | Unknown       | Enum Value           |
  * | null          | NullValue            |
+ * @param value - Runtime value to convert.
+ * @param type - The GraphQL type to inspect.
+ * @returns A GraphQL value AST for the provided JavaScript value, or null when no literal can represent it.
+ * @example
+ * ```ts
+ * import assert from 'node:assert/strict';
+ * import { print } from 'graphql/language';
+ * import {
+ *   GraphQLInputObjectType,
+ *   GraphQLInt,
+ *   GraphQLList,
+ *   GraphQLNonNull,
+ *   GraphQLString,
+ * } from 'graphql/type';
+ * import { astFromValue } from 'graphql/utilities';
  *
+ * const ReviewInput = new GraphQLInputObjectType({
+ *   name: 'ReviewInput',
+ *   fields: {
+ *     stars: { type: new GraphQLNonNull(GraphQLInt) },
+ *     tags: { type: new GraphQLList(GraphQLString) },
+ *   },
+ * });
+ *
+ * const valueNode = astFromValue(
+ *   { stars: 5, tags: ['featured', 'verified'] },
+ *   ReviewInput,
+ * );
+ *
+ * assert(valueNode);
+ * print(valueNode); // => '{stars: 5, tags: ["featured", "verified"]}'
+ * astFromValue(undefined, GraphQLString); // => null
+ * astFromValue(null, new GraphQLNonNull(GraphQLString)); // => null
+ * ```
  */
 function astFromValue(value, type) {
   if ((0, _definition.isNonNullType)(type)) {
@@ -18414,6 +23857,8 @@ function astFromValue(value, type) {
  * IntValue:
  *   - NegativeSign? 0
  *   - NegativeSign? NonZeroDigit ( Digit+ )?
+ *
+ * @internal
  */
 
 const integerStringRegExp = /^-?(?:0|[1-9][0-9]*)$/;
@@ -18447,15 +23892,44 @@ var _validate = __nccwpck_require__(7063);
 
 var _extendSchema = __nccwpck_require__(5487);
 
+/** @category Schema Construction */
+
 /**
- * This takes the ast of a schema document produced by the parse function in
- * src/language/parser.js.
+ * Builds a GraphQLSchema from a parsed schema definition language document.
  *
  * If no schema definition is provided, then it will look for types named Query,
  * Mutation and Subscription.
  *
- * Given that AST it constructs a GraphQLSchema. The resulting schema
- * has no resolve methods, so execution will use default resolvers.
+ * The resulting schema has no resolver functions, so execution will use the
+ * default field resolver.
+ * @param documentAST - The parsed GraphQL document AST.
+ * @param options - Optional configuration for this operation.
+ * @returns The schema built from the provided SDL document.
+ * @example
+ * ```ts
+ * // Build a schema from a valid parsed SDL document.
+ * import { parse } from 'graphql/language';
+ * import { buildASTSchema } from 'graphql/utilities';
+ *
+ * const document = parse('type Query { hello: String }');
+ * const schema = buildASTSchema(document);
+ *
+ * schema.getQueryType()?.name; // => 'Query'
+ * ```
+ * @example
+ * ```ts
+ * import { parse } from 'graphql/language';
+ * import { buildASTSchema } from 'graphql/utilities';
+ *
+ * const document = parse('type Query { greeting: String greeting: String }');
+ *
+ * buildASTSchema(document); // throws an error
+ *
+ * // Skipping SDL validation allows the duplicate field definition.
+ * buildASTSchema(document, {
+ *   assumeValidSDL: true,
+ * }); // does not throw
+ * ```
  */
 function buildASTSchema(documentAST, options) {
   (documentAST != null && documentAST.kind === _kinds.Kind.DOCUMENT) ||
@@ -18520,23 +23994,42 @@ function buildASTSchema(documentAST, options) {
   return new _schema.GraphQLSchema({ ...config, directives });
 }
 /**
- * A helper function to build a GraphQLSchema directly from a source
- * document.
+ * Builds a GraphQLSchema directly from a schema definition language source.
+ * @param source - The GraphQL source text or source object.
+ * @param options - Optional configuration for this operation.
+ * @returns The schema built from the provided SDL document.
+ * @example
+ * ```ts
+ * // Build a schema from SDL source using the default options.
+ * import { buildSchema } from 'graphql/utilities';
+ *
+ * const schema = buildSchema('type Query { hello: String }');
+ *
+ * schema.getQueryType()?.name; // => 'Query'
+ * ```
+ * @example
+ * ```ts
+ * // This variant enables parser options and omits source locations.
+ * import { buildSchema } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(
+ *   'directive @tag on DIRECTIVE_DEFINITION\n' +
+ *     'directive @compose @tag on FIELD_DEFINITION',
+ *   {
+ *     experimentalDirectivesOnDirectiveDefinitions: true,
+ *     noLocation: true,
+ *   },
+ * );
+ *
+ * const directive = schema.getDirective('compose');
+ *
+ * directive?.name; // => 'compose'
+ * directive?.astNode?.loc; // => undefined
+ * ```
  */
 
 function buildSchema(source, options) {
-  const document = (0, _parser.parse)(source, {
-    noLocation:
-      options === null || options === void 0 ? void 0 : options.noLocation,
-    allowLegacyFragmentVariables:
-      options === null || options === void 0
-        ? void 0
-        : options.allowLegacyFragmentVariables,
-    experimentalDirectivesOnDirectiveDefinitions:
-      options === null || options === void 0
-        ? void 0
-        : options.experimentalDirectivesOnDirectiveDefinitions,
-  });
+  const document = (0, _parser.parse)(source, options);
   return buildASTSchema(document, {
     assumeValidSDL:
       options === null || options === void 0 ? void 0 : options.assumeValidSDL,
@@ -18581,6 +24074,8 @@ var _schema = __nccwpck_require__(9299);
 
 var _valueFromAST = __nccwpck_require__(6495);
 
+/** @category Introspection */
+
 /**
  * Build a GraphQLSchema for use by client tools.
  *
@@ -18592,6 +24087,24 @@ var _valueFromAST = __nccwpck_require__(6495);
  *
  * This function expects a complete introspection result. Don't forget to check
  * the "errors" field of a server response before calling this function.
+ * @param introspection - Introspection result data to build from.
+ * @param options - Optional configuration for this operation.
+ * @returns The client schema represented by the introspection result.
+ * @example
+ * ```ts
+ * import {
+ *   buildClientSchema,
+ *   introspectionFromSchema,
+ *   buildSchema,
+ * } from 'graphql/utilities';
+ *
+ * const schema = buildSchema('type Query { hello: String }');
+ * const clientSchema = buildClientSchema(introspectionFromSchema(schema), {
+ *   assumeValid: true,
+ * });
+ *
+ * clientSchema.getQueryType()?.name; // => 'Query'
+ * ```
  */
 function buildClientSchema(introspection, options) {
   ((0, _isObjectLike.isObjectLike)(introspection) &&
@@ -18975,11 +24488,74 @@ var _GraphQLError = __nccwpck_require__(5939);
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Values */
+
 /**
  * Coerces a JavaScript value given a GraphQL Input Type.
+ * @param inputValue - JavaScript value to coerce.
+ * @param type - GraphQL input type to coerce the value against.
+ * @param onError - Callback invoked for each coercion error.
+ * @param hideSuggestions - Omit suggestions from error messages.
+ * @returns Coerced value, or undefined if coercion failed and errors were reported.
+ * @example
+ * ```ts
+ * // Coerce runtime input values and throw on invalid input by default.
+ * import {
+ *   GraphQLInputObjectType,
+ *   GraphQLInt,
+ *   GraphQLList,
+ *   GraphQLNonNull,
+ *   GraphQLString,
+ * } from 'graphql/type';
+ * import { coerceInputValue } from 'graphql/utilities';
+ *
+ * const ReviewInput = new GraphQLInputObjectType({
+ *   name: 'ReviewInput',
+ *   fields: {
+ *     stars: { type: new GraphQLNonNull(GraphQLInt) },
+ *     tags: { type: new GraphQLList(GraphQLString) },
+ *   },
+ * });
+ *
+ * coerceInputValue({ stars: 5, tags: ['featured'] }, ReviewInput); // => { stars: 5, tags: ['featured'] }
+ * coerceInputValue({ stars: 'bad' }, ReviewInput); // throws an error
+ * ```
+ * @example
+ * ```ts
+ * // This variant collects coercion errors with a custom onError callback.
+ * import { GraphQLInt, GraphQLNonNull } from 'graphql/type';
+ * import { coerceInputValue } from 'graphql/utilities';
+ *
+ * const errors: Array<{
+ *   path: ReadonlyArray<string | number>;
+ *   invalidValue: unknown;
+ *   message: string;
+ * }> = [];
+ * const value = coerceInputValue(
+ *   null,
+ *   new GraphQLNonNull(GraphQLInt),
+ *   (path, invalidValue, error) => {
+ *     errors.push({ path, invalidValue, message: error.message });
+ *   },
+ * );
+ *
+ * value; // => undefined
+ * errors; // => [ { path: [], invalidValue: null, message: 'Expected non-nullable type "Int!" not to be null.' } ]
+ * ```
  */
-function coerceInputValue(inputValue, type, onError = defaultOnError) {
-  return coerceInputValueImpl(inputValue, type, onError, undefined);
+function coerceInputValue(
+  inputValue,
+  type,
+  onError = defaultOnError,
+  hideSuggestions,
+) {
+  return coerceInputValueImpl(
+    inputValue,
+    type,
+    onError,
+    undefined,
+    hideSuggestions,
+  );
 }
 
 function defaultOnError(path, invalidValue, error) {
@@ -18993,10 +24569,22 @@ function defaultOnError(path, invalidValue, error) {
   throw error;
 }
 
-function coerceInputValueImpl(inputValue, type, onError, path) {
+function coerceInputValueImpl(
+  inputValue,
+  type,
+  onError,
+  path,
+  hideSuggestions,
+) {
   if ((0, _definition.isNonNullType)(type)) {
     if (inputValue != null) {
-      return coerceInputValueImpl(inputValue, type.ofType, onError, path);
+      return coerceInputValueImpl(
+        inputValue,
+        type.ofType,
+        onError,
+        path,
+        hideSuggestions,
+      );
     }
 
     onError(
@@ -19022,11 +24610,25 @@ function coerceInputValueImpl(inputValue, type, onError, path) {
     if ((0, _isIterableObject.isIterableObject)(inputValue)) {
       return Array.from(inputValue, (itemValue, index) => {
         const itemPath = (0, _Path.addPath)(path, index, undefined);
-        return coerceInputValueImpl(itemValue, itemType, onError, itemPath);
+        return coerceInputValueImpl(
+          itemValue,
+          itemType,
+          onError,
+          itemPath,
+          hideSuggestions,
+        );
       });
     } // Lists accept a non-list value as a list of one.
 
-    return [coerceInputValueImpl(inputValue, itemType, onError, path)];
+    return [
+      coerceInputValueImpl(
+        inputValue,
+        itemType,
+        onError,
+        path,
+        hideSuggestions,
+      ),
+    ];
   }
 
   if ((0, _definition.isInputObjectType)(type)) {
@@ -19072,15 +24674,18 @@ function coerceInputValueImpl(inputValue, type, onError, path) {
         field.type,
         onError,
         (0, _Path.addPath)(path, field.name, type.name),
+        hideSuggestions,
       );
     } // Ensure every provided field is defined.
 
     for (const fieldName of Object.keys(inputValue)) {
       if (!fieldDefs[fieldName]) {
-        const suggestions = (0, _suggestionList.suggestionList)(
-          fieldName,
-          Object.keys(type.getFields()),
-        );
+        const suggestions = hideSuggestions
+          ? []
+          : (0, _suggestionList.suggestionList)(
+              fieldName,
+              Object.keys(type.getFields()),
+            );
         onError(
           (0, _Path.pathToArray)(path),
           inputValue,
@@ -19126,7 +24731,9 @@ function coerceInputValueImpl(inputValue, type, onError, path) {
     // to the original error.
 
     try {
-      parseResult = type.parseValue(inputValue);
+      parseResult = (0, _definition.isEnumType)(type)
+        ? type.parseValue(inputValue, hideSuggestions)
+        : type.parseValue(inputValue);
     } catch (error) {
       if (error instanceof _GraphQLError.GraphQLError) {
         onError((0, _Path.pathToArray)(path), inputValue, error);
@@ -19182,10 +24789,26 @@ exports.concatAST = concatAST;
 
 var _kinds = __nccwpck_require__(1123);
 
+/** @category AST Utilities */
+
 /**
  * Provided a collection of ASTs, presumably each from different files,
  * concatenate the ASTs together into batched AST, useful for validating many
  * GraphQL source files which together represent one conceptual application.
+ * @param documents - Document ASTs to concatenate.
+ * @returns A document AST containing all definitions from the provided documents.
+ * @example
+ * ```ts
+ * import { parse } from 'graphql/language';
+ * import { concatAST } from 'graphql/utilities';
+ *
+ * const document = concatAST([
+ *   parse('type Query { a: String }'),
+ *   parse('type User { id: ID }'),
+ * ]);
+ *
+ * document.definitions.length; // => 2
+ * ```
  */
 function concatAST(documents) {
   const definitions = [];
@@ -19245,6 +24868,8 @@ var _values = __nccwpck_require__(3604);
 
 var _valueFromAST = __nccwpck_require__(6495);
 
+/** @category Schema Construction */
+
 /**
  * Produces a new schema given an existing schema and a document which may
  * contain GraphQL type extensions and definitions. The original schema will
@@ -19256,6 +24881,63 @@ var _valueFromAST = __nccwpck_require__(6495);
  *
  * This algorithm copies the provided schema, applying extensions while
  * producing the copy. The original schema remains unaltered.
+ * @param schema - GraphQL schema to use.
+ * @param documentAST - The parsed GraphQL document AST.
+ * @param options - Optional configuration for this operation.
+ * @returns A new schema with the extensions and definitions applied.
+ * @example
+ * ```ts
+ * // Extend a schema with new fields and types.
+ * import assert from 'node:assert/strict';
+ * import { parse } from 'graphql/language';
+ * import { buildSchema, extendSchema } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting: String
+ *   }
+ * `);
+ * const extensionAST = parse(`
+ *   extend type Query {
+ *     farewell: String
+ *   }
+ *
+ *   type Review {
+ *     body: String
+ *   }
+ * `);
+ *
+ * const extendedSchema = extendSchema(schema, extensionAST);
+ *
+ * schema.getType('Review'); // => undefined
+ * extendedSchema.getType('Review')?.name; // => 'Review'
+ * const queryType = extendedSchema.getQueryType();
+ * assert(queryType);
+ * Object.keys(queryType.getFields()); // => ['greeting', 'farewell']
+ * ```
+ * @example
+ * ```ts
+ * // This variant bypasses validation for an otherwise invalid extension.
+ * import { parse } from 'graphql/language';
+ * import { buildSchema, extendSchema } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting: String
+ *   }
+ * `);
+ * const invalidExtension = parse(`
+ *   extend type Missing {
+ *     field: String
+ *   }
+ * `);
+ *
+ * extendSchema(schema, invalidExtension); // throws an error
+ * extendSchema(schema, invalidExtension, {
+ *   assumeValid: true,
+ *   assumeValidSDL: true,
+ * }); // does not throw
+ * ```
  */
 function extendSchema(schema, documentAST, options) {
   (0, _schema.assertSchema)(schema);
@@ -19278,9 +24960,7 @@ function extendSchema(schema, documentAST, options) {
     ? schema
     : new _schema.GraphQLSchema(extendedConfig);
 }
-/**
- * @internal
- */
+/** @internal */
 
 function extendSchemaImpl(schemaConfig, documentAST, options) {
   var _schemaDef, _schemaDef$descriptio, _schemaDef2, _options$assumeValid;
@@ -20035,6 +25715,8 @@ const stdTypeMap = (0, _keyMap.keyMap)(
 /**
  * Given a field or enum value node, returns the string value for the
  * deprecation reason.
+ *
+ * @internal
  */
 
 function getDeprecationReason(node) {
@@ -20049,6 +25731,8 @@ function getDeprecationReason(node) {
 }
 /**
  * Given a scalar node, returns the string value for the specifiedByURL.
+ *
+ * @internal
  */
 
 function getSpecifiedByURL(node) {
@@ -20063,6 +25747,8 @@ function getSpecifiedByURL(node) {
 }
 /**
  * Given an input object node, returns if the node should be OneOf.
+ *
+ * @internal
  */
 
 function isOneOf(node) {
@@ -20103,6 +25789,9 @@ var _astFromValue = __nccwpck_require__(8893);
 
 var _sortValueNode = __nccwpck_require__(7287);
 
+/** @category Schema Changes */
+
+/** Categories of schema changes that may break existing operations. */
 var BreakingChangeType;
 exports.BreakingChangeType = BreakingChangeType;
 
@@ -20132,6 +25821,7 @@ exports.BreakingChangeType = BreakingChangeType;
   BreakingChangeType || (exports.BreakingChangeType = BreakingChangeType = {}),
 );
 
+/** Categories of schema changes that may be dangerous for existing operations. */
 var DangerousChangeType;
 exports.DangerousChangeType = DangerousChangeType;
 
@@ -20152,6 +25842,38 @@ exports.DangerousChangeType = DangerousChangeType;
 /**
  * Given two schemas, returns an Array containing descriptions of all the types
  * of breaking changes covered by the other functions down below.
+ * @param oldSchema - Schema before the change.
+ * @param newSchema - Schema after the change.
+ * @returns Breaking changes between the two schemas.
+ * @example
+ * ```ts
+ * import { buildSchema, findBreakingChanges } from 'graphql/utilities';
+ *
+ * const oldSchema = buildSchema(`
+ *   type User {
+ *     id: ID!
+ *     name: String
+ *   }
+ *
+ *   type Query {
+ *     viewer: User
+ *   }
+ * `);
+ * const newSchema = buildSchema(`
+ *   type User {
+ *     id: ID!
+ *   }
+ *
+ *   type Query {
+ *     viewer: User
+ *   }
+ * `);
+ *
+ * const changes = findBreakingChanges(oldSchema, newSchema);
+ *
+ * changes[0].type; // => 'FIELD_REMOVED'
+ * changes[0].description.includes('User.name was removed'); // => true
+ * ```
  */
 function findBreakingChanges(oldSchema, newSchema) {
   // @ts-expect-error
@@ -20162,6 +25884,38 @@ function findBreakingChanges(oldSchema, newSchema) {
 /**
  * Given two schemas, returns an Array containing descriptions of all the types
  * of potentially dangerous changes covered by the other functions down below.
+ * @param oldSchema - Schema before the change.
+ * @param newSchema - Schema after the change.
+ * @returns Dangerous changes between the two schemas.
+ * @example
+ * ```ts
+ * import { buildSchema, findDangerousChanges } from 'graphql/utilities';
+ *
+ * const oldSchema = buildSchema(`
+ *   enum Episode {
+ *     NEW_HOPE
+ *   }
+ *
+ *   type Query {
+ *     episode: Episode
+ *   }
+ * `);
+ * const newSchema = buildSchema(`
+ *   enum Episode {
+ *     NEW_HOPE
+ *     EMPIRE
+ *   }
+ *
+ *   type Query {
+ *     episode: Episode
+ *   }
+ * `);
+ *
+ * const changes = findDangerousChanges(oldSchema, newSchema);
+ *
+ * changes[0].type; // => 'VALUE_ADDED_TO_ENUM'
+ * changes[0].description.includes('EMPIRE was added'); // => true
+ * ```
  */
 
 function findDangerousChanges(oldSchema, newSchema) {
@@ -20640,9 +26394,49 @@ Object.defineProperty(exports, "__esModule", ({
 }));
 exports.getIntrospectionQuery = getIntrospectionQuery;
 
+/** @category Introspection */
+
+/** Options controlling which fields are included in the introspection query. */
+
 /**
  * Produce the GraphQL query recommended for a full schema introspection.
  * Accepts optional IntrospectionOptions.
+ * @param options - Optional configuration for this operation.
+ * @returns The resolved introspection query.
+ * @example
+ * ```ts
+ * // Generate the default introspection query.
+ * import { getIntrospectionQuery } from 'graphql/utilities';
+ *
+ * const query = getIntrospectionQuery();
+ *
+ * query.includes('__schema'); // => true
+ * query.includes('description'); // => true
+ * query.includes('specifiedByURL'); // => false
+ * ```
+ * @example
+ * ```ts
+ * // This variant customizes optional introspection fields and nesting depth.
+ * import { getIntrospectionQuery } from 'graphql/utilities';
+ *
+ * const query = getIntrospectionQuery({
+ *   descriptions: false,
+ *   specifiedByUrl: true,
+ *   directiveIsRepeatable: true,
+ *   schemaDescription: true,
+ *   inputValueDeprecation: true,
+ *   experimentalDirectiveDeprecation: true,
+ *   oneOf: true,
+ *   typeDepth: 3,
+ * });
+ *
+ * query.includes('description'); // => false
+ * query.includes('specifiedByURL'); // => true
+ * query.includes('isRepeatable'); // => true
+ * query.includes('includeDeprecated: true'); // => true
+ * query.includes('isOneOf'); // => true
+ * (query.match(/ofType/g)?.length ?? 0) > 0; // => true
+ * ```
  */
 function getIntrospectionQuery(options) {
   const optionsWithDefault = {
@@ -20771,6 +26565,7 @@ ${indent}}`;
     }
   `;
 }
+/** The result shape returned by a full introspection query. */
 
 
 /***/ }),
@@ -20788,10 +26583,26 @@ exports.getOperationAST = getOperationAST;
 
 var _kinds = __nccwpck_require__(1123);
 
+/** @category Operations */
+
 /**
  * Returns an operation AST given a document AST and optionally an operation
  * name. If a name is not provided, an operation is only returned if only one is
  * provided in the document.
+ * @param documentAST - The parsed GraphQL document AST.
+ * @param operationName - The optional operation name to select.
+ * @returns The resolved operation ast.
+ * @example
+ * ```ts
+ * import { parse } from 'graphql/language';
+ * import { getOperationAST } from 'graphql/utilities';
+ *
+ * const document = parse('query GetName { name }');
+ * const operation = getOperationAST(document, 'GetName');
+ *
+ * operation?.name?.value; // => 'GetName'
+ * getOperationAST(document, 'Missing'); // => null
+ * ```
  */
 function getOperationAST(documentAST, operationName) {
   let operation = null;
@@ -20839,9 +26650,29 @@ exports.getOperationRootType = getOperationRootType;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Operations */
+
 /**
- * Extracts the root type of the operation from the schema.
+ * Extracts the root type of the operation from the schema. This deprecated
+ * helper is retained for backwards compatibility; call
+ * `GraphQLSchema.getRootType` instead because getOperationRootType will be
+ * removed in v17.
+ * @param schema - GraphQL schema to use.
+ * @param operation - The operation definition to inspect.
+ * @returns The resolved operation root type.
+ * @example
+ * ```ts
+ * import assert from 'node:assert/strict';
+ * import { buildSchema, getOperationRootType } from 'graphql/utilities';
+ * import { parse, Kind } from 'graphql/language';
  *
+ * const schema = buildSchema('type Query { name: String }');
+ * const operation = parse('{ name }').definitions[0];
+ * assert(operation.kind === Kind.OPERATION_DEFINITION);
+ * const rootType = getOperationRootType(schema, operation);
+ *
+ * rootType.name; // => 'Query'
+ * ```
  * @deprecated Please use `GraphQLSchema.getRootType` instead. Will be removed in v17
  */
 function getOperationRootType(schema, operation) {
@@ -21175,6 +27006,8 @@ var _execute = __nccwpck_require__(8923);
 
 var _getIntrospectionQuery = __nccwpck_require__(875);
 
+/** @category Introspection */
+
 /**
  * Build an IntrospectionQuery from a GraphQLSchema
  *
@@ -21183,6 +27016,67 @@ var _getIntrospectionQuery = __nccwpck_require__(875);
  *
  * This is the inverse of buildClientSchema. The primary use case is outside
  * of the server context, for instance when doing schema comparisons.
+ * @param schema - GraphQL schema to use.
+ * @param options - Optional configuration for this operation.
+ * @returns Introspection result data for the schema.
+ * @example
+ * ```ts
+ * import assert from 'node:assert/strict';
+ * // Include schema metadata using the default introspection options.
+ * import { buildSchema, introspectionFromSchema } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   scalar Url @specifiedBy(url: "https://url.spec.whatwg.org/")
+ *
+ *   type Query {
+ *     homepage: Url
+ *   }
+ * `);
+ *
+ * const introspection = introspectionFromSchema(schema);
+ * const urlType = introspection.__schema.types.find(
+ *   (type) => type.name === 'Url',
+ * );
+ * assert(urlType?.kind === 'SCALAR');
+ *
+ * urlType.specifiedByURL; // => 'https://url.spec.whatwg.org/'
+ * ```
+ * @example
+ * ```ts
+ * import assert from 'node:assert/strict';
+ * // This variant disables optional introspection metadata.
+ * import { buildSchema, introspectionFromSchema } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   scalar Url @specifiedBy(url: "https://url.spec.whatwg.org/")
+ *
+ *   type Query {
+ *     homepage: Url
+ *   }
+ * `);
+ *
+ * const introspection = introspectionFromSchema(schema, {
+ *   descriptions: false,
+ *   specifiedByUrl: false,
+ *   directiveIsRepeatable: false,
+ *   schemaDescription: false,
+ *   inputValueDeprecation: false,
+ *   experimentalDirectiveDeprecation: false,
+ *   oneOf: false,
+ * });
+ * const urlType = introspection.__schema.types.find(
+ *   (type) => type.name === 'Url',
+ * );
+ * assert(urlType?.kind === 'SCALAR');
+ * const deprecatedDirective = introspection.__schema.directives.find(
+ *   (directive) => directive.name === 'deprecated',
+ * );
+ *
+ * urlType.description; // => undefined
+ * urlType.specifiedByURL; // => undefined
+ * deprecatedDirective?.isRepeatable; // => undefined
+ * introspection.__schema.description; // => undefined
+ * ```
  */
 function introspectionFromSchema(schema, options) {
   const optionsWithDefaults = {
@@ -21235,10 +27129,50 @@ var _introspection = __nccwpck_require__(317);
 
 var _schema = __nccwpck_require__(9299);
 
+/** @category Schema Construction */
+
 /**
  * Sort GraphQLSchema.
  *
  * This function returns a sorted copy of the given GraphQLSchema.
+ * @param schema - GraphQL schema to use.
+ * @returns A copy of the schema with types, fields, arguments, and values sorted lexicographically.
+ * @example
+ * ```ts
+ * import {
+ *   buildSchema,
+ *   lexicographicSortSchema,
+ *   printSchema,
+ * } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     zebra: String
+ *     apple: String
+ *   }
+ *
+ *   enum Episode {
+ *     JEDI
+ *     NEW_HOPE
+ *     EMPIRE
+ *   }
+ * `);
+ *
+ * const sortedSchema = lexicographicSortSchema(schema);
+ *
+ * const expectedSDL = `enum Episode {
+ *   EMPIRE
+ *   JEDI
+ *   NEW_HOPE
+ * }
+ *
+ * type Query {
+ *   apple: String
+ *   zebra: String
+ * }`;
+ *
+ * printSchema(sortedSchema); // => expectedSDL
+ * ```
  */
 function lexicographicSortSchema(schema) {
   const schemaConfig = schema.toConfig();
@@ -21426,6 +27360,27 @@ var _scalars = __nccwpck_require__(3571);
 
 var _astFromValue = __nccwpck_require__(8893);
 
+/** @category Schema Printing */
+
+/**
+ * Prints the schema.
+ * @param schema - GraphQL schema to use.
+ * @returns The printed string representation.
+ * @example
+ * ```ts
+ * import { buildSchema, printSchema } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   directive @upper on FIELD_DEFINITION
+ *
+ *   type Query {
+ *     greeting: String @upper
+ *   }
+ * `);
+ *
+ * printSchema(schema); // => ['directive @upper on FIELD_DEFINITION', '', 'type Query {', '  greeting: String', '}'].join('\n')
+ * ```
+ */
 function printSchema(schema) {
   return printFilteredSchema(
     schema,
@@ -21433,6 +27388,27 @@ function printSchema(schema) {
     isDefinedType,
   );
 }
+/**
+ * Prints the introspection schema.
+ * @param schema - GraphQL schema to use.
+ * @returns The printed string representation.
+ * @example
+ * ```ts
+ * import { buildSchema, printIntrospectionSchema } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting: String
+ *   }
+ * `);
+ *
+ * const printed = printIntrospectionSchema(schema);
+ *
+ * printed.includes('type __Schema'); // => true
+ * printed.includes('enum __TypeKind'); // => true
+ * printed.includes('type Query'); // => false
+ * ```
+ */
 
 function printIntrospectionSchema(schema) {
   return printFilteredSchema(
@@ -21501,6 +27477,8 @@ function printSchemaDefinition(schema) {
  * ```
  *
  * When using this naming convention, the schema description can be omitted.
+ *
+ * @internal
  */
 
 function isSchemaOfCommonNames(schema) {
@@ -21524,6 +27502,31 @@ function isSchemaOfCommonNames(schema) {
 
   return true;
 }
+/**
+ * Prints the type.
+ * @param type - The GraphQL type to inspect.
+ * @returns The printed string representation.
+ * @example
+ * ```ts
+ * import assert from 'node:assert/strict';
+ * import { buildSchema, printType } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   type User {
+ *     id: ID!
+ *     name: String
+ *   }
+ *
+ *   type Query {
+ *     viewer: User
+ *   }
+ * `);
+ *
+ * const userType = schema.getType('User');
+ * assert(userType);
+ * printType(userType); // => ['type User {', '  id: ID!', '  name: String', '}'].join('\n')
+ * ```
+ */
 
 function printType(type) {
   if ((0, _definition.isScalarType)(type)) {
@@ -21760,6 +27763,8 @@ var _parser = __nccwpck_require__(4929);
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Schema Coordinates */
+
 /**
  * A schema coordinate is resolved in the context of a GraphQL schema to
  * uniquely identify a schema element. It returns undefined if the schema
@@ -21768,6 +27773,38 @@ var _definition = __nccwpck_require__(4169);
  * applicable) does not exist.
  *
  * https://spec.graphql.org/draft/#sec-Schema-Coordinates.Semantics
+ * @param schema - GraphQL schema to use.
+ * @param schemaCoordinate - The schema coordinate to resolve.
+ * @returns The schema element identified by the coordinate, or undefined if none exists.
+ * @example
+ * ```ts
+ * import { buildSchema, resolveSchemaCoordinate } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   directive @tag(name: String!) on FIELD_DEFINITION
+ *
+ *   input ReviewInput {
+ *     stars: Int!
+ *   }
+ *
+ *   enum Episode {
+ *     NEW_HOPE
+ *   }
+ *
+ *   type Query {
+ *     reviews(input: ReviewInput): [String] @tag(name: "reviews")
+ *   }
+ * `);
+ *
+ * resolveSchemaCoordinate(schema, 'Query')?.kind; // => 'NamedType'
+ * resolveSchemaCoordinate(schema, 'Query.reviews')?.kind; // => 'Field'
+ * resolveSchemaCoordinate(schema, 'Query.reviews(input:)')?.kind; // => 'FieldArgument'
+ * resolveSchemaCoordinate(schema, 'ReviewInput.stars')?.kind; // => 'InputField'
+ * resolveSchemaCoordinate(schema, 'Episode.NEW_HOPE')?.kind; // => 'EnumValue'
+ * resolveSchemaCoordinate(schema, '@tag')?.kind; // => 'Directive'
+ * resolveSchemaCoordinate(schema, '@tag(name:)')?.kind; // => 'DirectiveArgument'
+ * resolveSchemaCoordinate(schema, 'Query.missing'); // => undefined
+ * ```
  */
 function resolveSchemaCoordinate(schema, schemaCoordinate) {
   return resolveASTSchemaCoordinate(
@@ -21777,6 +27814,8 @@ function resolveSchemaCoordinate(schema, schemaCoordinate) {
 }
 /**
  * TypeCoordinate : Name
+ *
+ * @internal
  */
 
 function resolveTypeCoordinate(schema, schemaCoordinate) {
@@ -21795,6 +27834,8 @@ function resolveTypeCoordinate(schema, schemaCoordinate) {
 }
 /**
  * MemberCoordinate : Name . Name
+ *
+ * @internal
  */
 
 function resolveMemberCoordinate(schema, schemaCoordinate) {
@@ -21872,6 +27913,8 @@ function resolveMemberCoordinate(schema, schemaCoordinate) {
 }
 /**
  * ArgumentCoordinate : Name . Name ( Name : )
+ *
+ * @internal
  */
 
 function resolveArgumentCoordinate(schema, schemaCoordinate) {
@@ -21931,6 +27974,8 @@ function resolveArgumentCoordinate(schema, schemaCoordinate) {
 }
 /**
  * DirectiveCoordinate : \@ Name
+ *
+ * @internal
  */
 
 function resolveDirectiveCoordinate(schema, schemaCoordinate) {
@@ -21949,6 +27994,8 @@ function resolveDirectiveCoordinate(schema, schemaCoordinate) {
 }
 /**
  * DirectiveArgumentCoordinate : \@ Name ( Name : )
+ *
+ * @internal
  */
 
 function resolveDirectiveArgumentCoordinate(schema, schemaCoordinate) {
@@ -21984,6 +28031,27 @@ function resolveDirectiveArgumentCoordinate(schema, schemaCoordinate) {
 }
 /**
  * Resolves schema coordinate from a parsed SchemaCoordinate node.
+ * @param schema - GraphQL schema to use.
+ * @param schemaCoordinate - The schema coordinate to resolve.
+ * @returns The schema element identified by the parsed coordinate, or undefined if none exists.
+ * @example
+ * ```ts
+ * import assert from 'node:assert/strict';
+ * import { parseSchemaCoordinate } from 'graphql/language';
+ * import { buildSchema, resolveASTSchemaCoordinate } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting(name: String): String
+ *   }
+ * `);
+ * const coordinate = parseSchemaCoordinate('Query.greeting(name:)');
+ * const resolved = resolveASTSchemaCoordinate(schema, coordinate);
+ *
+ * assert(resolved?.kind === 'FieldArgument');
+ * resolved.field.name; // => 'greeting'
+ * resolved.fieldArgument.name; // => 'name'
+ * ```
  */
 
 function resolveASTSchemaCoordinate(schema, schemaCoordinate) {
@@ -22023,11 +28091,42 @@ var _kinds = __nccwpck_require__(1123);
 
 var _visitor = __nccwpck_require__(638);
 
+/** @category AST Utilities */
+
 /**
  * separateOperations accepts a single AST document which may contain many
  * operations and fragments and returns a collection of AST documents each of
  * which contains a single operation as well the fragment definitions it
  * refers to.
+ * @param documentAST - The parsed GraphQL document AST.
+ * @returns A map of operation names to documents containing each operation and its referenced fragments.
+ * @example
+ * ```ts
+ * import { parse, print } from 'graphql/language';
+ * import { separateOperations } from 'graphql/utilities';
+ *
+ * const document = parse(`
+ *   query GetUser {
+ *     viewer {
+ *       ...UserFields
+ *     }
+ *   }
+ *
+ *   query GetStatus {
+ *     status
+ *   }
+ *
+ *   fragment UserFields on User {
+ *     id
+ *   }
+ * `);
+ *
+ * const separated = separateOperations(document);
+ *
+ * Object.keys(separated); // => ['GetUser', 'GetStatus']
+ * print(separated.GetUser).includes('fragment UserFields'); // => true
+ * print(separated.GetStatus).includes('fragment UserFields'); // => false
+ * ```
  */
 function separateOperations(documentAST) {
   const operations = [];
@@ -22178,6 +28277,8 @@ var _source = __nccwpck_require__(203);
 
 var _tokenKind = __nccwpck_require__(1743);
 
+/** @category AST Utilities */
+
 /**
  * Strips characters that are not significant to the validity or execution
  * of a GraphQL document:
@@ -22197,9 +28298,9 @@ var _tokenKind = __nccwpck_require__(1743);
  * Warning: It is guaranteed that this function will always produce stable results.
  * However, it's not guaranteed that it will stay the same between different
  * releases due to bugfixes or changes in the GraphQL specification.
- *
- * Query example:
- *
+ * @param source - The GraphQL source text or source object.
+ * @returns A semantically equivalent GraphQL source string without ignored characters.
+ * @example Query source
  * ```graphql
  * query SomeQuery($foo: String!, $bar: String) {
  *   someField(foo: $foo, bar: $bar) {
@@ -22215,11 +28316,17 @@ var _tokenKind = __nccwpck_require__(1743);
  * Becomes:
  *
  * ```graphql
- * query SomeQuery($foo:String!$bar:String){someField(foo:$foo bar:$bar){a b{c d}}}
+ * query SomeQuery($foo: String!, $bar: String) {
+ *   someField(foo: $foo, bar: $bar) {
+ *     a
+ *     b {
+ *       c
+ *       d
+ *     }
+ *   }
+ * }
  * ```
- *
- * SDL example:
- *
+ * @example SDL source
  * ```graphql
  * """
  * Type description
@@ -22235,7 +28342,21 @@ var _tokenKind = __nccwpck_require__(1743);
  * Becomes:
  *
  * ```graphql
- * """Type description""" type Foo{"""Field description""" bar:String}
+ * """
+ * Type description
+ * """
+ * type Foo {
+ *   """
+ *   Field description
+ *   """
+ *   bar: String
+ * }
+ * ```
+ * @example
+ * ```ts
+ * import { stripIgnoredCharacters } from 'graphql/utilities';
+ *
+ * const source = stripIgnoredCharacters('query Example { name }'); // => 'query Example{name}'
  * ```
  */
 function stripIgnoredCharacters(source) {
@@ -22254,6 +28375,8 @@ function stripIgnoredCharacters(source) {
      * Every two non-punctuator tokens should have space between them.
      * Also prevent case of non-punctuator token following by spread resulting
      * in invalid token (e.g. `1...` is invalid Float token).
+     *
+     * @internal
      */
 
     const isNonPunctuator = !(0, _lexer.isPunctuatorTokenKind)(
@@ -22303,8 +28426,22 @@ exports.isTypeSubTypeOf = isTypeSubTypeOf;
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Type Comparisons */
+
 /**
  * Provided two types, return true if the types are equal (invariant).
+ * @param typeA - The first GraphQL type to compare.
+ * @param typeB - The second GraphQL type to compare.
+ * @returns True when both types are equal.
+ * @example
+ * ```ts
+ * import { GraphQLList, GraphQLNonNull, GraphQLString } from 'graphql/type';
+ * import { isEqualType } from 'graphql/utilities';
+ *
+ * isEqualType(GraphQLString, GraphQLString); // => true
+ * isEqualType(new GraphQLList(GraphQLString), new GraphQLList(GraphQLString)); // => true
+ * isEqualType(new GraphQLNonNull(GraphQLString), GraphQLString); // => false
+ * ```
  */
 function isEqualType(typeA, typeB) {
   // Equivalent types are equal.
@@ -22331,6 +28468,40 @@ function isEqualType(typeA, typeB) {
 /**
  * Provided a type and a super type, return true if the first type is either
  * equal or a subset of the second super type (covariant).
+ * @param schema - GraphQL schema to use.
+ * @param maybeSubType - The possible subtype to compare.
+ * @param superType - The possible supertype to compare.
+ * @returns True when `maybeSubType` is equal to or a subtype of `superType`.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import {
+ *   GraphQLNonNull,
+ *   assertInterfaceType,
+ *   assertObjectType,
+ * } from 'graphql/type';
+ * import { isTypeSubTypeOf } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   interface Node {
+ *     id: ID!
+ *   }
+ *
+ *   type User implements Node {
+ *     id: ID!
+ *   }
+ *
+ *   type Query {
+ *     node: Node
+ *   }
+ * `);
+ * const Node = assertInterfaceType(schema.getType('Node'));
+ * const User = assertObjectType(schema.getType('User'));
+ *
+ * isTypeSubTypeOf(schema, User, Node); // => true
+ * isTypeSubTypeOf(schema, new GraphQLNonNull(User), Node); // => true
+ * isTypeSubTypeOf(schema, Node, User); // => false
+ * ```
  */
 
 function isTypeSubTypeOf(schema, maybeSubType, superType) {
@@ -22381,6 +28552,39 @@ function isTypeSubTypeOf(schema, maybeSubType, superType) {
  * be visited in a context of another type.
  *
  * This function is commutative.
+ * @param schema - GraphQL schema to use.
+ * @param typeA - The first GraphQL type to compare.
+ * @param typeB - The second GraphQL type to compare.
+ * @returns True when the two composite types can apply to at least one common object type.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql/utilities';
+ * import { assertObjectType, assertUnionType } from 'graphql/type';
+ * import { doTypesOverlap } from 'graphql/utilities';
+ *
+ * const schema = buildSchema(`
+ *   type Photo {
+ *     url: String!
+ *   }
+ *
+ *   type Video {
+ *     url: String!
+ *   }
+ *
+ *   union Media = Photo | Video
+ *   union StillImage = Photo
+ *
+ *   type Query {
+ *     media: [Media]
+ *   }
+ * `);
+ * const Media = assertUnionType(schema.getType('Media'));
+ * const StillImage = assertUnionType(schema.getType('StillImage'));
+ * const Video = assertObjectType(schema.getType('Video'));
+ *
+ * doTypesOverlap(schema, Media, StillImage); // => true
+ * doTypesOverlap(schema, StillImage, Video); // => false
+ * ```
  */
 
 function doTypesOverlap(schema, typeA, typeB) {
@@ -22427,6 +28631,9 @@ var _kinds = __nccwpck_require__(1123);
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Values */
+
+/** @internal */
 function typeFromAST(schema, typeNode) {
   switch (typeNode.kind) {
     case _kinds.Kind.LIST_TYPE: {
@@ -22468,6 +28675,8 @@ var _kinds = __nccwpck_require__(1123);
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Values */
+
 /**
  * Produces a JavaScript value given a GraphQL Value AST.
  *
@@ -22486,7 +28695,44 @@ var _definition = __nccwpck_require__(4169);
  * | Int / Float          | Number        |
  * | Enum Value           | Unknown       |
  * | NullValue            | null          |
+ * @param valueNode - GraphQL value AST node to convert.
+ * @param type - The GraphQL type to inspect.
+ * @param variables - Optional runtime variable values keyed by variable name.
+ * @returns The coerced JavaScript value, or undefined if the AST value cannot be coerced to the type.
+ * @example
+ * ```ts
+ * // Coerce literal values without variables.
+ * import { parseValue } from 'graphql/language';
+ * import {
+ *   GraphQLInputObjectType,
+ *   GraphQLInt,
+ *   GraphQLList,
+ *   GraphQLNonNull,
+ *   GraphQLString,
+ * } from 'graphql/type';
+ * import { valueFromAST } from 'graphql/utilities';
  *
+ * const ReviewInput = new GraphQLInputObjectType({
+ *   name: 'ReviewInput',
+ *   fields: {
+ *     stars: { type: new GraphQLNonNull(GraphQLInt) },
+ *     tags: { type: new GraphQLList(GraphQLString) },
+ *   },
+ * });
+ *
+ * valueFromAST(parseValue('{ stars: 5, tags: ["featured"] }'), ReviewInput); // => { stars: 5, tags: ['featured'] }
+ * valueFromAST(parseValue('{ stars: "bad" }'), ReviewInput); // => undefined
+ * ```
+ * @example
+ * ```ts
+ * // This variant resolves variable references from runtime values.
+ * import { parseValue } from 'graphql/language';
+ * import { GraphQLInt } from 'graphql/type';
+ * import { valueFromAST } from 'graphql/utilities';
+ *
+ * valueFromAST(parseValue('$stars'), GraphQLInt, { stars: 5 }); // => 5
+ * valueFromAST(parseValue('$stars'), GraphQLInt, {}); // => undefined
+ * ```
  */
 function valueFromAST(valueNode, type, variables) {
   if (!valueNode) {
@@ -22500,8 +28746,8 @@ function valueFromAST(valueNode, type, variables) {
 
     if (
       variables == null ||
-      variables[variableName] === undefined ||
-      !hasOwnProperty(variables, variableName)
+      !hasOwnProperty(variables, variableName) ||
+      variables[variableName] === undefined
     ) {
       // No valid return value.
       return;
@@ -22650,8 +28896,8 @@ function isMissingVariable(valueNode, variables) {
   return (
     valueNode.kind === _kinds.Kind.VARIABLE &&
     (variables == null ||
-      variables[valueNode.name.value] === undefined ||
-      !hasOwnProperty(variables, valueNode.name.value))
+      !hasOwnProperty(variables, valueNode.name.value) ||
+      variables[valueNode.name.value] === undefined)
   );
 }
 
@@ -22677,11 +28923,13 @@ var _keyValMap = __nccwpck_require__(3166);
 
 var _kinds = __nccwpck_require__(1123);
 
+/** @category Values */
+
 /**
  * Produces a JavaScript value given a GraphQL Value AST.
  *
- * Unlike `valueFromAST()`, no type is provided. The resulting JavaScript value
- * will reflect the provided GraphQL value AST.
+ * Because no GraphQL type is provided, the returned JavaScript value reflects
+ * the provided GraphQL value AST.
  *
  * | GraphQL Value        | JavaScript Value |
  * | -------------------- | ---------------- |
@@ -22691,7 +28939,17 @@ var _kinds = __nccwpck_require__(1123);
  * | String / Enum        | String           |
  * | Int / Float          | Number           |
  * | Null                 | null             |
+ * @param valueNode - GraphQL value AST node to convert.
+ * @param variables - Optional runtime variable values keyed by variable name.
+ * @returns JavaScript value represented by the GraphQL value AST.
+ * @example
+ * ```ts
+ * import { parseValue } from 'graphql/language';
+ * import { valueFromASTUntyped } from 'graphql/utilities';
  *
+ * const value = valueFromASTUntyped(parseValue('[1, 2, 3]')); // => [1, 2, 3]
+ * valueFromASTUntyped(parseValue('$name'), { name: 'Ada' }); // => 'Ada'
+ * ```
  */
 function valueFromASTUntyped(valueNode, variables) {
   switch (valueNode.kind) {
@@ -22745,23 +29003,33 @@ exports.ValidationContext =
   exports.ASTValidationContext =
     void 0;
 
+var _SetMap = __nccwpck_require__(9942);
+
 var _kinds = __nccwpck_require__(1123);
 
 var _visitor = __nccwpck_require__(638);
 
 var _TypeInfo = __nccwpck_require__(5000);
 
+var _validationAbortedError = __nccwpck_require__(6441);
+
+/** @category Validation Context */
+
 /**
  * An instance of this class is passed as the "this" context to all validators,
  * allowing access to commonly useful contextual information from within a
  * validation rule.
+ *
+ * @internal
  */
 class ASTValidationContext {
+  _remainingFragmentWork = 50000;
+
   constructor(ast, onError) {
     this._ast = ast;
     this._fragments = undefined;
     this._fragmentSpreads = new Map();
-    this._recursivelyReferencedFragments = new Map();
+    this._recursivelyReferencedFragments = new _SetMap.SetMap();
     this._onError = onError;
   }
 
@@ -22819,46 +29087,70 @@ class ASTValidationContext {
     }
 
     return spreads;
-  }
+  } // TODO: In the next major version, accept multiple operations here and
+  // remove getRecursivelyReferencedFragmentsForOperations.
 
   getRecursivelyReferencedFragments(operation) {
-    let fragments = this._recursivelyReferencedFragments.get(operation);
+    return this.getRecursivelyReferencedFragmentsForOperations([operation]);
+  }
+
+  getRecursivelyReferencedFragmentsForOperations(operations) {
+    const fragmentNames = new Set(
+      operations.flatMap(({ selectionSet }) =>
+        this.getFragmentSpreads(selectionSet).map(({ name }) => name.value),
+      ),
+    );
+
+    let fragments = this._recursivelyReferencedFragments.get(fragmentNames);
 
     if (!fragments) {
       fragments = [];
-      const collectedNames = Object.create(null);
-      const nodesToVisit = [operation.selectionSet];
-      let node;
+      this.spendFragmentWork(fragmentNames.size);
+      const collectedNames = new Set(fragmentNames);
 
-      while ((node = nodesToVisit.pop())) {
-        for (const spread of this.getFragmentSpreads(node)) {
-          const fragName = spread.name.value;
+      for (const fragName of collectedNames) {
+        const fragment = this.getFragment(fragName);
 
-          if (collectedNames[fragName] !== true) {
-            collectedNames[fragName] = true;
-            const fragment = this.getFragment(fragName);
+        if (fragment) {
+          fragments.push(fragment);
+          const spreads = this.getFragmentSpreads(fragment.selectionSet);
+          this.spendFragmentWork(spreads.length);
 
-            if (fragment) {
-              fragments.push(fragment);
-              nodesToVisit.push(fragment.selectionSet);
-            }
+          for (const spread of spreads) {
+            collectedNames.add(spread.name.value);
           }
         }
       }
 
-      this._recursivelyReferencedFragments.set(operation, fragments);
+      this._recursivelyReferencedFragments.set(fragmentNames, fragments);
     }
 
     return fragments;
   }
+  /** @internal */
+
+  spendFragmentWork(cost) {
+    this._remainingFragmentWork -= cost;
+    /* c8 ignore next 3 */
+
+    if (this._remainingFragmentWork < 0) {
+      throw _validationAbortedError.validationAbortedError;
+    }
+  }
 }
+/** @internal */
 
 exports.ASTValidationContext = ASTValidationContext;
 
+/** @internal */
 class SDLValidationContext extends ASTValidationContext {
   constructor(ast, schema, onError) {
     super(ast, onError);
     this._schema = schema;
+  }
+
+  get hideSuggestions() {
+    return false;
   }
 
   get [Symbol.toStringTag]() {
@@ -22869,25 +29161,133 @@ class SDLValidationContext extends ASTValidationContext {
     return this._schema;
   }
 }
+/** @internal */
 
 exports.SDLValidationContext = SDLValidationContext;
 
+/** Validation context passed to query validation rules. */
 class ValidationContext extends ASTValidationContext {
-  constructor(schema, ast, typeInfo, onError) {
+  /**
+   * Creates a ValidationContext instance.
+   * @param schema - Schema used to validate the document.
+   * @param ast - Document AST being validated.
+   * @param typeInfo - TypeInfo instance used to track traversal state.
+   * @param onError - Callback invoked for each validation error.
+   * @param hideSuggestions - Omit suggestions from error messages.
+   * @example
+   * ```ts
+   * import { parse } from 'graphql/language';
+   * import { GraphQLError } from 'graphql/error';
+   * import { buildSchema, TypeInfo } from 'graphql/utilities';
+   * import { ValidationContext } from 'graphql/validation';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   * const document = parse('{ greeting }');
+   * const errors: Array<GraphQLError> = [];
+   * const context = new ValidationContext(
+   *   schema,
+   *   document,
+   *   new TypeInfo(schema),
+   *   (error) => errors.push(error),
+   * );
+   *
+   * context.reportError(new GraphQLError('Example validation error.'));
+   *
+   * context.getSchema(); // => schema
+   * errors[0].message; // => 'Example validation error.'
+   * ```
+   */
+  constructor(schema, ast, typeInfo, onError, hideSuggestions) {
     super(ast, onError);
+    this._hideSuggestions =
+      hideSuggestions !== null && hideSuggestions !== void 0
+        ? hideSuggestions
+        : false;
     this._schema = schema;
     this._typeInfo = typeInfo;
     this._variableUsages = new Map();
     this._recursiveVariableUsages = new Map();
   }
+  /**
+   * Whether suggestions should be omitted from validation errors.
+   * @returns True when validation error suggestions are disabled.
+   */
+
+  get hideSuggestions() {
+    return this._hideSuggestions;
+  }
+  /**
+   * Returns the value used by `Object.prototype.toString`.
+   * @returns The built-in string tag for this object.
+   */
 
   get [Symbol.toStringTag]() {
     return 'ValidationContext';
   }
+  /**
+   * Returns the schema being used by this validation context.
+   * @returns The schema being validated against.
+   * @example
+   * ```ts
+   * import { parse } from 'graphql/language';
+   * import { buildSchema, TypeInfo } from 'graphql/utilities';
+   * import { ValidationContext } from 'graphql/validation';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   * const context = new ValidationContext(
+   *   schema,
+   *   parse('{ greeting }'),
+   *   new TypeInfo(schema),
+   *   () => {},
+   * );
+   *
+   * context.getSchema().getQueryType()?.name; // => 'Query'
+   * ```
+   */
 
   getSchema() {
     return this._schema;
   }
+  /**
+   * Returns variable usages found directly within this node.
+   * @param node - The AST node to inspect or visit.
+   * @returns Variable usages found directly within this node.
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * import { parse, Kind } from 'graphql/language';
+   * import { buildSchema, TypeInfo } from 'graphql/utilities';
+   * import { ValidationContext } from 'graphql/validation';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting(name: String): String
+   *   }
+   * `);
+   * const document = parse('query ($name: String) { greeting(name: $name) }');
+   * const operation = document.definitions[0];
+   * assert(operation.kind === Kind.OPERATION_DEFINITION);
+   * const context = new ValidationContext(
+   *   schema,
+   *   document,
+   *   new TypeInfo(schema),
+   *   () => {},
+   * );
+   *
+   * const usages = context.getVariableUsages(operation);
+   *
+   * usages[0].node.name.value; // => 'name'
+   * String(usages[0].type); // => 'String'
+   * ```
+   */
 
   getVariableUsages(node) {
     let usages = this._variableUsages.get(node);
@@ -22917,55 +29317,370 @@ class ValidationContext extends ASTValidationContext {
 
     return usages;
   }
+  /**
+   * Returns variable usages for an operation, including variables used by referenced fragments.
+   * @param operation - Operation definition to inspect.
+   * @returns Variable usages reachable from the operation.
+   * @example
+   * ```ts
+   * import assert from 'node:assert/strict';
+   * import { parse, Kind } from 'graphql/language';
+   * import { buildSchema, TypeInfo } from 'graphql/utilities';
+   * import { ValidationContext } from 'graphql/validation';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     viewer: User
+   *   }
+   *
+   *   type User {
+   *     name(prefix: String): String
+   *   }
+   * `);
+   * const document = parse(`
+   *   query ($prefix: String) {
+   *     viewer {
+   *       ...UserName
+   *     }
+   *   }
+   *
+   *   fragment UserName on User {
+   *     name(prefix: $prefix)
+   *   }
+   * `);
+   * const operation = document.definitions[0];
+   * assert(operation.kind === Kind.OPERATION_DEFINITION);
+   * const context = new ValidationContext(
+   *   schema,
+   *   document,
+   *   new TypeInfo(schema),
+   *   () => {},
+   * );
+   *
+   * const usages = context.getRecursiveVariableUsages(operation);
+   *
+   * usages.map((usage) => usage.node.name.value); // => ['prefix']
+   * ```
+   */
 
   getRecursiveVariableUsages(operation) {
     let usages = this._recursiveVariableUsages.get(operation);
 
     if (!usages) {
-      usages = this.getVariableUsages(operation);
+      const fragments = this.getRecursivelyReferencedFragments(operation);
 
-      for (const frag of this.getRecursivelyReferencedFragments(operation)) {
-        usages = usages.concat(this.getVariableUsages(frag));
+      let fragmentUsages = this._recursiveVariableUsages.get(fragments);
+
+      if (!fragmentUsages) {
+        this.spendFragmentWork(fragments.length);
+        fragmentUsages = fragments.flatMap((frag) => {
+          const localUsages = this.getVariableUsages(frag);
+          this.spendFragmentWork(localUsages.length);
+          return localUsages;
+        });
+
+        this._recursiveVariableUsages.set(fragments, fragmentUsages);
       }
+
+      this.spendFragmentWork(fragmentUsages.length);
+      usages = this.getVariableUsages(operation).concat(fragmentUsages);
 
       this._recursiveVariableUsages.set(operation, usages);
     }
 
     return usages;
   }
+  /**
+   * Returns the current output type at this point in traversal.
+   * @returns The current output type, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   * import { ValidationContext } from 'graphql/validation';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   * const document = parse('{ greeting }');
+   * const typeInfo = new TypeInfo(schema);
+   * const context = new ValidationContext(schema, document, typeInfo, () => {});
+   * let typeName;
+   *
+   * visit(
+   *   document,
+   *   visitWithTypeInfo(typeInfo, {
+   *     Field: () => {
+   *       typeName = String(context.getType());
+   *     },
+   *   }),
+   * );
+   *
+   * typeName; // => 'String'
+   * ```
+   */
 
   getType() {
     return this._typeInfo.getType();
   }
+  /**
+   * Returns the current parent composite type.
+   * @returns The current parent composite type, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   * import { ValidationContext } from 'graphql/validation';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   * const document = parse('{ greeting }');
+   * const typeInfo = new TypeInfo(schema);
+   * const context = new ValidationContext(schema, document, typeInfo, () => {});
+   * let parentTypeName;
+   *
+   * visit(
+   *   document,
+   *   visitWithTypeInfo(typeInfo, {
+   *     Field: () => {
+   *       parentTypeName = context.getParentType()?.name;
+   *     },
+   *   }),
+   * );
+   *
+   * parentTypeName; // => 'Query'
+   * ```
+   */
 
   getParentType() {
     return this._typeInfo.getParentType();
   }
+  /**
+   * Returns the current input type at this point in traversal.
+   * @returns The current input type, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   * import { ValidationContext } from 'graphql/validation';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     reviews(limit: Int): [String]
+   *   }
+   * `);
+   * const document = parse('{ reviews(limit: 5) }');
+   * const typeInfo = new TypeInfo(schema);
+   * const context = new ValidationContext(schema, document, typeInfo, () => {});
+   * let inputTypeName;
+   *
+   * visit(
+   *   document,
+   *   visitWithTypeInfo(typeInfo, {
+   *     Argument: () => {
+   *       inputTypeName = String(context.getInputType());
+   *     },
+   *   }),
+   * );
+   *
+   * inputTypeName; // => 'Int'
+   * ```
+   */
 
   getInputType() {
     return this._typeInfo.getInputType();
   }
+  /**
+   * Returns the parent input type for the current input position.
+   * @returns The parent input type, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   * import { ValidationContext } from 'graphql/validation';
+   *
+   * const schema = buildSchema(`
+   *   input ReviewFilter {
+   *     stars: Int
+   *   }
+   *
+   *   type Query {
+   *     reviews(filter: ReviewFilter): [String]
+   *   }
+   * `);
+   * const document = parse('{ reviews(filter: { stars: 5 }) }');
+   * const typeInfo = new TypeInfo(schema);
+   * const context = new ValidationContext(schema, document, typeInfo, () => {});
+   * let parentInputTypeName;
+   *
+   * visit(
+   *   document,
+   *   visitWithTypeInfo(typeInfo, {
+   *     ObjectField: () => {
+   *       parentInputTypeName = String(context.getParentInputType());
+   *     },
+   *   }),
+   * );
+   *
+   * parentInputTypeName; // => 'ReviewFilter'
+   * ```
+   */
 
   getParentInputType() {
     return this._typeInfo.getParentInputType();
   }
+  /**
+   * Returns the current field definition.
+   * @returns The current field definition, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   * import { ValidationContext } from 'graphql/validation';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   * const document = parse('{ greeting }');
+   * const typeInfo = new TypeInfo(schema);
+   * const context = new ValidationContext(schema, document, typeInfo, () => {});
+   * let fieldName;
+   *
+   * visit(
+   *   document,
+   *   visitWithTypeInfo(typeInfo, {
+   *     Field: () => {
+   *       fieldName = context.getFieldDef()?.name;
+   *     },
+   *   }),
+   * );
+   *
+   * fieldName; // => 'greeting'
+   * ```
+   */
 
   getFieldDef() {
     return this._typeInfo.getFieldDef();
   }
+  /**
+   * Returns the current directive definition.
+   * @returns The current directive definition, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   * import { ValidationContext } from 'graphql/validation';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     greeting: String
+   *   }
+   * `);
+   * const document = parse('{ greeting @include(if: true) }');
+   * const typeInfo = new TypeInfo(schema);
+   * const context = new ValidationContext(schema, document, typeInfo, () => {});
+   * let directiveName;
+   *
+   * visit(
+   *   document,
+   *   visitWithTypeInfo(typeInfo, {
+   *     Directive: () => {
+   *       directiveName = context.getDirective()?.name;
+   *     },
+   *   }),
+   * );
+   *
+   * directiveName; // => 'include'
+   * ```
+   */
 
   getDirective() {
     return this._typeInfo.getDirective();
   }
+  /**
+   * Returns the current argument definition.
+   * @returns The current argument definition, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   * import { ValidationContext } from 'graphql/validation';
+   *
+   * const schema = buildSchema(`
+   *   type Query {
+   *     reviews(limit: Int): [String]
+   *   }
+   * `);
+   * const document = parse('{ reviews(limit: 5) }');
+   * const typeInfo = new TypeInfo(schema);
+   * const context = new ValidationContext(schema, document, typeInfo, () => {});
+   * let argumentName;
+   *
+   * visit(
+   *   document,
+   *   visitWithTypeInfo(typeInfo, {
+   *     Argument: () => {
+   *       argumentName = context.getArgument()?.name;
+   *     },
+   *   }),
+   * );
+   *
+   * argumentName; // => 'limit'
+   * ```
+   */
 
   getArgument() {
     return this._typeInfo.getArgument();
   }
+  /**
+   * Returns the current enum value definition.
+   * @returns The current enum value definition, if known.
+   * @example
+   * ```ts
+   * import { parse, visit } from 'graphql/language';
+   * import { buildSchema, TypeInfo, visitWithTypeInfo } from 'graphql/utilities';
+   * import { ValidationContext } from 'graphql/validation';
+   *
+   * const schema = buildSchema(`
+   *   enum Sort {
+   *     NEWEST
+   *     OLDEST
+   *   }
+   *
+   *   type Query {
+   *     reviews(sort: Sort): [String]
+   *   }
+   * `);
+   * const document = parse('{ reviews(sort: OLDEST) }');
+   * const typeInfo = new TypeInfo(schema);
+   * const context = new ValidationContext(schema, document, typeInfo, () => {});
+   * let enumValueName;
+   *
+   * visit(
+   *   document,
+   *   visitWithTypeInfo(typeInfo, {
+   *     EnumValue: () => {
+   *       enumValueName = context.getEnumValue()?.name;
+   *     },
+   *   }),
+   * );
+   *
+   * enumValueName; // => 'OLDEST'
+   * ```
+   */
 
   getEnumValue() {
     return this._typeInfo.getEnumValue();
   }
 }
+/** A function that creates an AST visitor for validating a GraphQL document. */
 
 exports.ValidationContext = ValidationContext;
 
@@ -23328,6 +30043,8 @@ var _kinds = __nccwpck_require__(1123);
 
 var _predicates = __nccwpck_require__(5480);
 
+/** @category Validation Rules */
+
 /**
  * Executable definitions
  *
@@ -23335,6 +30052,35 @@ var _predicates = __nccwpck_require__(5480);
  * operation or fragment definitions.
  *
  * See https://spec.graphql.org/draft/#sec-Executable-Definitions
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { ExecutableDefinitionsRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   type Extra { field: String }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   ExecutableDefinitionsRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { name }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   ExecutableDefinitionsRule,
+ * ]); // => []
+ * ```
  */
 function ExecutableDefinitionsRule(context) {
   return {
@@ -23386,6 +30132,8 @@ var _GraphQLError = __nccwpck_require__(5939);
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Validation Rules */
+
 /**
  * Fields on correct type
  *
@@ -23393,6 +30141,33 @@ var _definition = __nccwpck_require__(4169);
  * parent type, or are an allowed meta field such as __typename.
  *
  * See https://spec.graphql.org/draft/#sec-Field-Selections
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { FieldsOnCorrectTypeRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { missing }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   FieldsOnCorrectTypeRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { name }
+ * `);
+ * const validErrors = validate(schema, validDocument, [FieldsOnCorrectTypeRule]); // => []
+ * ```
  */
 function FieldsOnCorrectTypeRule(context) {
   return {
@@ -23409,12 +30184,16 @@ function FieldsOnCorrectTypeRule(context) {
 
           let suggestion = (0, _didYouMean.didYouMean)(
             'to use an inline fragment on',
-            getSuggestedTypeNames(schema, type, fieldName),
+            context.hideSuggestions
+              ? []
+              : getSuggestedTypeNames(schema, type, fieldName),
           ); // If there are no suggested types, then perhaps this was a typo?
 
           if (suggestion === '') {
             suggestion = (0, _didYouMean.didYouMean)(
-              getSuggestedFieldNames(type, fieldName),
+              context.hideSuggestions
+                ? []
+                : getSuggestedFieldNames(type, fieldName),
             );
           } // Report an error, including helpful suggestions.
 
@@ -23436,6 +30215,8 @@ function FieldsOnCorrectTypeRule(context) {
  * Go through all of the implementations of type, as well as the interfaces that
  * they implement. If any of those types include the provided field, suggest them,
  * sorted by how often the type is referenced.
+ *
+ * @internal
  */
 
 function getSuggestedTypeNames(schema, type, fieldName) {
@@ -23501,6 +30282,8 @@ function getSuggestedTypeNames(schema, type, fieldName) {
 /**
  * For the field name provided, determine if there are any similar field names
  * that may be the result of a typo.
+ *
+ * @internal
  */
 
 function getSuggestedFieldNames(type, fieldName) {
@@ -23537,6 +30320,8 @@ var _definition = __nccwpck_require__(4169);
 
 var _typeFromAST = __nccwpck_require__(6738);
 
+/** @category Validation Rules */
+
 /**
  * Fragments on composite type
  *
@@ -23545,6 +30330,35 @@ var _typeFromAST = __nccwpck_require__(6738);
  * type condition must also be a composite type.
  *
  * See https://spec.graphql.org/draft/#sec-Fragments-On-Composite-Types
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { FragmentsOnCompositeTypesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   fragment Bad on String { length }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   FragmentsOnCompositeTypesRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   fragment Good on Query { name }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   FragmentsOnCompositeTypesRule,
+ * ]); // => []
+ * ```
  */
 function FragmentsOnCompositeTypesRule(context) {
   return {
@@ -23617,6 +30431,8 @@ var _kinds = __nccwpck_require__(1123);
 
 var _directives = __nccwpck_require__(1058);
 
+/** @category Validation Rules */
+
 /**
  * Known argument names
  *
@@ -23625,6 +30441,33 @@ var _directives = __nccwpck_require__(1058);
  *
  * See https://spec.graphql.org/draft/#sec-Argument-Names
  * See https://spec.graphql.org/draft/#sec-Directives-Are-In-Valid-Locations
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { KnownArgumentNamesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     field(arg: String): String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { field(unknown: "1") }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   KnownArgumentNamesRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { field(arg: "1") }
+ * `);
+ * const validErrors = validate(schema, validDocument, [KnownArgumentNamesRule]); // => []
+ * ```
  */
 function KnownArgumentNamesRule(context) {
   return {
@@ -23638,11 +30481,12 @@ function KnownArgumentNamesRule(context) {
 
       if (!argDef && fieldDef && parentType) {
         const argName = argNode.name.value;
-        const knownArgsNames = fieldDef.args.map((arg) => arg.name);
-        const suggestions = (0, _suggestionList.suggestionList)(
-          argName,
-          knownArgsNames,
-        );
+        const suggestions = context.hideSuggestions
+          ? []
+          : (0, _suggestionList.suggestionList)(
+              argName,
+              fieldDef.args.map((arg) => arg.name),
+            );
         context.reportError(
           new _GraphQLError.GraphQLError(
             `Unknown argument "${argName}" on field "${parentType.name}.${fieldDef.name}".` +
@@ -23656,9 +30500,7 @@ function KnownArgumentNamesRule(context) {
     },
   };
 }
-/**
- * @internal
- */
+/** @internal */
 
 function KnownArgumentNamesOnDirectivesRule(context) {
   const directiveArgs = Object.create(null);
@@ -23668,7 +30510,9 @@ function KnownArgumentNamesOnDirectivesRule(context) {
     : _directives.specifiedDirectives;
 
   for (const directive of definedDirectives) {
-    directiveArgs[directive.name] = directive.args.map((arg) => arg.name);
+    directiveArgs[directive.name] = new Set(
+      directive.args.map((arg) => arg.name),
+    );
   }
 
   const astDefinitions = context.getDocument().definitions;
@@ -23684,7 +30528,9 @@ function KnownArgumentNamesOnDirectivesRule(context) {
         (_def$arguments = def.arguments) !== null && _def$arguments !== void 0
           ? _def$arguments
           : [];
-      directiveArgs[def.name.value] = argsNodes.map((arg) => arg.name.value);
+      directiveArgs[def.name.value] = new Set(
+        argsNodes.map((arg) => arg.name.value),
+      );
     }
   }
 
@@ -23697,15 +30543,19 @@ function KnownArgumentNamesOnDirectivesRule(context) {
         for (const argNode of directiveNode.arguments) {
           const argName = argNode.name.value;
 
-          if (!knownArgs.includes(argName)) {
-            const suggestions = (0, _suggestionList.suggestionList)(
-              argName,
-              knownArgs,
-            );
+          if (!knownArgs.has(argName)) {
+            const suggestions = context.hideSuggestions
+              ? []
+              : (0, _suggestionList.suggestionList)(
+                  argName,
+                  Array.from(knownArgs),
+                );
             context.reportError(
               new _GraphQLError.GraphQLError(
                 `Unknown argument "${argName}" on directive "@${directiveName}".` +
-                  (0, _didYouMean.didYouMean)(suggestions),
+                  (context.hideSuggestions
+                    ? ''
+                    : (0, _didYouMean.didYouMean)(suggestions)),
                 {
                   nodes: argNode,
                 },
@@ -23748,6 +30598,8 @@ var _kinds = __nccwpck_require__(1123);
 
 var _directives = __nccwpck_require__(1058);
 
+/** @category Validation Rules */
+
 /**
  * Known directives
  *
@@ -23755,6 +30607,31 @@ var _directives = __nccwpck_require__(1058);
  * schema and legally positioned.
  *
  * See https://spec.graphql.org/draft/#sec-Directives-Are-Defined
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { KnownDirectivesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { name @unknown }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [KnownDirectivesRule]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { name @include(if: true) }
+ * `);
+ * const validErrors = validate(schema, validDocument, [KnownDirectivesRule]); // => []
+ * ```
  */
 function KnownDirectivesRule(context) {
   const locationsMap = Object.create(null);
@@ -23915,6 +30792,8 @@ exports.KnownFragmentNamesRule = KnownFragmentNamesRule;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * Known fragment names
  *
@@ -23922,6 +30801,33 @@ var _GraphQLError = __nccwpck_require__(5939);
  * to fragments defined in the same document.
  *
  * See https://spec.graphql.org/draft/#sec-Fragment-spread-target-defined
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { KnownFragmentNamesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { ...Missing }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   KnownFragmentNamesRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   fragment NameFields on Query { name } query { ...NameFields }
+ * `);
+ * const validErrors = validate(schema, validDocument, [KnownFragmentNamesRule]); // => []
+ * ```
  */
 function KnownFragmentNamesRule(context) {
   return {
@@ -23969,6 +30875,8 @@ var _introspection = __nccwpck_require__(317);
 
 var _scalars = __nccwpck_require__(3571);
 
+/** @category Validation Rules */
+
 /**
  * Known type names
  *
@@ -23976,6 +30884,31 @@ var _scalars = __nccwpck_require__(3571);
  * variable definitions and fragment conditions) are defined by the type schema.
  *
  * See https://spec.graphql.org/draft/#sec-Fragment-Spread-Type-Existence
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { KnownTypeNamesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   fragment Bad on Missing { name }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [KnownTypeNamesRule]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   fragment Good on Query { name }
+ * `);
+ * const validErrors = validate(schema, validDocument, [KnownTypeNamesRule]); // => []
+ * ```
  */
 function KnownTypeNamesRule(context) {
   const schema = context.getSchema();
@@ -24009,10 +30942,12 @@ function KnownTypeNamesRule(context) {
           return;
         }
 
-        const suggestedTypes = (0, _suggestionList.suggestionList)(
-          typeName,
-          isSDL ? standardTypeNames.concat(typeNames) : typeNames,
-        );
+        const suggestedTypes = context.hideSuggestions
+          ? []
+          : (0, _suggestionList.suggestionList)(
+              typeName,
+              isSDL ? standardTypeNames.concat(typeNames) : typeNames,
+            );
         context.reportError(
           new _GraphQLError.GraphQLError(
             `Unknown type "${typeName}".` +
@@ -24058,6 +30993,8 @@ var _GraphQLError = __nccwpck_require__(5939);
 
 var _kinds = __nccwpck_require__(1123);
 
+/** @category Validation Rules */
+
 /**
  * Lone anonymous operation
  *
@@ -24065,6 +31002,35 @@ var _kinds = __nccwpck_require__(1123);
  * (the query short-hand) that it contains only that one operation definition.
  *
  * See https://spec.graphql.org/draft/#sec-Lone-Anonymous-Operation
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { LoneAnonymousOperationRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   query { name } query Other { name }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   LoneAnonymousOperationRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { name }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   LoneAnonymousOperationRule,
+ * ]); // => []
+ * ```
  */
 function LoneAnonymousOperationRule(context) {
   let operationCount = 0;
@@ -24106,10 +31072,32 @@ exports.LoneSchemaDefinitionRule = LoneSchemaDefinitionRule;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * Lone Schema definition
  *
  * A GraphQL document is only valid if it contains only one schema definition.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql';
+ * import { LoneSchemaDefinitionRule } from 'graphql/validation';
+ *
+ * const invalidSDL = `
+ *   schema { query: Query } schema { query: Query } type Query { name: String }
+ * `;
+ *
+ * LoneSchemaDefinitionRule.name; // => 'LoneSchemaDefinitionRule'
+ * buildSchema(invalidSDL); // throws an error
+ *
+ * const validSDL = `
+ *   schema { query: Query } type Query { name: String }
+ * `;
+ *
+ * buildSchema(validSDL); // does not throw
+ * ```
  */
 function LoneSchemaDefinitionRule(context) {
   var _ref, _ref2, _oldSchema$astNode;
@@ -24183,19 +31171,74 @@ var _GraphQLError = __nccwpck_require__(5939);
 
 var _kinds = __nccwpck_require__(1123);
 
+/** @category Validation Rules */
 const MAX_LISTS_DEPTH = 3;
+/**
+ * Implements the max introspection depth validation rule.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { MaxIntrospectionDepthRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { __schema { types { fields { type { fields { type { fields { name } } } } } } } }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   MaxIntrospectionDepthRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { __schema { queryType { name } } }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   MaxIntrospectionDepthRule,
+ * ]); // => []
+ * ```
+ */
 
 function MaxIntrospectionDepthRule(context) {
+  // For each fragment, the greatest entry depth at which its check completed
+  // without reaching the limit. Shared across root checks.
+  // Entry depth is the list depth before entering the fragment.
+  const checkedFragments = Object.create(null); // For each fragment, the smallest entry depth at which its check reached
+  // the limit. Shared across root checks.
+
+  const exceededFragments = Object.create(null);
   /**
    * Counts the depth of list fields in "__Type" recursively and
    * returns `true` if the limit has been reached.
+   *
+   * @internal
    */
-  function checkDepth(node, visitedFragments = Object.create(null), depth = 0) {
+
+  function checkDepth(node, visitedFragments, depth = 0) {
     if (node.kind === _kinds.Kind.FRAGMENT_SPREAD) {
       const fragmentName = node.name.value;
+      const exceededEntryDepth = exceededFragments[fragmentName]; // A check that reached the limit will also do so when repeated at an
+      // equal or greater entry depth.
 
-      if (visitedFragments[fragmentName] === true) {
-        // Fragment cycles are handled by `NoFragmentCyclesRule`.
+      if (exceededEntryDepth !== undefined && exceededEntryDepth <= depth) {
+        return true;
+      }
+
+      const visitedEntryDepth = visitedFragments[fragmentName];
+      const checkedEntryDepth = checkedFragments[fragmentName]; // At equal or shallower entry depths, skip revisits to break cycles
+      // or reuse a completed successful check.
+
+      if (
+        (visitedEntryDepth !== undefined && visitedEntryDepth >= depth) ||
+        (checkedEntryDepth !== undefined && checkedEntryDepth >= depth)
+      ) {
         return false;
       }
 
@@ -24204,18 +31247,17 @@ function MaxIntrospectionDepthRule(context) {
       if (!fragment) {
         // Missing fragments checks are handled by `KnownFragmentNamesRule`.
         return false;
-      } // Rather than following an immutable programming pattern which has
-      // significant memory and garbage collection overhead, we've opted to
-      // take a mutable approach for efficiency's sake. Importantly visiting a
-      // fragment twice is fine, so long as you don't do one visit inside the
-      // other.
-
-      try {
-        visitedFragments[fragmentName] = true;
-        return checkDepth(fragment, visitedFragments, depth);
-      } finally {
-        visitedFragments[fragmentName] = undefined;
       }
+
+      visitedFragments[fragmentName] = depth;
+
+      if (checkDepth(fragment, visitedFragments, depth)) {
+        exceededFragments[fragmentName] = depth;
+        return true;
+      }
+
+      checkedFragments[fragmentName] = depth;
+      return false;
     }
 
     if (
@@ -24247,7 +31289,11 @@ function MaxIntrospectionDepthRule(context) {
   return {
     Field(node) {
       if (node.name.value === '__schema' || node.name.value === '__type') {
-        if (checkDepth(node)) {
+        // For each fragment, the greatest entry depth at which it was visited
+        // during this root check, including visits still in progress.
+        const visitedFragments = Object.create(null);
+
+        if (checkDepth(node, visitedFragments)) {
           context.reportError(
             new _GraphQLError.GraphQLError(
               'Maximum introspection depth exceeded',
@@ -24279,6 +31325,8 @@ exports.NoFragmentCyclesRule = NoFragmentCyclesRule;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * No fragment cycles
  *
@@ -24286,6 +31334,31 @@ var _GraphQLError = __nccwpck_require__(5939);
  * Otherwise an operation could infinitely spread or infinitely execute on cycles in the underlying data.
  *
  * See https://spec.graphql.org/draft/#sec-Fragment-spreads-must-not-form-cycles
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { NoFragmentCyclesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   fragment A on Query { ...B } fragment B on Query { ...A } query { ...A }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [NoFragmentCyclesRule]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   fragment A on Query { name } query { ...A }
+ * `);
+ * const validErrors = validate(schema, validDocument, [NoFragmentCyclesRule]); // => []
+ * ```
  */
 function NoFragmentCyclesRule(context) {
   // Tracks already visited fragments to maintain O(N) and to ensure that cycles
@@ -24372,6 +31445,8 @@ exports.NoUndefinedVariablesRule = NoUndefinedVariablesRule;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * No undefined variables
  *
@@ -24379,6 +31454,33 @@ var _GraphQLError = __nccwpck_require__(5939);
  * and via fragment spreads, are defined by that operation.
  *
  * See https://spec.graphql.org/draft/#sec-All-Variable-Uses-Defined
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { NoUndefinedVariablesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     field(arg: ID): String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   query ($id: ID) { field(arg: $missing) }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   NoUndefinedVariablesRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   query ($id: ID) { field(arg: $id) }
+ * `);
+ * const validErrors = validate(schema, validDocument, [NoUndefinedVariablesRule]); // => []
+ * ```
  */
 function NoUndefinedVariablesRule(context) {
   let variableNameDefined = Object.create(null);
@@ -24432,6 +31534,8 @@ exports.NoUnusedFragmentsRule = NoUnusedFragmentsRule;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * No unused fragments
  *
@@ -24439,6 +31543,33 @@ var _GraphQLError = __nccwpck_require__(5939);
  * within operations, or spread within other fragments spread within operations.
  *
  * See https://spec.graphql.org/draft/#sec-Fragments-Must-Be-Used
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { NoUnusedFragmentsRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   fragment Unused on Query { name } query { name }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   NoUnusedFragmentsRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   fragment Used on Query { name } query { ...Used }
+ * `);
+ * const validErrors = validate(schema, validDocument, [NoUnusedFragmentsRule]); // => []
+ * ```
  */
 function NoUnusedFragmentsRule(context) {
   const operationDefs = [];
@@ -24456,20 +31587,16 @@ function NoUnusedFragmentsRule(context) {
 
     Document: {
       leave() {
-        const fragmentNameUsed = Object.create(null);
-
-        for (const operation of operationDefs) {
-          for (const fragment of context.getRecursivelyReferencedFragments(
-            operation,
-          )) {
-            fragmentNameUsed[fragment.name.value] = true;
-          }
-        }
+        const fragmentNameUsed = new Set(
+          context
+            .getRecursivelyReferencedFragmentsForOperations(operationDefs)
+            .map((fragment) => fragment.name.value),
+        );
 
         for (const fragmentDef of fragmentDefs) {
           const fragName = fragmentDef.name.value;
 
-          if (fragmentNameUsed[fragName] !== true) {
+          if (!fragmentNameUsed.has(fragName)) {
             context.reportError(
               new _GraphQLError.GraphQLError(
                 `Fragment "${fragName}" is never used.`,
@@ -24501,6 +31628,8 @@ exports.NoUnusedVariablesRule = NoUnusedVariablesRule;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * No unused variables
  *
@@ -24508,6 +31637,34 @@ var _GraphQLError = __nccwpck_require__(5939);
  * are used, either directly or within a spread fragment.
  *
  * See https://spec.graphql.org/draft/#sec-All-Variables-Used
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { NoUnusedVariablesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     field(arg: ID): String
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   query ($id: ID) { name }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   NoUnusedVariablesRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   query ($id: ID) { field(arg: $id) }
+ * `);
+ * const validErrors = validate(schema, validDocument, [NoUnusedVariablesRule]); // => []
+ * ```
  */
 function NoUnusedVariablesRule(context) {
   let variableDefs = [];
@@ -24568,29 +31725,23 @@ var _inspect = __nccwpck_require__(5742);
 
 var _GraphQLError = __nccwpck_require__(5939);
 
-var _kinds = __nccwpck_require__(1123);
+var _ast = __nccwpck_require__(2740);
 
-var _printer = __nccwpck_require__(9936);
+var _kinds = __nccwpck_require__(1123);
 
 var _definition = __nccwpck_require__(4169);
 
-var _sortValueNode = __nccwpck_require__(7287);
-
 var _typeFromAST = __nccwpck_require__(6738);
 
-function reasonMessage(reason) {
-  if (Array.isArray(reason)) {
-    return reason
-      .map(
-        ([responseName, subReason]) =>
-          `subfields "${responseName}" conflict because ` +
-          reasonMessage(subReason),
-      )
-      .join(' and ');
-  }
+var _validationAbortedError = __nccwpck_require__(6441);
 
-  return reason;
-}
+/** @category Validation Rules */
+// Keep diagnostic detail bounded independently of document size.
+const MAX_CONFLICT_DETAIL_LENGTH = 1000;
+const MAX_CONFLICT_NODES = 20; // Meter work that can grow through repeated comparisons.
+// Collecting a selection set's fields is cached and is not charged.
+
+const MAX_COMPLEXITY_BUDGET = 500000;
 /**
  * Overlapping fields can be merged
  *
@@ -24599,34 +31750,91 @@ function reasonMessage(reason) {
  * without ambiguity.
  *
  * See https://spec.graphql.org/draft/#sec-Field-Selection-Merging
+ * @param validationContext - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { OverlappingFieldsCanBeMergedRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     dog: Dog
+ *   }
+ *
+ *   type Dog {
+ *     name: String
+ *     barkVolume: Int
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { dog { value: barkVolume value: name } }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   OverlappingFieldsCanBeMergedRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { dog { barkVolume name } }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   OverlappingFieldsCanBeMergedRule,
+ * ]); // => []
+ * ```
  */
 
-function OverlappingFieldsCanBeMergedRule(context) {
-  // A memoization for when fields and a fragment or two fragments are compared
-  // "between" each other for conflicts. Comparisons made be made many times,
-  // so memoizing this can dramatically improve the performance of this validator.
-  const comparedFieldsAndFragmentPairs = new OrderedPairSet();
-  const comparedFragmentPairs = new PairSet(); // A cache for the "field map" and list of fragment names found in any given
-  // selection set. Selection sets may be asked for this information multiple
-  // times, so this improves the performance of this validator.
-
-  const cachedFieldsAndFragmentNames = new Map();
+function OverlappingFieldsCanBeMergedRule(validationContext) {
+  const ruleContext = {
+    // A memoization for when two fragments are compared for conflicts.
+    // Comparisons may be made many times, so memoizing this can dramatically
+    // improve the performance of this validator.
+    comparedFragmentPairs: new PairSet(),
+    // A cache for the "field map" and list of fragment names found in any given
+    // selection set.
+    cachedCollectFieldsResults: new Map(),
+    stringifiedValues: new Map(),
+    remainingComplexityBudget: MAX_COMPLEXITY_BUDGET,
+  };
   return {
-    SelectionSet(selectionSet) {
+    SelectionSet(selectionSet, _key, parent) {
+      var _selectionSet$selecti;
+
+      // Inline fragments are flattened into their enclosing response level.
+      // Their fields' own selection sets are still visited independently.
+      if (
+        parent &&
+        'kind' in parent &&
+        parent.kind === _kinds.Kind.INLINE_FRAGMENT
+      ) {
+        return;
+      }
+
+      if (
+        selectionSet.selections.length <= 1 &&
+        ((_selectionSet$selecti = selectionSet.selections[0]) === null ||
+        _selectionSet$selecti === void 0
+          ? void 0
+          : _selectionSet$selecti.kind) !== _kinds.Kind.INLINE_FRAGMENT
+      ) {
+        return;
+      }
+
       const conflicts = findConflictsWithinSelectionSet(
-        context,
-        cachedFieldsAndFragmentNames,
-        comparedFieldsAndFragmentPairs,
-        comparedFragmentPairs,
-        context.getParentType(),
+        validationContext,
+        ruleContext,
+        validationContext.getParentType(),
         selectionSet,
       );
 
-      for (const [[responseName, reason], fields1, fields2] of conflicts) {
-        const reasonMsg = reasonMessage(reason);
-        context.reportError(
+      for (const { responseName, reason, fields1, fields2 } of conflicts) {
+        validationContext.reportError(
           new _GraphQLError.GraphQLError(
-            `Fields "${responseName}" conflict because ${reasonMsg}. Use different aliases on the fields to fetch both if this was intentional.`,
+            `Fields "${maybeAbbreviate(
+              responseName,
+            )}" conflict because ${reason}. Use different aliases on the fields to fetch both if this was intentional.`,
             {
               nodes: fields1.concat(fields2),
             },
@@ -24638,6 +31846,10 @@ function OverlappingFieldsCanBeMergedRule(context) {
 }
 
 /**
+ * Find all conflicts found "within" a selection set, including those found
+ * via spreading in fragments. Called when visiting each SelectionSet in the
+ * GraphQL Document.
+ *
  * Algorithm:
  *
  * Conflicts occur when two fields exist in a query which will produce the same
@@ -24653,7 +31865,7 @@ function OverlappingFieldsCanBeMergedRule(context) {
  * A) Each selection set represented in the document first compares "within" its
  * collected set of fields, finding any conflicts between every pair of
  * overlapping fields.
- * Note: This is the *only time* that a the fields "within" a set are compared
+ * Note: This is the *only time* that the fields "within" a set are compared
  * to each other. After this only fields "between" sets are compared.
  *
  * B) Also, if any fragment is referenced in a selection set, then a
@@ -24665,14 +31877,14 @@ function OverlappingFieldsCanBeMergedRule(context) {
  *
  * D) When comparing "between" a set of fields and a referenced fragment, first
  * a comparison is made between each field in the original set of fields and
- * each field in the the referenced set of fields.
+ * each field in the referenced set of fields.
  *
  * E) Also, if any fragment is referenced in the referenced selection set,
  * then a comparison is made "between" the original set of fields and the
  * referenced fragment (recursively referring to step D).
  *
  * F) When comparing "between" two fragments, first a comparison is made between
- * each field in the first referenced set of fields and each field in the the
+ * each field in the first referenced set of fields and each field in the
  * second referenced set of fields.
  *
  * G) Also, any fragments referenced by the first must be compared to the
@@ -24690,64 +31902,58 @@ function OverlappingFieldsCanBeMergedRule(context) {
  * J) Also, if two fragments are referenced in both selection sets, then a
  * comparison is made "between" the two fragments.
  *
+ * @internal
  */
-// Find all conflicts found "within" a selection set, including those found
-// via spreading in fragments. Called when visiting each SelectionSet in the
-// GraphQL Document.
 function findConflictsWithinSelectionSet(
-  context,
-  cachedFieldsAndFragmentNames,
-  comparedFieldsAndFragmentPairs,
-  comparedFragmentPairs,
+  validationContext,
+  ruleContext,
   parentType,
   selectionSet,
 ) {
   const conflicts = [];
-  const [fieldMap, fragmentNames] = getFieldsAndFragmentNames(
-    context,
-    cachedFieldsAndFragmentNames,
+  const collectFieldsResult = collectFields(
+    validationContext,
+    ruleContext,
     parentType,
     selectionSet,
   ); // (A) Find find all conflicts "within" the fields of this selection set.
   // Note: this is the *only place* `collectConflictsWithin` is called.
 
   collectConflictsWithin(
-    context,
+    validationContext,
     conflicts,
-    cachedFieldsAndFragmentNames,
-    comparedFieldsAndFragmentPairs,
-    comparedFragmentPairs,
-    fieldMap,
-  );
+    ruleContext,
+    collectFieldsResult.groupedFieldSet,
+  ); // Compare fragment uses only with fields or another spread.
 
-  if (fragmentNames.length !== 0) {
+  if (
+    collectFieldsResult.fragmentNames.length !== 0 &&
+    (collectFieldsResult.groupedFieldSet.size !== 0 ||
+      collectFieldsResult.fragmentNames.length > 1)
+  ) {
     // (B) Then collect conflicts between these fields and those represented by
     // each spread fragment name found.
-    for (let i = 0; i < fragmentNames.length; i++) {
+    for (let i = 0; i < collectFieldsResult.fragmentNames.length; i++) {
       collectConflictsBetweenFieldsAndFragment(
-        context,
+        validationContext,
         conflicts,
-        cachedFieldsAndFragmentNames,
-        comparedFieldsAndFragmentPairs,
-        comparedFragmentPairs,
+        ruleContext,
         false,
-        fieldMap,
-        fragmentNames[i],
+        collectFieldsResult,
+        collectFieldsResult.fragmentNames[i],
       ); // (C) Then compare this fragment with all other fragments found in this
       // selection set to collect conflicts between fragments spread together.
       // This compares each item in the list of fragment names to every other
       // item in that same list (except for itself).
 
-      for (let j = i + 1; j < fragmentNames.length; j++) {
+      for (let j = i + 1; j < collectFieldsResult.fragmentNames.length; j++) {
         collectConflictsBetweenFragments(
-          context,
+          validationContext,
           conflicts,
-          cachedFieldsAndFragmentNames,
-          comparedFieldsAndFragmentPairs,
-          comparedFragmentPairs,
+          ruleContext,
           false,
-          fragmentNames[i],
-          fragmentNames[j],
+          collectFieldsResult.fragmentNames[i],
+          collectFieldsResult.fragmentNames[j],
         );
       }
     }
@@ -24758,71 +31964,71 @@ function findConflictsWithinSelectionSet(
 // including via spreading in any nested fragments.
 
 function collectConflictsBetweenFieldsAndFragment(
-  context,
+  validationContext,
   conflicts,
-  cachedFieldsAndFragmentNames,
-  comparedFieldsAndFragmentPairs,
-  comparedFragmentPairs,
+  ruleContext,
   areMutuallyExclusive,
-  fieldMap,
+  collectFieldsResult,
   fragmentName,
 ) {
-  // Memoize so the fields and fragments are not compared for conflicts more
-  // than once.
-  if (
-    comparedFieldsAndFragmentPairs.has(
-      fieldMap,
-      fragmentName,
-      areMutuallyExclusive,
-    )
-  ) {
+  var _collectFieldsResult$;
+
+  // Callers can enumerate more field-map/fragment pairs than document nodes.
+  // Count attempts even when an empty collection or the pair cache skips them.
+  spendComplexityBudget(ruleContext, 1);
+
+  if (collectFieldsResult.groupedFieldSet.size === 0) {
     return;
   }
 
-  comparedFieldsAndFragmentPairs.add(
-    fieldMap,
-    fragmentName,
-    areMutuallyExclusive,
-  );
-  const fragment = context.getFragment(fragmentName);
+  const comparedFragments =
+    (_collectFieldsResult$ = collectFieldsResult.comparedFragments) !== null &&
+    _collectFieldsResult$ !== void 0
+      ? _collectFieldsResult$
+      : (collectFieldsResult.comparedFragments = new Map()); // Memoize so the fields and fragments are not compared for conflicts more
+  // than once.
+
+  const compared = comparedFragments.get(fragmentName); // Only a non-exclusive comparison can be reused for overlapping parents.
+
+  if (compared === false || (areMutuallyExclusive && compared === true)) {
+    return;
+  }
+
+  comparedFragments.set(fragmentName, areMutuallyExclusive);
+  const fragment = validationContext.getFragment(fragmentName);
 
   if (!fragment) {
     return;
   }
 
-  const [fieldMap2, referencedFragmentNames] =
-    getReferencedFieldsAndFragmentNames(
-      context,
-      cachedFieldsAndFragmentNames,
-      fragment,
-    ); // Do not compare a fragment's fieldMap to itself.
+  const collectFieldsResult2 = collectFragmentFields(
+    validationContext,
+    ruleContext,
+    fragment,
+  ); // Do not compare a fragment's collectFieldsResult to itself.
 
-  if (fieldMap === fieldMap2) {
+  if (collectFieldsResult === collectFieldsResult2) {
     return;
   } // (D) First collect any conflicts between the provided collection of fields
   // and the collection of fields represented by the given fragment.
 
   collectConflictsBetween(
-    context,
+    validationContext,
     conflicts,
-    cachedFieldsAndFragmentNames,
-    comparedFieldsAndFragmentPairs,
-    comparedFragmentPairs,
+    ruleContext,
     areMutuallyExclusive,
-    fieldMap,
-    fieldMap2,
+    collectFieldsResult,
+    collectFieldsResult2,
   ); // (E) Then collect any conflicts between the provided collection of fields
   // and any fragment names found in the given fragment.
 
-  for (const referencedFragmentName of referencedFragmentNames) {
+  for (const referencedFragmentName of collectFieldsResult2.fragmentNames) {
     collectConflictsBetweenFieldsAndFragment(
-      context,
+      validationContext,
       conflicts,
-      cachedFieldsAndFragmentNames,
-      comparedFieldsAndFragmentPairs,
-      comparedFragmentPairs,
+      ruleContext,
       areMutuallyExclusive,
-      fieldMap,
+      collectFieldsResult,
       referencedFragmentName,
     );
   }
@@ -24830,16 +32036,17 @@ function collectConflictsBetweenFieldsAndFragment(
 // any nested fragments.
 
 function collectConflictsBetweenFragments(
-  context,
+  validationContext,
   conflicts,
-  cachedFieldsAndFragmentNames,
-  comparedFieldsAndFragmentPairs,
-  comparedFragmentPairs,
+  ruleContext,
   areMutuallyExclusive,
   fragmentName1,
   fragmentName2,
 ) {
-  // No need to compare a fragment to itself.
+  // Count attempted fragment pairs, including identity and cache hits.
+  spendComplexityBudget(ruleContext, 2);
+  const { comparedFragmentPairs } = ruleContext; // No need to compare a fragment to itself.
+
   if (fragmentName1 === fragmentName2) {
     return;
   } // Memoize so two fragments are not compared for conflicts more than once.
@@ -24855,46 +32062,40 @@ function collectConflictsBetweenFragments(
   }
 
   comparedFragmentPairs.add(fragmentName1, fragmentName2, areMutuallyExclusive);
-  const fragment1 = context.getFragment(fragmentName1);
-  const fragment2 = context.getFragment(fragmentName2);
+  const fragment1 = validationContext.getFragment(fragmentName1);
+  const fragment2 = validationContext.getFragment(fragmentName2);
 
   if (!fragment1 || !fragment2) {
     return;
   }
 
-  const [fieldMap1, referencedFragmentNames1] =
-    getReferencedFieldsAndFragmentNames(
-      context,
-      cachedFieldsAndFragmentNames,
-      fragment1,
-    );
-  const [fieldMap2, referencedFragmentNames2] =
-    getReferencedFieldsAndFragmentNames(
-      context,
-      cachedFieldsAndFragmentNames,
-      fragment2,
-    ); // (F) First, collect all conflicts between these two collections of fields
+  const collectFieldsResult1 = collectFragmentFields(
+    validationContext,
+    ruleContext,
+    fragment1,
+  );
+  const collectFieldsResult2 = collectFragmentFields(
+    validationContext,
+    ruleContext,
+    fragment2,
+  ); // (F) First, collect all conflicts between these two collections of fields
   // (not including any nested fragments).
 
   collectConflictsBetween(
-    context,
+    validationContext,
     conflicts,
-    cachedFieldsAndFragmentNames,
-    comparedFieldsAndFragmentPairs,
-    comparedFragmentPairs,
+    ruleContext,
     areMutuallyExclusive,
-    fieldMap1,
-    fieldMap2,
+    collectFieldsResult1,
+    collectFieldsResult2,
   ); // (G) Then collect conflicts between the first fragment and any nested
   // fragments spread in the second fragment.
 
-  for (const referencedFragmentName2 of referencedFragmentNames2) {
+  for (const referencedFragmentName2 of collectFieldsResult2.fragmentNames) {
     collectConflictsBetweenFragments(
-      context,
+      validationContext,
       conflicts,
-      cachedFieldsAndFragmentNames,
-      comparedFieldsAndFragmentPairs,
-      comparedFragmentPairs,
+      ruleContext,
       areMutuallyExclusive,
       fragmentName1,
       referencedFragmentName2,
@@ -24902,13 +32103,11 @@ function collectConflictsBetweenFragments(
   } // (G) Then collect conflicts between the second fragment and any nested
   // fragments spread in the first fragment.
 
-  for (const referencedFragmentName1 of referencedFragmentNames1) {
+  for (const referencedFragmentName1 of collectFieldsResult1.fragmentNames) {
     collectConflictsBetweenFragments(
-      context,
+      validationContext,
       conflicts,
-      cachedFieldsAndFragmentNames,
-      comparedFieldsAndFragmentPairs,
-      comparedFragmentPairs,
+      ruleContext,
       areMutuallyExclusive,
       referencedFragmentName1,
       fragmentName2,
@@ -24919,10 +32118,8 @@ function collectConflictsBetweenFragments(
 // between the sub-fields of two overlapping fields.
 
 function findConflictsBetweenSubSelectionSets(
-  context,
-  cachedFieldsAndFragmentNames,
-  comparedFieldsAndFragmentPairs,
-  comparedFragmentPairs,
+  validationContext,
+  ruleContext,
   areMutuallyExclusive,
   parentType1,
   selectionSet1,
@@ -24930,68 +32127,60 @@ function findConflictsBetweenSubSelectionSets(
   selectionSet2,
 ) {
   const conflicts = [];
-  const [fieldMap1, fragmentNames1] = getFieldsAndFragmentNames(
-    context,
-    cachedFieldsAndFragmentNames,
+  const collectFieldsResult1 = collectFields(
+    validationContext,
+    ruleContext,
     parentType1,
     selectionSet1,
   );
-  const [fieldMap2, fragmentNames2] = getFieldsAndFragmentNames(
-    context,
-    cachedFieldsAndFragmentNames,
+  const collectFieldsResult2 = collectFields(
+    validationContext,
+    ruleContext,
     parentType2,
     selectionSet2,
   ); // (H) First, collect all conflicts between these two collections of field.
 
   collectConflictsBetween(
-    context,
+    validationContext,
     conflicts,
-    cachedFieldsAndFragmentNames,
-    comparedFieldsAndFragmentPairs,
-    comparedFragmentPairs,
+    ruleContext,
     areMutuallyExclusive,
-    fieldMap1,
-    fieldMap2,
+    collectFieldsResult1,
+    collectFieldsResult2,
   ); // (I) Then collect conflicts between the first collection of fields and
   // those referenced by each fragment name associated with the second.
 
-  for (const fragmentName2 of fragmentNames2) {
+  for (const fragmentName2 of collectFieldsResult2.fragmentNames) {
     collectConflictsBetweenFieldsAndFragment(
-      context,
+      validationContext,
       conflicts,
-      cachedFieldsAndFragmentNames,
-      comparedFieldsAndFragmentPairs,
-      comparedFragmentPairs,
+      ruleContext,
       areMutuallyExclusive,
-      fieldMap1,
+      collectFieldsResult1,
       fragmentName2,
     );
   } // (I) Then collect conflicts between the second collection of fields and
   // those referenced by each fragment name associated with the first.
 
-  for (const fragmentName1 of fragmentNames1) {
+  for (const fragmentName1 of collectFieldsResult1.fragmentNames) {
     collectConflictsBetweenFieldsAndFragment(
-      context,
+      validationContext,
       conflicts,
-      cachedFieldsAndFragmentNames,
-      comparedFieldsAndFragmentPairs,
-      comparedFragmentPairs,
+      ruleContext,
       areMutuallyExclusive,
-      fieldMap2,
+      collectFieldsResult2,
       fragmentName1,
     );
   } // (J) Also collect conflicts between any fragment names by the first and
   // fragment names by the second. This compares each item in the first set of
   // names to each item in the second set of names.
 
-  for (const fragmentName1 of fragmentNames1) {
-    for (const fragmentName2 of fragmentNames2) {
+  for (const fragmentName1 of collectFieldsResult1.fragmentNames) {
+    for (const fragmentName2 of collectFieldsResult2.fragmentNames) {
       collectConflictsBetweenFragments(
-        context,
+        validationContext,
         conflicts,
-        cachedFieldsAndFragmentNames,
-        comparedFieldsAndFragmentPairs,
-        comparedFragmentPairs,
+        ruleContext,
         areMutuallyExclusive,
         fragmentName1,
         fragmentName2,
@@ -25003,18 +32192,16 @@ function findConflictsBetweenSubSelectionSets(
 } // Collect all Conflicts "within" one collection of fields.
 
 function collectConflictsWithin(
-  context,
+  validationContext,
   conflicts,
-  cachedFieldsAndFragmentNames,
-  comparedFieldsAndFragmentPairs,
-  comparedFragmentPairs,
-  fieldMap,
+  ruleContext,
+  groupedFieldSet,
 ) {
   // A field map is a keyed collection, where each key represents a response
   // name and the value at that key is a list of all fields which provide that
   // response name. For every response name, if there are multiple fields, they
   // must be compared to find a potential conflict.
-  for (const [responseName, fields] of Object.entries(fieldMap)) {
+  for (const [responseName, fields] of groupedFieldSet) {
     // This compares every field in the list to every other field in this list
     // (except to itself). If the list only has one item, nothing needs to
     // be compared.
@@ -25022,11 +32209,9 @@ function collectConflictsWithin(
       for (let i = 0; i < fields.length; i++) {
         for (let j = i + 1; j < fields.length; j++) {
           const conflict = findConflict(
-            context,
-            cachedFieldsAndFragmentNames,
-            comparedFieldsAndFragmentPairs,
-            comparedFragmentPairs,
-            false, // within one collection is never mutually exclusive
+            validationContext,
+            ruleContext,
+            false,
             responseName,
             fields[i],
             fields[j],
@@ -25046,59 +32231,106 @@ function collectConflictsWithin(
 // each individual selection set.
 
 function collectConflictsBetween(
-  context,
+  validationContext,
   conflicts,
-  cachedFieldsAndFragmentNames,
-  comparedFieldsAndFragmentPairs,
-  comparedFragmentPairs,
+  ruleContext,
   parentFieldsAreMutuallyExclusive,
-  fieldMap1,
-  fieldMap2,
+  collectFieldsResult1,
+  collectFieldsResult2,
 ) {
-  // A field map is a keyed collection, where each key represents a response
+  if (
+    collectFieldsResult1.groupedFieldSet.size === 0 ||
+    collectFieldsResult2.groupedFieldSet.size === 0
+  ) {
+    return;
+  } // A field map is a keyed collection, where each key represents a response
   // name and the value at that key is a list of all fields which provide that
   // response name. For any response name which appears in both provided field
   // maps, each field from the first field map must be compared to every field
   // in the second field map to find potential conflicts.
-  for (const [responseName, fields1] of Object.entries(fieldMap1)) {
-    const fields2 = fieldMap2[responseName];
 
-    if (fields2) {
-      for (const field1 of fields1) {
-        for (const field2 of fields2) {
-          const conflict = findConflict(
-            context,
-            cachedFieldsAndFragmentNames,
-            comparedFieldsAndFragmentPairs,
-            comparedFragmentPairs,
-            parentFieldsAreMutuallyExclusive,
-            responseName,
-            field1,
-            field2,
-          );
+  for (const { responseName, fields1, fields2 } of getOverlappingFields(
+    ruleContext,
+    collectFieldsResult1,
+    collectFieldsResult2,
+  )) {
+    for (const field1 of fields1) {
+      for (const field2 of fields2) {
+        const conflict = findConflict(
+          validationContext,
+          ruleContext,
+          parentFieldsAreMutuallyExclusive,
+          responseName,
+          field1,
+          field2,
+        );
 
-          if (conflict) {
-            conflicts.push(conflict);
-          }
+        if (conflict) {
+          conflicts.push(conflict);
         }
       }
     }
   }
+}
+
+function getOverlappingFields(
+  ruleContext,
+  collectFieldsResult1,
+  collectFieldsResult2,
+) {
+  var _collectFieldsResult;
+
+  // Reuse matching response groups when these collections are compared again.
+  const byCollectFieldsResult =
+    (_collectFieldsResult = collectFieldsResult1.overlappingFields) !== null &&
+    _collectFieldsResult !== void 0
+      ? _collectFieldsResult
+      : (collectFieldsResult1.overlappingFields = new Map());
+  const cached = byCollectFieldsResult.get(collectFieldsResult2);
+
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const overlappingFields = [];
+
+  for (const [responseName, fields1] of collectFieldsResult1.groupedFieldSet) {
+    // A field map can participate in many distinct comparisons.
+    spendComplexityBudget(ruleContext, 1);
+    const fields2 = collectFieldsResult2.groupedFieldSet.get(responseName);
+
+    if (fields2 !== undefined) {
+      overlappingFields.push({
+        responseName,
+        fields1,
+        fields2,
+      });
+    }
+  }
+
+  byCollectFieldsResult.set(collectFieldsResult2, overlappingFields);
+  return overlappingFields;
 } // Determines if there is a conflict between two particular fields, including
 // comparing their sub-fields.
 
 function findConflict(
-  context,
-  cachedFieldsAndFragmentNames,
-  comparedFieldsAndFragmentPairs,
-  comparedFragmentPairs,
+  validationContext,
+  ruleContext,
   parentFieldsAreMutuallyExclusive,
   responseName,
-  field1,
-  field2,
+  fieldDetails1,
+  fieldDetails2,
 ) {
-  const [parentType1, node1, def1] = field1;
-  const [parentType2, node2, def2] = field2; // If it is known that two fields could not possibly apply at the same
+  const {
+    parentType: parentType1,
+    node: node1,
+    definition: def1,
+  } = fieldDetails1;
+  const {
+    parentType: parentType2,
+    node: node2,
+    definition: def2,
+  } = fieldDetails2; // If it is known that two fields could not possibly apply at the same
   // time, due to the parent types, then it is safe to permit them to diverge
   // in aliased field or arguments used as they will not present any ambiguity
   // by differing.
@@ -25111,44 +32343,78 @@ function findConflict(
     parentFieldsAreMutuallyExclusive ||
     (parentType1 !== parentType2 &&
       (0, _definition.isObjectType)(parentType1) &&
-      (0, _definition.isObjectType)(parentType2));
+      (0, _definition.isObjectType)(parentType2)); // Count attempted field pairs, including pairs skipped by type exclusivity.
+
+  spendComplexityBudget(ruleContext, 2);
+
+  if (
+    fieldDetails1.isSimpleLeaf &&
+    fieldDetails2.isSimpleLeaf &&
+    (def1 === null || def1 === void 0 ? void 0 : def1.type) ===
+      (def2 === null || def2 === void 0 ? void 0 : def2.type) &&
+    node1.name.value === node2.name.value
+  ) {
+    return;
+  }
 
   if (!areMutuallyExclusive) {
-    // Two aliases must refer to the same field.
-    const name1 = node1.name.value;
-    const name2 = node2.name.value;
+    const fieldInfo1 = getFieldInfo(fieldDetails1);
+    const fieldInfo2 = getFieldInfo(fieldDetails2);
+    let reason = fieldInfo1.comparisons.get(fieldInfo2);
 
-    if (name1 !== name2) {
-      return [
-        [responseName, `"${name1}" and "${name2}" are different fields`],
-        [node1],
-        [node2],
-      ];
-    } // Two field calls must have the same arguments.
+    if (reason === undefined) {
+      // Two aliases must refer to the same field with the same arguments.
+      const name1 = node1.name.value;
+      const name2 = node2.name.value;
+      reason =
+        name1 !== name2
+          ? `"${maybeAbbreviate(name1)}" and "${maybeAbbreviate(
+              name2,
+            )}" are different fields`
+          : sameArguments(
+              ruleContext,
+              fieldInfo1.arguments,
+              fieldInfo2.arguments,
+            )
+          ? null
+          : 'they have differing arguments';
+      fieldInfo1.comparisons.set(fieldInfo2, reason);
+    }
 
-    if (!sameArguments(node1, node2)) {
-      return [
-        [responseName, 'they have differing arguments'],
-        [node1],
-        [node2],
-      ];
+    if (reason !== null) {
+      return {
+        responseName,
+        reason,
+        fields1: [node1],
+        fields2: [node2],
+      };
     }
   } // The return type for each field.
 
   const type1 = def1 === null || def1 === void 0 ? void 0 : def1.type;
   const type2 = def2 === null || def2 === void 0 ? void 0 : def2.type;
 
-  if (type1 && type2 && doTypesConflict(type1, type2)) {
-    return [
-      [
-        responseName,
-        `they return conflicting types "${(0, _inspect.inspect)(
-          type1,
-        )}" and "${(0, _inspect.inspect)(type2)}"`,
-      ],
-      [node1],
-      [node2],
-    ];
+  if (type1 && type2 && doTypesConflict(ruleContext, type1, type2)) {
+    var _fieldInfo1$typeStrin, _fieldInfo2$typeStrin;
+
+    const fieldInfo1 = getFieldInfo(fieldDetails1);
+    const fieldInfo2 = getFieldInfo(fieldDetails2);
+    const type1String =
+      (_fieldInfo1$typeStrin = fieldInfo1.typeString) !== null &&
+      _fieldInfo1$typeStrin !== void 0
+        ? _fieldInfo1$typeStrin
+        : (fieldInfo1.typeString = (0, _inspect.inspect)(type1));
+    const type2String =
+      (_fieldInfo2$typeStrin = fieldInfo2.typeString) !== null &&
+      _fieldInfo2$typeStrin !== void 0
+        ? _fieldInfo2$typeStrin
+        : (fieldInfo2.typeString = (0, _inspect.inspect)(type2));
+    return {
+      responseName,
+      reason: `they return conflicting types "${type1String}" and "${type2String}"`,
+      fields1: [node1],
+      fields2: [node2],
+    };
   } // Collect and compare sub-fields. Use the same "visited fragment names" list
   // for both collections so fields in a fragment reference are never
   // compared to themselves.
@@ -25158,62 +32424,144 @@ function findConflict(
 
   if (selectionSet1 && selectionSet2) {
     const conflicts = findConflictsBetweenSubSelectionSets(
-      context,
-      cachedFieldsAndFragmentNames,
-      comparedFieldsAndFragmentPairs,
-      comparedFragmentPairs,
+      validationContext,
+      ruleContext,
       areMutuallyExclusive,
-      (0, _definition.getNamedType)(type1),
+      getFieldInfo(fieldDetails1).namedType,
       selectionSet1,
-      (0, _definition.getNamedType)(type2),
+      getFieldInfo(fieldDetails2).namedType,
       selectionSet2,
     );
     return subfieldConflicts(conflicts, responseName, node1, node2);
   }
+} // Prepare argument lookups only when a field overlaps.
+
+function getFieldInfo(fieldDetails) {
+  if (fieldDetails.info === undefined) {
+    var _fieldDetails$definit;
+
+    fieldDetails.info = {
+      comparisons: new Map(),
+      namedType: (0, _definition.getNamedType)(
+        (_fieldDetails$definit = fieldDetails.definition) === null ||
+          _fieldDetails$definit === void 0
+          ? void 0
+          : _fieldDetails$definit.type,
+      ),
+      arguments: getArgumentInfo(fieldDetails.node.arguments),
+    };
+  }
+
+  return fieldDetails.info;
 }
 
-function sameArguments(node1, node2) {
-  const args1 = node1.arguments;
-  const args2 = node2.arguments;
-
-  if (args1 === undefined || args1.length === 0) {
-    return args2 === undefined || args2.length === 0;
+function getArgumentInfo(args) {
+  if (args === undefined || args.length === 0) {
+    return;
   }
 
-  if (args2 === undefined || args2.length === 0) {
+  const values = new Map();
+
+  for (const { name, value } of args) {
+    values.set(name.value, value);
+  }
+
+  return {
+    nodes: args,
+    values,
+  };
+}
+
+function sameArguments(ruleContext, argumentInfo1, argumentInfo2) {
+  if (argumentInfo1 === undefined) {
+    return argumentInfo2 === undefined;
+  }
+
+  if (
+    argumentInfo1.nodes.length !==
+    (argumentInfo2 === null || argumentInfo2 === void 0
+      ? void 0
+      : argumentInfo2.nodes.length)
+  ) {
     return false;
   }
-  /* c8 ignore next */
 
-  if (args1.length !== args2.length) {
-    /* c8 ignore next */
-    return false;
-    /* c8 ignore next */
-  }
-
-  const values2 = new Map(args2.map(({ name, value }) => [name.value, value]));
-  return args1.every((arg1) => {
-    const value1 = arg1.value;
+  const values2 = argumentInfo2.values;
+  return argumentInfo1.nodes.every((arg1) => {
+    // A prepared argument list can participate in many field-pair comparisons.
+    spendComplexityBudget(ruleContext, 1);
     const value2 = values2.get(arg1.name.value);
 
     if (value2 === undefined) {
       return false;
     }
 
-    return stringifyValue(value1) === stringifyValue(value2);
+    return (
+      stringifyValue(ruleContext, arg1.value) ===
+      stringifyValue(ruleContext, value2)
+    );
   });
 }
 
-function stringifyValue(value) {
-  return (0, _printer.print)((0, _sortValueNode.sortValueNode)(value));
+function stringifyValue(ruleContext, value) {
+  const cached = ruleContext.stringifiedValues.get(value);
+
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const result = JSON.stringify(value, (_key, node) => {
+    if (!(0, _ast.isNode)(node)) {
+      return node;
+    }
+
+    switch (node.kind) {
+      case _kinds.Kind.VARIABLE:
+        return [node.kind, node.name.value];
+
+      case _kinds.Kind.OBJECT:
+        return [
+          node.kind,
+          node.fields
+            .slice()
+            .sort((first, second) =>
+              first.name.value < second.name.value
+                ? -1
+                : first.name.value > second.name.value
+                ? 1
+                : 0,
+            ),
+        ];
+
+      case _kinds.Kind.OBJECT_FIELD:
+        return [node.name.value, node.value];
+
+      case _kinds.Kind.LIST:
+        return [node.kind, node.values];
+
+      case _kinds.Kind.STRING:
+        return [node.kind, node.value, node.block === true];
+
+      default:
+        return [node.kind, 'value' in node ? node.value : null];
+    }
+  });
+  ruleContext.stringifiedValues.set(value, result);
+  return result;
 } // Two types conflict if both types could not apply to a value simultaneously.
 // Composite types are ignored as their individual field types will be compared
 // later recursively. However List and Non-Null types must match.
 
-function doTypesConflict(type1, type2) {
+function doTypesConflict(ruleContext, type1, type2) {
+  if (type1 === type2) {
+    return false;
+  }
+
+  spendComplexityBudget(ruleContext, 1);
+
   if ((0, _definition.isListType)(type1)) {
     return (0, _definition.isListType)(type2)
-      ? doTypesConflict(type1.ofType, type2.ofType)
+      ? doTypesConflict(ruleContext, type1.ofType, type2.ofType)
       : true;
   }
 
@@ -25223,7 +32571,7 @@ function doTypesConflict(type1, type2) {
 
   if ((0, _definition.isNonNullType)(type1)) {
     return (0, _definition.isNonNullType)(type2)
-      ? doTypesConflict(type1.ofType, type2.ofType)
+      ? doTypesConflict(ruleContext, type1.ofType, type2.ofType)
       : true;
   }
 
@@ -25243,69 +32591,71 @@ function doTypesConflict(type1, type2) {
 // name to field nodes and definitions) as well as a list of fragment names
 // referenced via fragment spreads.
 
-function getFieldsAndFragmentNames(
-  context,
-  cachedFieldsAndFragmentNames,
+function collectFields(
+  validationContext,
+  ruleContext,
   parentType,
   selectionSet,
 ) {
-  const cached = cachedFieldsAndFragmentNames.get(selectionSet);
+  const { cachedCollectFieldsResults } = ruleContext; // A programmatically built document can share a selection-set object between
+  // different parent types; their field definitions must not share a cache entry.
+
+  let bySelectionSet = cachedCollectFieldsResults.get(parentType);
+
+  if (bySelectionSet === undefined) {
+    bySelectionSet = new Map();
+    cachedCollectFieldsResults.set(parentType, bySelectionSet);
+  }
+
+  const cached = bySelectionSet.get(selectionSet);
 
   if (cached) {
     return cached;
   }
 
-  const nodeAndDefs = Object.create(null);
-  const fragmentNames = Object.create(null);
-
-  _collectFieldsAndFragmentNames(
-    context,
+  const fieldDetails = new Map();
+  const fragmentNames = new Set();
+  collectFieldsImpl(
+    validationContext,
     parentType,
     selectionSet,
-    nodeAndDefs,
+    fieldDetails,
     fragmentNames,
   );
-
-  const result = [nodeAndDefs, Object.keys(fragmentNames)];
-  cachedFieldsAndFragmentNames.set(selectionSet, result);
+  const result = {
+    groupedFieldSet: fieldDetails,
+    fragmentNames: [...fragmentNames],
+  };
+  bySelectionSet.set(selectionSet, result);
   return result;
 } // Given a reference to a fragment, return the represented collection of fields
 // as well as a list of nested fragment names referenced via fragment spreads.
 
-function getReferencedFieldsAndFragmentNames(
-  context,
-  cachedFieldsAndFragmentNames,
-  fragment,
-) {
-  // Short-circuit building a type from the node if possible.
-  const cached = cachedFieldsAndFragmentNames.get(fragment.selectionSet);
-
-  if (cached) {
-    return cached;
-  }
-
+function collectFragmentFields(validationContext, ruleContext, fragment) {
   const fragmentType = (0, _typeFromAST.typeFromAST)(
-    context.getSchema(),
+    validationContext.getSchema(),
     fragment.typeCondition,
   );
-  return getFieldsAndFragmentNames(
-    context,
-    cachedFieldsAndFragmentNames,
+  return collectFields(
+    validationContext,
+    ruleContext,
     fragmentType,
     fragment.selectionSet,
   );
 }
 
-function _collectFieldsAndFragmentNames(
-  context,
+function collectFieldsImpl(
+  validationContext,
   parentType,
   selectionSet,
-  nodeAndDefs,
+  fieldDetails,
   fragmentNames,
 ) {
   for (const selection of selectionSet.selections) {
     switch (selection.kind) {
       case _kinds.Kind.FIELD: {
+        var _selection$arguments$, _selection$arguments;
+
         const fieldName = selection.name.value;
         let fieldDef;
 
@@ -25319,33 +32669,49 @@ function _collectFieldsAndFragmentNames(
         const responseName = selection.alias
           ? selection.alias.value
           : fieldName;
+        let fieldDetailsList = fieldDetails.get(responseName);
 
-        if (!nodeAndDefs[responseName]) {
-          nodeAndDefs[responseName] = [];
+        if (fieldDetailsList === undefined) {
+          fieldDetailsList = [];
+          fieldDetails.set(responseName, fieldDetailsList);
         }
 
-        nodeAndDefs[responseName].push([parentType, selection, fieldDef]);
+        fieldDetailsList.push({
+          parentType,
+          node: selection,
+          definition: fieldDef,
+          isSimpleLeaf:
+            ((_selection$arguments$ =
+              (_selection$arguments = selection.arguments) === null ||
+              _selection$arguments === void 0
+                ? void 0
+                : _selection$arguments.length) !== null &&
+            _selection$arguments$ !== void 0
+              ? _selection$arguments$
+              : 0) === 0 && !selection.selectionSet,
+        });
         break;
       }
 
       case _kinds.Kind.FRAGMENT_SPREAD:
-        fragmentNames[selection.name.value] = true;
+        fragmentNames.add(selection.name.value);
         break;
 
       case _kinds.Kind.INLINE_FRAGMENT: {
         const typeCondition = selection.typeCondition;
         const inlineFragmentType = typeCondition
-          ? (0, _typeFromAST.typeFromAST)(context.getSchema(), typeCondition)
+          ? (0, _typeFromAST.typeFromAST)(
+              validationContext.getSchema(),
+              typeCondition,
+            )
           : parentType;
-
-        _collectFieldsAndFragmentNames(
-          context,
+        collectFieldsImpl(
+          validationContext,
           inlineFragmentType,
           selection.selectionSet,
-          nodeAndDefs,
+          fieldDetails,
           fragmentNames,
         );
-
         break;
       }
     }
@@ -25355,27 +32721,79 @@ function _collectFieldsAndFragmentNames(
 
 function subfieldConflicts(conflicts, responseName, node1, node2) {
   if (conflicts.length > 0) {
-    return [
-      [responseName, conflicts.map(([reason]) => reason)],
-      [node1, ...conflicts.map(([, fields1]) => fields1).flat()],
-      [node2, ...conflicts.map(([, , fields2]) => fields2).flat()],
-    ];
+    let message = '';
+
+    for (const { responseName: name, reason } of conflicts) {
+      message +=
+        (message === '' ? '' : ' and ') +
+        `subfields "${maybeAbbreviate(name)}" conflict because ${reason}`;
+
+      if (message.length > MAX_CONFLICT_DETAIL_LENGTH) {
+        break;
+      }
+    }
+
+    return {
+      responseName,
+      reason: maybeAbbreviate(message),
+      fields1: collectConflictNodes(node1, conflicts, 'fields1'),
+      fields2: collectConflictNodes(node2, conflicts, 'fields2'),
+    };
+  }
+}
+
+function collectConflictNodes(node, conflicts, side) {
+  const nodes = [node];
+
+  for (const conflict of conflicts) {
+    const remaining = MAX_CONFLICT_NODES - nodes.length; // Locations start with the enclosing field. Take from the end so that
+    // truncation favors the deeper fields involved in the conflict.
+
+    const retainedNodes = conflict[side].slice(-remaining);
+    nodes.push(...retainedNodes);
+
+    if (nodes.length === MAX_CONFLICT_NODES) {
+      break;
+    }
+  }
+
+  return nodes;
+}
+
+function maybeAbbreviate(text) {
+  return text.length > MAX_CONFLICT_DETAIL_LENGTH
+    ? text.slice(0, MAX_CONFLICT_DETAIL_LENGTH) + '...'
+    : text;
+}
+
+function spendComplexityBudget(ruleContext, cost) {
+  ruleContext.remainingComplexityBudget -= cost;
+  /* c8 ignore next 3 */
+
+  if (ruleContext.remainingComplexityBudget < 0) {
+    throw _validationAbortedError.validationAbortedError;
   }
 }
 /**
- * A way to keep track of pairs of things where the ordering of the pair
- * matters.
+ * A way to keep track of pairs of similar things when the ordering of the pair
+ * does not matter.
  *
- * Provides a third argument for has/set to allow flagging the pair as
+ * Provides a third argument for has/add to allow flagging the pair as
  * weakly or strongly present within the collection.
+ *
+ * @internal
  */
 
-class OrderedPairSet {
+class PairSet {
   constructor() {
     this._data = new Map();
   }
 
   has(a, b, weaklyPresent) {
+    return this._has(a, b, weaklyPresent) || this._has(b, a, weaklyPresent);
+  }
+
+  _has(a, b, weaklyPresent) {
     var _this$_data$get;
 
     const result =
@@ -25398,30 +32816,6 @@ class OrderedPairSet {
       this._data.set(a, new Map([[b, weaklyPresent]]));
     } else {
       map.set(b, weaklyPresent);
-    }
-  }
-}
-/**
- * A way to keep track of pairs of similar things when the ordering of the pair
- * does not matter.
- */
-
-class PairSet {
-  constructor() {
-    this._orderedPairSet = new OrderedPairSet();
-  }
-
-  has(a, b, weaklyPresent) {
-    return a < b
-      ? this._orderedPairSet.has(a, b, weaklyPresent)
-      : this._orderedPairSet.has(b, a, weaklyPresent);
-  }
-
-  add(a, b, weaklyPresent) {
-    if (a < b) {
-      this._orderedPairSet.add(a, b, weaklyPresent);
-    } else {
-      this._orderedPairSet.add(b, a, weaklyPresent);
     }
   }
 }
@@ -25450,12 +32844,51 @@ var _typeComparators = __nccwpck_require__(6539);
 
 var _typeFromAST = __nccwpck_require__(6738);
 
+/** @category Validation Rules */
+
 /**
  * Possible fragment spread
  *
  * A fragment spread is only valid if the type condition could ever possibly
  * be true: if there is a non-empty intersection of the possible parent types,
  * and possible types which pass the type condition.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { PossibleFragmentSpreadsRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     dog: Dog
+ *   }
+ *
+ *   type Dog {
+ *     barkVolume: Int
+ *   }
+ *
+ *   type Cat {
+ *     meowVolume: Int
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { dog { ... on Cat { meowVolume } } }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   PossibleFragmentSpreadsRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { dog { ... on Dog { barkVolume } } }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   PossibleFragmentSpreadsRule,
+ * ]); // => []
+ * ```
  */
 function PossibleFragmentSpreadsRule(context) {
   return {
@@ -25559,10 +32992,32 @@ var _predicates = __nccwpck_require__(5480);
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Validation Rules */
+
 /**
  * Possible type extension
  *
  * A type extension is only valid if the type is defined and has the same kind.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql';
+ * import { PossibleTypeExtensionsRule } from 'graphql/validation';
+ *
+ * const invalidSDL = `
+ *   extend type Missing { name: String } type Query { name: String }
+ * `;
+ *
+ * PossibleTypeExtensionsRule.name; // => 'PossibleTypeExtensionsRule'
+ * buildSchema(invalidSDL); // throws an error
+ *
+ * const validSDL = `
+ *   type Query { name: String } extend type Query { other: String }
+ * `;
+ *
+ * buildSchema(validSDL); // does not throw
+ * ```
  */
 function PossibleTypeExtensionsRule(context) {
   const schema = context.getSchema();
@@ -25738,11 +33193,42 @@ var _definition = __nccwpck_require__(4169);
 
 var _directives = __nccwpck_require__(1058);
 
+/** @category Validation Rules */
+
 /**
  * Provided required arguments
  *
  * A field or directive is only valid if all required (non-null without a
  * default value) field arguments have been provided.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { ProvidedRequiredArgumentsRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     field(required: String!): String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { field }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   ProvidedRequiredArgumentsRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { field(required: "x") }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   ProvidedRequiredArgumentsRule,
+ * ]); // => []
+ * ```
  */
 function ProvidedRequiredArgumentsRule(context) {
   return {
@@ -25787,9 +33273,7 @@ function ProvidedRequiredArgumentsRule(context) {
     },
   };
 }
-/**
- * @internal
- */
+/** @internal */
 
 function ProvidedRequiredArgumentsOnDirectivesRule(context) {
   var _schema$getDirectives;
@@ -25898,11 +33382,38 @@ var _GraphQLError = __nccwpck_require__(5939);
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Validation Rules */
+
 /**
  * Scalar leafs
  *
  * A GraphQL document is valid only if all leaf fields (fields without
  * sub selections) are of scalar or enum types.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { ScalarLeafsRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { name { length } }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [ScalarLeafsRule]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { name }
+ * `);
+ * const validErrors = validate(schema, validDocument, [ScalarLeafsRule]); // => []
+ * ```
  */
 function ScalarLeafsRule(context) {
   return {
@@ -25972,6 +33483,8 @@ var _kinds = __nccwpck_require__(1123);
 
 var _collectFields = __nccwpck_require__(7611);
 
+/** @category Validation Rules */
+
 /**
  * Subscriptions must only include a non-introspection field.
  *
@@ -25979,8 +33492,76 @@ var _collectFields = __nccwpck_require__(7611);
  * that root field is not an introspection field.
  *
  * See https://spec.graphql.org/draft/#sec-Single-root-field
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { SingleFieldSubscriptionsRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ *
+ *   type Subscription {
+ *     a: String
+ *     b: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   subscription { a b }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   SingleFieldSubscriptionsRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   subscription { a }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   SingleFieldSubscriptionsRule,
+ * ]); // => []
+ * ```
  */
 function SingleFieldSubscriptionsRule(context) {
+  let fragments;
+
+  function reserveSelectionSetWork(selectionSet) {
+    context.spendFragmentWork(selectionSet.selections.length);
+
+    for (const selection of selectionSet.selections) {
+      const directives = selection.directives;
+
+      if (directives !== undefined) {
+        context.spendFragmentWork(directives.length);
+
+        for (const directive of directives) {
+          if (
+            directive.name.value === 'skip' ||
+            directive.name.value === 'include'
+          ) {
+            var _directive$arguments$, _directive$arguments;
+
+            context.spendFragmentWork(
+              (_directive$arguments$ =
+                (_directive$arguments = directive.arguments) === null ||
+                _directive$arguments === void 0
+                  ? void 0
+                  : _directive$arguments.length) !== null &&
+                _directive$arguments$ !== void 0
+                ? _directive$arguments$
+                : 0,
+            );
+          }
+        }
+      }
+    }
+  }
+
   return {
     OperationDefinition(node) {
       if (node.operation === 'subscription') {
@@ -25990,12 +33571,16 @@ function SingleFieldSubscriptionsRule(context) {
         if (subscriptionType) {
           const operationName = node.name ? node.name.value : null;
           const variableValues = Object.create(null);
-          const document = context.getDocument();
-          const fragments = Object.create(null);
 
-          for (const definition of document.definitions) {
-            if (definition.kind === _kinds.Kind.FRAGMENT_DEFINITION) {
-              fragments[definition.name.value] = definition;
+          if (fragments === undefined) {
+            fragments = Object.create(null);
+            const definitions = context.getDocument().definitions;
+            context.spendFragmentWork(definitions.length);
+
+            for (const definition of definitions) {
+              if (definition.kind === _kinds.Kind.FRAGMENT_DEFINITION) {
+                fragments[definition.name.value] = definition;
+              }
             }
           }
 
@@ -26005,6 +33590,7 @@ function SingleFieldSubscriptionsRule(context) {
             variableValues,
             subscriptionType,
             node.selectionSet,
+            reserveSelectionSetWork,
           );
 
           if (fields.size > 1) {
@@ -26064,11 +33650,33 @@ var _groupBy = __nccwpck_require__(8520);
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * Unique argument definition names
  *
  * A GraphQL Object or Interface type is only valid if all its fields have uniquely named arguments.
  * A GraphQL Directive is only valid if all its arguments are uniquely named.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql';
+ * import { UniqueArgumentDefinitionNamesRule } from 'graphql/validation';
+ *
+ * const invalidSDL = `
+ *   type Query { field(arg: String, arg: Int): String }
+ * `;
+ *
+ * UniqueArgumentDefinitionNamesRule.name; // => 'UniqueArgumentDefinitionNamesRule'
+ * buildSchema(invalidSDL); // throws an error
+ *
+ * const validSDL = `
+ *   type Query { field(arg: String): String }
+ * `;
+ *
+ * buildSchema(validSDL); // does not throw
+ * ```
  */
 function UniqueArgumentDefinitionNamesRule(context) {
   return {
@@ -26164,6 +33772,8 @@ var _groupBy = __nccwpck_require__(8520);
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * Unique argument names
  *
@@ -26171,6 +33781,33 @@ var _GraphQLError = __nccwpck_require__(5939);
  * uniquely named.
  *
  * See https://spec.graphql.org/draft/#sec-Argument-Names
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { UniqueArgumentNamesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     field(arg: String): String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { field(arg: "1", arg: "2") }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   UniqueArgumentNamesRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { field(arg: "1") }
+ * `);
+ * const validErrors = validate(schema, validDocument, [UniqueArgumentNamesRule]); // => []
+ * ```
  */
 function UniqueArgumentNamesRule(context) {
   return {
@@ -26225,10 +33862,32 @@ exports.UniqueDirectiveNamesRule = UniqueDirectiveNamesRule;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * Unique directive names
  *
  * A GraphQL document is only valid if all defined directives have unique names.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql';
+ * import { UniqueDirectiveNamesRule } from 'graphql/validation';
+ *
+ * const invalidSDL = `
+ *   directive @tag on FIELD directive @tag on QUERY type Query { name: String }
+ * `;
+ *
+ * UniqueDirectiveNamesRule.name; // => 'UniqueDirectiveNamesRule'
+ * buildSchema(invalidSDL); // throws an error
+ *
+ * const validSDL = `
+ *   directive @tag on FIELD type Query { name: String }
+ * `;
+ *
+ * buildSchema(validSDL); // does not throw
+ * ```
  */
 function UniqueDirectiveNamesRule(context) {
   const knownDirectiveNames = Object.create(null);
@@ -26293,6 +33952,8 @@ var _predicates = __nccwpck_require__(5480);
 
 var _directives = __nccwpck_require__(1058);
 
+/** @category Validation Rules */
+
 /**
  * Unique directive names per location
  *
@@ -26300,6 +33961,35 @@ var _directives = __nccwpck_require__(1058);
  * a given location are uniquely named.
  *
  * See https://spec.graphql.org/draft/#sec-Directives-Are-Unique-Per-Location
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { UniqueDirectivesPerLocationRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { name @include(if: true) @include(if: false) }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   UniqueDirectivesPerLocationRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { name @include(if: true) }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   UniqueDirectivesPerLocationRule,
+ * ]); // => []
+ * ```
  */
 function UniqueDirectivesPerLocationRule(context) {
   const uniqueDirectiveMap = Object.create(null);
@@ -26404,10 +34094,32 @@ var _GraphQLError = __nccwpck_require__(5939);
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Validation Rules */
+
 /**
  * Unique enum value names
  *
  * A GraphQL enum type is only valid if all its values are uniquely named.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql';
+ * import { UniqueEnumValueNamesRule } from 'graphql/validation';
+ *
+ * const invalidSDL = `
+ *   enum Status { ACTIVE ACTIVE } type Query { status: Status }
+ * `;
+ *
+ * UniqueEnumValueNamesRule.name; // => 'UniqueEnumValueNamesRule'
+ * buildSchema(invalidSDL); // throws an error
+ *
+ * const validSDL = `
+ *   enum Status { ACTIVE INACTIVE } type Query { status: Status }
+ * `;
+ *
+ * buildSchema(validSDL); // does not throw
+ * ```
  */
 function UniqueEnumValueNamesRule(context) {
   const schema = context.getSchema();
@@ -26487,10 +34199,32 @@ var _GraphQLError = __nccwpck_require__(5939);
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Validation Rules */
+
 /**
  * Unique field definition names
  *
  * A GraphQL complex type is only valid if all its fields are uniquely named.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql';
+ * import { UniqueFieldDefinitionNamesRule } from 'graphql/validation';
+ *
+ * const invalidSDL = `
+ *   type Query { name: String name: String }
+ * `;
+ *
+ * UniqueFieldDefinitionNamesRule.name; // => 'UniqueFieldDefinitionNamesRule'
+ * buildSchema(invalidSDL); // throws an error
+ *
+ * const validSDL = `
+ *   type Query { name: String other: String }
+ * `;
+ *
+ * buildSchema(validSDL); // does not throw
+ * ```
  */
 function UniqueFieldDefinitionNamesRule(context) {
   const schema = context.getSchema();
@@ -26580,12 +34314,41 @@ exports.UniqueFragmentNamesRule = UniqueFragmentNamesRule;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * Unique fragment names
  *
  * A GraphQL document is only valid if all defined fragments have unique names.
  *
  * See https://spec.graphql.org/draft/#sec-Fragment-Name-Uniqueness
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { UniqueFragmentNamesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   fragment A on Query { name } fragment A on Query { name } query { ...A }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   UniqueFragmentNamesRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   fragment A on Query { name } query { ...A }
+ * `);
+ * const validErrors = validate(schema, validDocument, [UniqueFragmentNamesRule]); // => []
+ * ```
  */
 function UniqueFragmentNamesRule(context) {
   const knownFragmentNames = Object.create(null);
@@ -26631,6 +34394,8 @@ var _invariant = __nccwpck_require__(3650);
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * Unique input field names
  *
@@ -26638,6 +34403,39 @@ var _GraphQLError = __nccwpck_require__(5939);
  * uniquely named.
  *
  * See https://spec.graphql.org/draft/#sec-Input-Object-Field-Uniqueness
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { UniqueInputFieldNamesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   input Filter {
+ *     name: String
+ *   }
+ *
+ *   type Query {
+ *     search(filter: Filter): String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { search(filter: { name: "a", name: "b" }) }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   UniqueInputFieldNamesRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { search(filter: { name: "a" }) }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   UniqueInputFieldNamesRule,
+ * ]); // => []
+ * ```
  */
 function UniqueInputFieldNamesRule(context) {
   const knownNameStack = [];
@@ -26691,12 +34489,41 @@ exports.UniqueOperationNamesRule = UniqueOperationNamesRule;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * Unique operation names
  *
  * A GraphQL document is only valid if all defined operations have unique names.
  *
  * See https://spec.graphql.org/draft/#sec-Operation-Name-Uniqueness
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { UniqueOperationNamesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   query Same { name } query Same { name }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   UniqueOperationNamesRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   query One { name } query Two { name }
+ * `);
+ * const validErrors = validate(schema, validDocument, [UniqueOperationNamesRule]); // => []
+ * ```
  */
 function UniqueOperationNamesRule(context) {
   const knownOperationNames = Object.create(null);
@@ -26745,10 +34572,32 @@ exports.UniqueOperationTypesRule = UniqueOperationTypesRule;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * Unique operation types
  *
  * A GraphQL document is only valid if it has only one type per operation.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql';
+ * import { UniqueOperationTypesRule } from 'graphql/validation';
+ *
+ * const invalidSDL = `
+ *   schema { query: Query query: Other } type Query { name: String } type Other { name: String }
+ * `;
+ *
+ * UniqueOperationTypesRule.name; // => 'UniqueOperationTypesRule'
+ * buildSchema(invalidSDL); // throws an error
+ *
+ * const validSDL = `
+ *   schema { query: Query } type Query { name: String }
+ * `;
+ *
+ * buildSchema(validSDL); // does not throw
+ * ```
  */
 function UniqueOperationTypesRule(context) {
   const schema = context.getSchema();
@@ -26824,10 +34673,32 @@ exports.UniqueTypeNamesRule = UniqueTypeNamesRule;
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * Unique type names
  *
  * A GraphQL document is only valid if all defined types have unique names.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema } from 'graphql';
+ * import { UniqueTypeNamesRule } from 'graphql/validation';
+ *
+ * const invalidSDL = `
+ *   type Query { name: String } type Query { other: String }
+ * `;
+ *
+ * UniqueTypeNamesRule.name; // => 'UniqueTypeNamesRule'
+ * buildSchema(invalidSDL); // throws an error
+ *
+ * const validSDL = `
+ *   type Query { name: String } type Other { name: String }
+ * `;
+ *
+ * buildSchema(validSDL); // does not throw
+ * ```
  */
 function UniqueTypeNamesRule(context) {
   const knownTypeNames = Object.create(null);
@@ -26891,10 +34762,39 @@ var _groupBy = __nccwpck_require__(8520);
 
 var _GraphQLError = __nccwpck_require__(5939);
 
+/** @category Validation Rules */
+
 /**
  * Unique variable names
  *
  * A GraphQL operation is only valid if all its variables are uniquely named.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { UniqueVariableNamesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     field(arg: ID): String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   query ($id: ID, $id: ID) { field(arg: $id) }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   UniqueVariableNamesRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   query ($id: ID) { field(arg: $id) }
+ * `);
+ * const validErrors = validate(schema, validDocument, [UniqueVariableNamesRule]); // => []
+ * ```
  */
 function UniqueVariableNamesRule(context) {
   return {
@@ -26960,6 +34860,8 @@ var _printer = __nccwpck_require__(9936);
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Validation Rules */
+
 /**
  * Value literals of correct type
  *
@@ -26967,6 +34869,33 @@ var _definition = __nccwpck_require__(4169);
  * expected at their position.
  *
  * See https://spec.graphql.org/draft/#sec-Values-of-Correct-Type
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { ValuesOfCorrectTypeRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     count(limit: Int): Int
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { count(limit: "many") }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   ValuesOfCorrectTypeRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { count(limit: 1) }
+ * `);
+ * const validErrors = validate(schema, validDocument, [ValuesOfCorrectTypeRule]); // => []
+ * ```
  */
 function ValuesOfCorrectTypeRule(context) {
   return {
@@ -27024,10 +34953,12 @@ function ValuesOfCorrectTypeRule(context) {
       const fieldType = context.getInputType();
 
       if (!fieldType && (0, _definition.isInputObjectType)(parentType)) {
-        const suggestions = (0, _suggestionList.suggestionList)(
-          node.name.value,
-          Object.keys(parentType.getFields()),
-        );
+        const suggestions = context.hideSuggestions
+          ? []
+          : (0, _suggestionList.suggestionList)(
+              node.name.value,
+              Object.keys(parentType.getFields()),
+            );
         context.reportError(
           new _GraphQLError.GraphQLError(
             `Field "${node.name.value}" is not defined by type "${parentType.name}".` +
@@ -27048,7 +34979,7 @@ function ValuesOfCorrectTypeRule(context) {
           new _GraphQLError.GraphQLError(
             `Expected value of type "${(0, _inspect.inspect)(
               type,
-            )}", found ${(0, _printer.print)(node)}.`,
+            )}", found ${(0, _printer.printForError)(node)}.`,
             {
               nodes: node,
             },
@@ -27072,6 +35003,8 @@ function ValuesOfCorrectTypeRule(context) {
 /**
  * Any value literal may be a valid representation of a Scalar, depending on
  * that scalar type.
+ *
+ * @internal
  */
 
 function isValidValueNode(context, node) {
@@ -27088,9 +35021,8 @@ function isValidValueNode(context, node) {
     const typeStr = (0, _inspect.inspect)(locationType);
     context.reportError(
       new _GraphQLError.GraphQLError(
-        `Expected value of type "${typeStr}", found ${(0, _printer.print)(
-          node,
-        )}.`,
+        `Expected value of type "${typeStr}", found ${(0,
+        _printer.printForError)(node)}.`,
         {
           nodes: node,
         },
@@ -27101,19 +35033,25 @@ function isValidValueNode(context, node) {
   // which may throw or return an invalid value to indicate failure.
 
   try {
-    const parseResult = type.parseLiteral(
-      node,
-      undefined,
-      /* variables */
-    );
+    const parseResult = (0, _definition.isEnumType)(type)
+      ? type.parseLiteral(
+          node,
+          undefined,
+          /* variables */
+          context.hideSuggestions,
+        )
+      : type.parseLiteral(
+          node,
+          undefined,
+          /* variables */
+        );
 
     if (parseResult === undefined) {
       const typeStr = (0, _inspect.inspect)(locationType);
       context.reportError(
         new _GraphQLError.GraphQLError(
-          `Expected value of type "${typeStr}", found ${(0, _printer.print)(
-            node,
-          )}.`,
+          `Expected value of type "${typeStr}", found ${(0,
+          _printer.printForError)(node)}.`,
           {
             nodes: node,
           },
@@ -27128,9 +35066,8 @@ function isValidValueNode(context, node) {
     } else {
       context.reportError(
         new _GraphQLError.GraphQLError(
-          `Expected value of type "${typeStr}", found ${(0, _printer.print)(
-            node,
-          )}; ` + error.message,
+          `Expected value of type "${typeStr}", found ${(0,
+          _printer.printForError)(node)}; ` + error.message,
           {
             nodes: node,
             originalError: error,
@@ -27200,6 +35137,8 @@ var _definition = __nccwpck_require__(4169);
 
 var _typeFromAST = __nccwpck_require__(6738);
 
+/** @category Validation Rules */
+
 /**
  * Variables are input types
  *
@@ -27207,6 +35146,39 @@ var _typeFromAST = __nccwpck_require__(6738);
  * input types (scalar, enum, or input object).
  *
  * See https://spec.graphql.org/draft/#sec-Variables-Are-Input-Types
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { VariablesAreInputTypesRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     field(arg: ID): String
+ *   }
+ *
+ *   type User {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   query ($user: User) { field(arg: "1") }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   VariablesAreInputTypesRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   query ($id: ID) { field(arg: $id) }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   VariablesAreInputTypesRule,
+ * ]); // => []
+ * ```
  */
 function VariablesAreInputTypesRule(context) {
   return {
@@ -27258,12 +35230,43 @@ var _typeComparators = __nccwpck_require__(6539);
 
 var _typeFromAST = __nccwpck_require__(6738);
 
+/** @category Validation Rules */
+
 /**
  * Variables in allowed position
  *
  * Variable usages must be compatible with the arguments they are passed to.
  *
  * See https://spec.graphql.org/draft/#sec-All-Variable-Usages-are-Allowed
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { VariablesInAllowedPositionRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     field(arg: ID!): String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   query ($id: String) { field(arg: $id) }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   VariablesInAllowedPositionRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   query ($id: ID!) { field(arg: $id) }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   VariablesInAllowedPositionRule,
+ * ]); // => []
+ * ```
  */
 function VariablesInAllowedPositionRule(context) {
   let varDefMap = Object.create(null);
@@ -27337,8 +35340,13 @@ function VariablesInAllowedPositionRule(context) {
 }
 /**
  * Returns true if the variable is allowed in the location it was found,
- * which includes considering if default values exist for either the variable
+ * including considering if default values exist for either the variable
  * or the location at which it is located.
+ *
+ * OneOf Input Object Type fields are considered separately above to
+ * provide a more descriptive error message.
+ *
+ * @internal
  */
 
 function allowedVariableUsage(
@@ -27391,6 +35399,8 @@ var _GraphQLError = __nccwpck_require__(5939);
 
 var _definition = __nccwpck_require__(4169);
 
+/** @category Custom Rules */
+
 /**
  * No deprecated
  *
@@ -27400,6 +35410,46 @@ var _definition = __nccwpck_require__(4169);
  * Note: This rule is optional and is not part of the Validation section of the GraphQL
  * Specification. The main purpose of this rule is detection of deprecated usages and not
  * necessarily to forbid their use when querying a service.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import {
+ *   GraphQLObjectType,
+ *   GraphQLSchema,
+ *   GraphQLString,
+ *   parse,
+ *   validate,
+ * } from 'graphql';
+ * import { NoDeprecatedCustomRule } from 'graphql/validation';
+ *
+ * const schema = new GraphQLSchema({
+ *   query: new GraphQLObjectType({
+ *     name: 'Query',
+ *     fields: {
+ *       name: { type: GraphQLString },
+ *       oldName: {
+ *         type: GraphQLString,
+ *         deprecationReason: 'Use name instead.',
+ *       },
+ *     },
+ *   }),
+ * });
+ *
+ * const invalidDocument = parse(`
+ *   { oldName }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   NoDeprecatedCustomRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 1
+ *
+ * const validDocument = parse(`
+ *   { name }
+ * `);
+ * const validErrors = validate(schema, validDocument, [NoDeprecatedCustomRule]); // => []
+ * ```
  */
 function NoDeprecatedCustomRule(context) {
   return {
@@ -27530,6 +35580,8 @@ var _definition = __nccwpck_require__(4169);
 
 var _introspection = __nccwpck_require__(317);
 
+/** @category Custom Rules */
+
 /**
  * Prohibit introspection queries
  *
@@ -27539,6 +35591,35 @@ var _introspection = __nccwpck_require__(317);
  * Note: This rule is optional and is not part of the Validation section of the
  * GraphQL Specification. This rule effectively disables introspection, which
  * does not reflect best practices and should only be done if absolutely necessary.
+ * @param context - The validation context used while checking the document.
+ * @returns A visitor that reports validation errors for this rule.
+ * @example
+ * ```ts
+ * import { buildSchema, parse, validate } from 'graphql';
+ * import { NoSchemaIntrospectionCustomRule } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     name: String
+ *   }
+ * `);
+ *
+ * const invalidDocument = parse(`
+ *   { __schema { queryType { name } } }
+ * `);
+ * const invalidErrors = validate(schema, invalidDocument, [
+ *   NoSchemaIntrospectionCustomRule,
+ * ]);
+ *
+ * invalidErrors.length; // => 2
+ *
+ * const validDocument = parse(`
+ *   { name }
+ * `);
+ * const validErrors = validate(schema, validDocument, [
+ *   NoSchemaIntrospectionCustomRule,
+ * ]); // => []
+ * ```
  */
 function NoSchemaIntrospectionCustomRule(context) {
   return {
@@ -27646,6 +35727,7 @@ var _VariablesAreInputTypesRule = __nccwpck_require__(6187);
 
 var _VariablesInAllowedPositionRule = __nccwpck_require__(4186);
 
+/** @category Validation Rules */
 // Spec Section: "Executable Definitions"
 // Spec Section: "Field Selections on Objects, Interfaces, and Unions Types"
 // Spec Section: "Fragments on Composite Types"
@@ -27719,9 +35801,7 @@ const specifiedRules = Object.freeze([
   _UniqueInputFieldNamesRule.UniqueInputFieldNamesRule,
   ...recommendedRules,
 ]);
-/**
- * @internal
- */
+/** @internal */
 
 exports.specifiedRules = specifiedRules;
 const specifiedSDLRules = Object.freeze([
@@ -27776,14 +35856,22 @@ var _TypeInfo = __nccwpck_require__(5000);
 
 var _specifiedRules = __nccwpck_require__(916);
 
+var _validationAbortedError = __nccwpck_require__(6441);
+
 var _ValidationContext = __nccwpck_require__(8139);
 
+/** @category Validation */
 // Per the specification, descriptions must not affect validation.
 // See https://spec.graphql.org/draft/#sec-Descriptions
 const QueryDocumentKeysToValidate = (0, _mapValue.mapValue)(
   _ast.QueryDocumentKeys,
   (keys) => keys.filter((key) => key !== 'description'),
 );
+/**
+ * Options used when validating a GraphQL document.
+ * @internal
+ */
+
 /**
  * Implements the "Validation" section of the spec.
  *
@@ -27793,27 +35881,79 @@ const QueryDocumentKeysToValidate = (0, _mapValue.mapValue)(
  * A list of specific validation rules may be provided. If not provided, the
  * default list of rules defined by the GraphQL specification will be used.
  *
- * Each validation rules is a function which returns a visitor
+ * Each validation rule is a function that returns a visitor
  * (see the language/visitor API). Visitor methods are expected to return
  * GraphQLErrors, or Arrays of GraphQLErrors when invalid.
  *
  * Validate will stop validation after a `maxErrors` limit has been reached.
  * Attackers can send pathologically invalid queries to induce a DoS attack,
- * so by default `maxErrors` set to 100 errors.
+ * so `maxErrors` defaults to 100 errors.
  *
  * Optionally a custom TypeInfo instance may be provided. If not provided, one
  * will be created from the provided schema.
+ * @param schema - Schema to validate against.
+ * @param documentAST - Document AST to validate.
+ * @param rules - Validation rules to apply.
+ * @param options - Validation options, including error limits.
+ * @param typeInfo - TypeInfo instance to update during traversal.
+ * @returns Validation errors, or an empty array when the document is valid.
+ * @example
+ * ```ts
+ * // Validate with the default specified rules.
+ * import { parse } from 'graphql/language';
+ * import { buildSchema } from 'graphql/utilities';
+ * import { validate } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting: String
+ *   }
+ * `);
+ *
+ * validate(schema, parse('{ greeting }')); // => []
+ *
+ * const errors = validate(schema, parse('{ missing }'));
+ * errors[0].message; // => 'Cannot query field "missing" on type "Query".'
+ * ```
+ * @example
+ * ```ts
+ * // This variant uses a custom rule list, TypeInfo, and validation options.
+ * import { parse } from 'graphql/language';
+ * import { buildSchema, TypeInfo } from 'graphql/utilities';
+ * import { FieldsOnCorrectTypeRule, validate } from 'graphql/validation';
+ *
+ * const schema = buildSchema(`
+ *   type Query {
+ *     greeting: String
+ *   }
+ * `);
+ * const document = parse('{ missingOne missingTwo }');
+ *
+ * const errors = validate(
+ *   schema,
+ *   document,
+ *   [FieldsOnCorrectTypeRule],
+ *   { maxErrors: 1 },
+ *   new TypeInfo(schema),
+ * );
+ *
+ * errors.length; // => 2
+ * errors[1].message; // => 'Too many validation errors, error limit reached. Validation aborted.'
+ * ```
  */
-
 function validate(
   schema,
   documentAST,
   rules = _specifiedRules.specifiedRules,
   options,
-  /** @deprecated will be removed in 17.0.0 */
+  /**
+   * Deprecated TypeInfo instance used to track traversal state during
+   * validation. Omit this argument so validate creates the TypeInfo instance.
+   * @deprecated will be removed in 17.0.0
+   */
   typeInfo = new _TypeInfo.TypeInfo(schema),
 ) {
-  var _options$maxErrors;
+  var _options$maxErrors, _options$hideSuggesti;
 
   const maxErrors =
     (_options$maxErrors =
@@ -27821,6 +35961,13 @@ function validate(
       null && _options$maxErrors !== void 0
       ? _options$maxErrors
       : 100;
+  const hideSuggestions =
+    (_options$hideSuggesti =
+      options === null || options === void 0
+        ? void 0
+        : options.hideSuggestions) !== null && _options$hideSuggesti !== void 0
+      ? _options$hideSuggesti
+      : false;
   documentAST || (0, _devAssert.devAssert)(false, 'Must provide document.'); // If the schema used for validation is invalid, throw an error.
 
   (0, _validate.assertValidSchema)(schema);
@@ -27843,6 +35990,7 @@ function validate(
 
       errors.push(error);
     },
+    hideSuggestions,
   ); // This uses a specialized visitor which runs multiple visitors in parallel,
   // while maintaining the visitor skip and break API.
 
@@ -27857,16 +36005,16 @@ function validate(
       QueryDocumentKeysToValidate,
     );
   } catch (e) {
-    if (e !== abortObj) {
+    if (e === _validationAbortedError.validationAbortedError) {
+      errors.push(_validationAbortedError.validationAbortedError);
+    } else if (e !== abortObj) {
       throw e;
     }
   }
 
   return errors;
 }
-/**
- * @internal
- */
+/** @internal */
 
 function validateSDL(
   documentAST,
@@ -27917,6 +36065,28 @@ function assertValidSDLExtension(documentAST, schema) {
 
 /***/ }),
 
+/***/ 6441:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true,
+}));
+exports.validationAbortedError = void 0;
+
+var _GraphQLError = __nccwpck_require__(5939);
+
+/** @internal */
+const validationAbortedError = new _GraphQLError.GraphQLError(
+  'Validation aborted.',
+);
+exports.validationAbortedError = validationAbortedError;
+
+
+/***/ }),
+
 /***/ 8725:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -27927,21 +36097,19 @@ Object.defineProperty(exports, "__esModule", ({
   value: true,
 }));
 exports.versionInfo = exports.version = void 0;
+
+/** @category Version */
 // Note: This file is autogenerated using "resources/gen-version.js" script and
 // automatically updated by "npm version" command.
 
-/**
- * A string containing the version of the GraphQL.js library
- */
-const version = '16.14.0';
-/**
- * An object containing the components of the GraphQL.js version string
- */
+/** A string containing the version of the GraphQL.js library */
+const version = '16.15.0';
+/** An object containing the components of the GraphQL.js version string */
 
 exports.version = version;
 const versionInfo = Object.freeze({
   major: 16,
-  minor: 14,
+  minor: 15,
   patch: 0,
   preReleaseTag: null,
 });
@@ -64898,8 +73066,7 @@ exports.request = request;
 /******/ 	}
 /******/ 	
 /************************************************************************/
-/******/ 	/* webpack/runtime/compat */
-/******/ 	
+/******/ 	/* webpack/runtime/asset-relocator-loader */
 /******/ 	if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = __dirname + "/";
 /******/ 	
 /************************************************************************/
