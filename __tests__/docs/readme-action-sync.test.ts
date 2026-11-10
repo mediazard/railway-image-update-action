@@ -41,6 +41,10 @@ function groupByKey(lines: string[], section: string): Array<{ name: string; bod
     const key = KEY_LINE.exec(line);
     if (key) {
       groups.push({ name: key[1], body: [] });
+    } else if (/^ {2}[^\s#]/.test(line)) {
+      // A two-space line that is not a bare `name:` key (e.g. `foo_bar:` or an
+      // inline value) must not be absorbed into the previous entry.
+      throw new Error(`action.yml ${section}: unrecognised key line "${line}"`);
     } else if (line.trim() !== '') {
       const current = groups.at(-1);
       if (!current) throw new Error(`action.yml ${section}: unexpected line "${line}"`);
@@ -59,8 +63,15 @@ function parseActionYml(text: string): ActionYml {
       .map((l) => /^ {4}required: (true|false)$/.exec(l))
       .find((m) => m !== null);
     if (!required) throw new Error(`action.yml input "${name}" has no required: line`);
-    const def = body.map((l) => /^ {4}default: "(.*)"$/.exec(l)).find((m) => m !== null);
-    return { name, required: required[1] === 'true', default: def ? def[1] : undefined };
+    // Quoted (`default: "x"`) or unquoted (`default: false`); both are the string value.
+    const def = body
+      .map((l) => /^ {4}default: (?:"(.*)"|([^"\s].*?))\s*$/.exec(l))
+      .find((m) => m !== null);
+    return {
+      name,
+      required: required[1] === 'true',
+      default: def ? (def[1] ?? def[2]) : undefined,
+    };
   });
 
   const outputs = groupByKey(sectionLines(lines, 'outputs'), 'outputs').map((g) => g.name);
@@ -125,6 +136,29 @@ describe('parseActionYml', () => {
   it('throws when a section has no keys', () => {
     const yml = ['inputs:', 'outputs:', '  b:', ''].join('\n');
     expect(() => parseActionYml(yml)).toThrow('inputs: no keys found');
+  });
+
+  it('throws on a two-space key line it does not recognise', () => {
+    for (const bad of ['  foo_bar:', '  a: inline']) {
+      const yml = ['inputs:', '  a:', '    required: true', bad, 'outputs:', '  b:', ''].join('\n');
+      expect(() => parseActionYml(yml)).toThrow('inputs: unrecognised key line');
+    }
+  });
+
+  it('reads an unquoted default as its string value', () => {
+    const yml = [
+      'inputs:',
+      '  a:',
+      '    required: false',
+      '    default: false',
+      '  b:',
+      '    required: false',
+      '    default: "true"',
+      'outputs:',
+      '  c:',
+      '',
+    ].join('\n');
+    expect(parseActionYml(yml).inputs.map((i) => i.default)).toEqual(['false', 'true']);
   });
 
   it('reads the real action.yml', () => {
