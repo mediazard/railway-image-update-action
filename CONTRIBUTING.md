@@ -62,7 +62,7 @@ User-facing changes (new inputs, changed behaviour, new outputs, bug fixes) requ
 
 ## Branch protection
 
-`main` is protected by a repository ruleset that targets the default branch:
+Once enabled by the maintainer, `main` is protected by a repository ruleset that targets the default branch:
 
 - Every change goes through a pull request. Required approvals: **0**. This is a solo-maintained project and you can't approve your own PR, so the protection is "PR plus green checks", not a second reviewer.
 - Required status checks: `Build & Test` and `actionlint` (the job `name:` values in `ci.yml`), and the branch must be up to date with `main`. Renaming either job silently blocks every PR until the ruleset is updated to match.
@@ -80,7 +80,7 @@ The ruleset targets branches only, so the rolling major tag (e.g. `v1`), which t
    git push origin vX.Y.Z
    ```
 3. The release workflow runs only for semver tags (`vX.Y.Z` or `vX.Y.Z-suffix`). It checks that the tag matches `package.json`, that the tagged commit is on `main` (a tag pushed before its merge reaches `main` fails), and that `dist/` is fresh. Then it publishes the GitHub release.
-4. The rolling major tag (`v1`) moves only for a stable `v1.x.y` or later. Prereleases (`-rc.N` and other `-` suffixes) are published as prereleases, and neither they nor `v0.x` tags ever create or move a rolling tag.
+4. The rolling major tag (`v1`) moves only for a stable `v1.x.y` or later. Prereleases (`-rc.N` and other `-` suffixes) need the same full version, suffix included (e.g. `1.2.0-rc.1`), in `package.json` on `main`, and are published as prereleases. Neither prereleases nor `v0.x` tags ever create or move a rolling tag. The rolling tag also only moves forward: a stable release whose commit is not a descendant of the current `v1` (e.g. a `v1.2.1` hotfix published after `v1.3.0`) leaves it alone.
 
 ## Dependabot
 

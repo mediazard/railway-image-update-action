@@ -16,6 +16,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Timed-out and dropped Railway status requests are retried instead of failing the run.
 - Registry calls time out: `docker login` after 60s, `docker buildx imagetools inspect` after 120s and `docker logout` after 30s, instead of hanging the job.
 - Private Docker Hub images referenced by short name now work with `registry-username`/`registry-password`. Previously the login targeted the first path segment (for example `myorg`) as a host and failed.
+- `CODEOWNERS` now points at `@mediazard` (a user). The previous `@mediazard/engineering` team never resolved, so no owner was requested.
 
 ### Added
 
@@ -25,6 +26,10 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 - Setting a truthy `DRY_RUN` environment variable without the `dry-run` input now fails the step with a hint. Use the `dry-run` input instead.
 - The post step runs `docker logout` even when `docker login` failed.
+
+### Removed
+
+- Internal planning docs and references to private deployments from the public tree.
 
 ## [1.1.0] — 2026-07-09
 
