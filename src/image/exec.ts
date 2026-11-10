@@ -87,6 +87,8 @@ export const runWithTimeout: ExecFn = (cmd, args, opts) =>
       child.stderr.destroy();
     };
 
+    const timer = setTimeout(onTimeout, opts.timeoutMs);
+
     const settle = (fn: () => void): void => {
       if (settled) return;
       settled = true;
@@ -121,7 +123,8 @@ export const runWithTimeout: ExecFn = (cmd, args, opts) =>
       if (exited) resolveWithExit();
     });
 
-    const timer = setTimeout(() => {
+    // Timer callback (hoisted; the timer itself is armed above `settle`).
+    function onTimeout(): void {
       if (settled) return;
       if (exited) {
         // The command finished; only its pipes were still draining.
@@ -139,7 +142,7 @@ export const runWithTimeout: ExecFn = (cmd, args, opts) =>
         clearTimeout(reapTimer);
         fail();
       });
-    }, opts.timeoutMs);
+    }
 
     child.stdin.end(opts.input);
   });

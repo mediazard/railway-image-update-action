@@ -60690,7 +60690,6 @@ function registryHostFor(ref) {
         return exports.DOCKER_HUB_LOGIN_SERVER;
     return first;
 }
-/** Shape of the JSON returned by `docker buildx imagetools inspect --format '{{json .Manifest}}'`. */
 /** A content-addressed image digest, as written into the pinned ref. */
 const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 /**
@@ -60868,6 +60867,7 @@ const runWithTimeout = (cmd, args, opts) => new Promise((resolve, reject) => {
         child.stdout.destroy();
         child.stderr.destroy();
     };
+    const timer = setTimeout(onTimeout, opts.timeoutMs);
     const settle = (fn) => {
         if (settled)
             return;
@@ -60900,7 +60900,8 @@ const runWithTimeout = (cmd, args, opts) => new Promise((resolve, reject) => {
         if (exited)
             resolveWithExit();
     });
-    const timer = setTimeout(() => {
+    // Timer callback (hoisted; the timer itself is armed above `settle`).
+    function onTimeout() {
         if (settled)
             return;
         if (exited) {
@@ -60919,7 +60920,7 @@ const runWithTimeout = (cmd, args, opts) => new Promise((resolve, reject) => {
             clearTimeout(reapTimer);
             fail();
         });
-    }, opts.timeoutMs);
+    }
     child.stdin.end(opts.input);
 });
 exports.runWithTimeout = runWithTimeout;

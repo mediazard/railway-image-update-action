@@ -59,10 +59,10 @@ export interface DigestResolveOptions {
   isDryRun?: boolean;
 }
 
-/** Shape of the JSON returned by `docker buildx imagetools inspect --format '{{json .Manifest}}'`. */
 /** A content-addressed image digest, as written into the pinned ref. */
 const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
+/** Shape of the JSON returned by `docker buildx imagetools inspect --format '{{json .Manifest}}'`. */
 interface ManifestJson {
   digest?: string;
 }

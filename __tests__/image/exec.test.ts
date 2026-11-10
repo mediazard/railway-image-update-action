@@ -48,7 +48,7 @@ function isAlive(pid: number): boolean {
 /** Spawn a grandchild that holds the inherited stdout pipe; record its pid. */
 const SPAWN_GRANDCHILD =
   "const cp=require('child_process');" +
-  "const g=cp.spawn(process.execPath,['-e','setInterval(()=>{},1e3)'],{stdio:'inherit'});" +
+  "const g=cp.spawn(process.execPath,['-e','setTimeout(()=>{},10e3)'],{stdio:'inherit'});" +
   "require('fs').writeFileSync(process.argv[1],String(g.pid));";
 
 describe('runWithTimeout', () => {
@@ -87,14 +87,14 @@ describe('runWithTimeout', () => {
           "require('fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(()=>{},1e3)",
           pidFile,
         ],
-        { timeoutMs: 300 },
+        { timeoutMs: 1_000 },
       ).catch((e: unknown) => e);
 
       expect(err).toBeInstanceOf(ExecTimeoutError);
       expect((err as ExecTimeoutError).code).toBe('EXEC_TIMEOUT');
-      expect((err as ExecTimeoutError).timeoutMs).toBe(300);
+      expect((err as ExecTimeoutError).timeoutMs).toBe(1_000);
       // Message carries no argv or output.
-      expect((err as Error).message).toBe('Command timed out after 300ms');
+      expect((err as Error).message).toBe('Command timed out after 1000ms');
       expect(performance.now() - started).toBeLessThan(3_000);
 
       const pid = Number(fs.readFileSync(pidFile, 'utf8'));
