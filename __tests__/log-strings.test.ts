@@ -164,7 +164,7 @@ describe('log strings — per-service progress lines', () => {
   });
 
   it('emits "[label] deployment-id: (unavailable — Railway returned: true)" when Railway sent the boolean', async () => {
-    // The real-production case captured from London staging run 26274637756:
+    // The real-production case captured from a real deploy:
     // Railway returns the boolean `true` from serviceInstanceDeploy. v1
     // surfaces the actual value in the warning, not a hardcoded "null".
     const inputs = makeInputs();

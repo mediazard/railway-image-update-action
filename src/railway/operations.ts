@@ -26,7 +26,7 @@ import { withRetry, isDefinitiveRejection, isRetryableError, type RetryPolicy } 
  * Why no zod schemas here?
  *
  * We hit two production bugs in a row by being too strict about the response
- * shape (both caught by London staging dogfood, neither caught by the unit
+ * shape (both caught by a real staging deploy, neither caught by the unit
  * tests):
  *
  *   1. graphql-request@7 returns the UNWRAPPED `data` field, not the
