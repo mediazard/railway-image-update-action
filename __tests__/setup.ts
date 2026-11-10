@@ -3,7 +3,7 @@
  *
  * A fake `docker` executable is put first on PATH. It writes a marker to
  * stderr and exits 97, so anything that spawns `docker` by name
- * (`@actions/exec`, `child_process`, our runner) hits the fake instead of
+ * (`child_process`, our runner) hits the fake instead of
  * touching the developer's registry credentials.
  */
 import * as fs from 'node:fs';
