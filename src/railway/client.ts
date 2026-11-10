@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
-import { GraphQLClient } from 'graphql-request';
+import { ClientError, GraphQLClient } from 'graphql-request';
 
+import { sanitizeForLog, scrubSecrets } from '../log-sanitize';
 import type { TokenType } from '../types';
 
 import { RAILWAY_API_URL } from './mutations';
@@ -13,13 +14,32 @@ import { RAILWAY_API_URL } from './mutations';
  *
  * New in v1 — v0 inherited curl's effectively-indefinite default; bounding
  * this is a deliberate behavior change documented in CHANGELOG.
- * AbortController-based, so it cooperates with `withRetry`'s `ABORT_ERR`
- * retry classification.
+ * AbortController-based; a request that hits it rejects with a
+ * `RequestTimeoutError` (code `REQUEST_TIMEOUT`), which `withRetry` retries for
+ * idempotent calls only.
  */
 export const PER_ATTEMPT_REQUEST_TIMEOUT_MS = 30_000;
 
 /** @deprecated use PER_ATTEMPT_REQUEST_TIMEOUT_MS — kept for backwards compat. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = PER_ATTEMPT_REQUEST_TIMEOUT_MS;
+
+/** Code carried by `RequestTimeoutError`; listed in `RETRYABLE_NETWORK_CODES`. */
+export const REQUEST_TIMEOUT_CODE = 'REQUEST_TIMEOUT';
+
+/**
+ * The request hit our own per-attempt timeout. Decided by a flag set in the
+ * timer, never by error identity: a caller's `AbortSignal.timeout()` reason is
+ * also a `TimeoutError`, and a caller's cancellation must not be retried. The
+ * message is constant apart from a number, so it is log-safe.
+ */
+export class RequestTimeoutError extends Error {
+  readonly code = REQUEST_TIMEOUT_CODE;
+
+  constructor(timeoutMs: number) {
+    super(`Request timed out after ${String(timeoutMs)}ms`);
+    this.name = 'RequestTimeoutError';
+  }
+}
 
 /**
  * Minimal transport surface used by `operations.ts`. Retry policy is **not**
@@ -79,6 +99,77 @@ function chainSignals(controller: AbortController, external: AbortSignal | undef
   };
 }
 
+/** Variable keys whose string values are treated as secrets. */
+const SECRET_KEY = /password|token/i;
+
+/**
+ * Collect every string found under a `password`/`token`-named key anywhere in
+ * the request variables (e.g. `input.registryCredentials.password`).
+ */
+function collectSecretValues(value: unknown, out: string[] = []): string[] {
+  if (Array.isArray(value)) {
+    for (const v of value) collectSecretValues(v, out);
+  } else if (typeof value === 'object' && value !== null) {
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof v === 'string' && SECRET_KEY.test(key)) out.push(v);
+      else collectSecretValues(v, out);
+    }
+  }
+  return out;
+}
+
+/**
+ * Strip request material from a graphql-request `ClientError`, and make the
+ * Railway text it carries safe to log, in place.
+ *
+ * `ClientError`'s constructor bakes `JSON.stringify({ response, request })`
+ * into `message` (and, via `captureStackTrace`, into `stack`); `request`
+ * carries `variables`, which for `updateImage` include
+ * `registryCredentials.password`. Anything downstream that logs
+ * `err.message` (the retry log, the gate's debug line, `main.ts`) would print
+ * it, and JSON escaping can defeat the runner's secret mask.
+ *
+ * Railway's own `response.errors[].message` text is also untrusted: a GraphQL
+ * validation message can echo submitted variables (JSON-escaped), and any
+ * text can carry workflow commands. Chokepoint A: each message has CRs
+ * stripped, then `secrets` (the token plus every password/token-named
+ * variable) scrubbed in raw and JSON-escaped form, then passes through
+ * `sanitizeForLog`. This happens BEFORE `message` and `stack` are rebuilt
+ * from it. Each GraphQL error is rebuilt as `{ message }` alone (a non-string
+ * message becomes `''`); its `extensions`, `locations` and `path` are dropped.
+ *
+ * Mutated in place (not rebuilt) on purpose: a new `ClientError` would re-run
+ * its constructor and bake the JSON back in, and the same instance must keep
+ * `instanceof ClientError`, `response.status` and `response.errors` working
+ * for retry classification and `mapToActionError`. Every other `response`
+ * field (raw `body`, `headers`, `data`, `extensions`) is dropped.
+ */
+function redactClientError(err: ClientError, secrets: readonly string[]): ClientError {
+  // Strip CR before scrubbing: sanitizeForLog drops CRs, which would otherwise
+  // reassemble a secret Railway echoed split by `\r` after the scrub missed it.
+  const clean = (text: string): string =>
+    sanitizeForLog(scrubSecrets(text.replace(/\r/g, ''), secrets));
+  // Each GraphQL error keeps only its scrubbed `message`: `extensions`,
+  // `locations` and `path` are never read and could carry unscrubbed echoes.
+  const { status } = err.response;
+  const errors = err.response.errors?.map((gqlError) => {
+    const raw = (gqlError as { message: unknown }).message;
+    return { message: typeof raw === 'string' ? clean(raw) : '' };
+  });
+  // Mirrors ClientError.extractMessage (private in graphql-request's typings).
+  err.message = errors?.[0]?.message ?? `GraphQL Error (Code: ${String(status)})`;
+  err.request = { query: err.request.query };
+  // Keep only what retry classification and mapToActionError read. `body` is
+  // the raw, unscrubbed response text (it repeats any echoed secret), and
+  // `headers`/`data`/`extensions` are never used; all would show up in
+  // `JSON.stringify(err)` or `util.inspect(err)`.
+  err.response = { status, errors } as ClientError['response'];
+  // Keep the stack frames, drop the JSON-bearing header lines.
+  const frames = (err.stack ?? '').split('\n').filter((line) => /^\s+at /.test(line));
+  err.stack = [`ClientError: ${err.message}`, ...frames].join('\n');
+  return err;
+}
+
 /**
  * Construct a `RailwayClient` backed by `graphql-request@^7`.
  *
@@ -117,8 +208,10 @@ export function createRailwayClient(opts: CreateRailwayClientOptions): RailwayCl
       }
 
       const controller = new AbortController();
+      let timedOut = false;
       const timer = setTimeout(() => {
-        controller.abort(new Error(`Request timed out after ${timeoutMs}ms`));
+        timedOut = true;
+        controller.abort(new RequestTimeoutError(timeoutMs));
       }, timeoutMs);
       const unchain = chainSignals(controller, requestOpts?.signal);
 
@@ -129,6 +222,16 @@ export function createRailwayClient(opts: CreateRailwayClientOptions): RailwayCl
           variables: variables as Record<string, unknown>,
           signal: controller.signal,
         });
+      } catch (err) {
+        if (err instanceof ClientError) {
+          throw redactClientError(err, [opts.token, ...collectSecretValues(variables)]);
+        }
+        // The caller cancelled: rethrow its reason unchanged, never reclassify.
+        if (requestOpts?.signal?.aborted) throw err;
+        // Our timer fired: whatever undici surfaced (incl. a body-read
+        // rejection), report it as a timeout.
+        if (timedOut) throw new RequestTimeoutError(timeoutMs);
+        throw err;
       } finally {
         clearTimeout(timer);
         unchain();

@@ -11,7 +11,7 @@
 import type { RegistryCredentials } from '../types';
 
 /** Railway Backboard GraphQL endpoint. */
-export const RAILWAY_API_URL = 'https://backboard.railway.app/graphql/v2';
+export const RAILWAY_API_URL = 'https://backboard.railway.com/graphql/v2';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Mutations
@@ -30,8 +30,8 @@ export const UPDATE_IMAGE_MUTATION =
  * Trigger a deploy of the service instance. Uses `serviceInstanceDeployV2`
  * (not the legacy `serviceInstanceDeploy`) because V2 reliably returns the
  * deployment-id string in `data.serviceInstanceDeployV2`. The V1 mutation
- * sometimes returns the boolean `true` instead of a string — caught in
- * London staging deploy 26274637756, and `[[ "$id" != "true" ]]` is in the
+ * sometimes returns the boolean `true` instead of a string — seen on a
+ * real deploy, and `[[ "$id" != "true" ]]` is in the
  * v0 bash for the same reason.
  */
 export const DEPLOY_MUTATION =
@@ -129,4 +129,5 @@ export type DeploymentStatus =
   | 'SLEEPING'
   | 'SKIPPED'
   | 'WAITING'
-  | 'QUEUED';
+  | 'QUEUED'
+  | 'NEEDS_APPROVAL';

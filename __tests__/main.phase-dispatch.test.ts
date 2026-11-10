@@ -34,16 +34,21 @@ vi.mock('@actions/core', () => ({
     addRaw: vi.fn().mockReturnThis(),
     addQuote: vi.fn().mockReturnThis(),
     write: vi.fn().mockResolvedValue(undefined),
+    emptyBuffer: vi.fn().mockReturnThis(),
   },
 }));
 
-vi.mock('@actions/exec', () => ({
-  getExecOutput: vi.fn(async () => ({ stdout: '', stderr: '', exitCode: 0 })),
-  exec: vi.fn(async () => 0),
-}));
+vi.mock('../src/image/exec', async () => {
+  const actual = await vi.importActual<typeof ExecModule>('../src/image/exec');
+  return {
+    ...actual,
+    runWithTimeout: vi.fn(async () => ({ stdout: '', stderr: '', exitCode: 0 })),
+  };
+});
 
 import * as core from '@actions/core';
-import * as exec from '@actions/exec';
+import type * as ExecModule from '../src/image/exec';
+import { DOCKER_LOGOUT_TIMEOUT_MS, ExecTimeoutError, runWithTimeout } from '../src/image/exec';
 import { entry, runMain, runPost } from '../src/main';
 
 const ENV_UUID = '550e8400-e29b-41d4-a716-446655440000';
@@ -52,14 +57,25 @@ const WEB_UUID = '550e8400-e29b-41d4-a716-446655440001';
 /** Reset process.exitCode between tests; vitest's restoreMocks handles spies. */
 let originalExitCode: number | string | undefined;
 
+/**
+ * No test in this file may reach the network. A live client built by mistake
+ * (e.g. the `dry-run` input ignored) would call `globalThis.fetch`; this stub
+ * rejects with a plain (non-retryable) Error so it fails fast, and tests that
+ * care assert it was never called.
+ */
+let fetchStub: ReturnType<typeof vi.fn>;
+
 beforeEach(() => {
   originalExitCode = process.exitCode;
   process.exitCode = undefined;
+  fetchStub = vi.fn(() => Promise.reject(new Error('network disabled in test')));
+  vi.stubGlobal('fetch', fetchStub);
 });
 
 afterEach(() => {
   process.exitCode = originalExitCode;
   delete process.env.DRY_RUN;
+  vi.unstubAllGlobals();
 });
 
 /** Install a happy-path getInput mock matching v0 contract. */
@@ -90,6 +106,8 @@ function installHappyInputs(): void {
   vi.mocked(core.getBooleanInput).mockImplementation((name: string): boolean => {
     if (name === 'resolve-to-digest') return true;
     if (name === 'allow-mutable-tag') return false;
+    // Dry-run so the happy path never builds a live client.
+    if (name === 'dry-run') return true;
     return false;
   });
 }
@@ -103,7 +121,6 @@ describe('entry — phase dispatch', () => {
   it('Phase A: mainStarted sentinel empty → runMain runs and writes the sentinel', async () => {
     mockState({});
     installHappyInputs();
-    process.env.DRY_RUN = 'true';
 
     await entry();
 
@@ -112,7 +129,7 @@ describe('entry — phase dispatch', () => {
     // runMain → writeOutputs is the side-effect we use to confirm "main ran".
     expect(core.setOutput).toHaveBeenCalledWith('deployed-services', expect.any(String));
     // We should NOT have invoked `docker logout`.
-    expect(exec.getExecOutput).not.toHaveBeenCalledWith(
+    expect(runWithTimeout).not.toHaveBeenCalledWith(
       'docker',
       expect.arrayContaining(['logout']),
       expect.anything(),
@@ -124,11 +141,9 @@ describe('entry — phase dispatch', () => {
 
     await entry();
 
-    expect(exec.getExecOutput).toHaveBeenCalledWith(
-      'docker',
-      ['logout', '--', 'ghcr.io'],
-      expect.objectContaining({ ignoreReturnCode: true }),
-    );
+    expect(runWithTimeout).toHaveBeenCalledWith('docker', ['logout', '--', 'ghcr.io'], {
+      timeoutMs: DOCKER_LOGOUT_TIMEOUT_MS,
+    });
     // Post never writes outputs / never sets exitCode.
     expect(process.exitCode).toBeUndefined();
   });
@@ -141,7 +156,7 @@ describe('entry — phase dispatch', () => {
     await entry();
 
     // No docker logout (nothing to clean).
-    expect(exec.getExecOutput).not.toHaveBeenCalled();
+    expect(runWithTimeout).not.toHaveBeenCalled();
     // No outputs written (we're in post, not main).
     expect(core.setOutput).not.toHaveBeenCalled();
     expect(process.exitCode).toBeUndefined();
@@ -149,21 +164,32 @@ describe('entry — phase dispatch', () => {
 });
 
 describe('runPost', () => {
-  it('calls docker logout with the recorded registry when state is non-empty', async () => {
-    mockState({ dockerLogoutRegistry: 'docker.io' });
+  it('logs out of the recorded Docker Hub server with the logout timeout', async () => {
+    mockState({ dockerLogoutRegistry: 'https://index.docker.io/v1/' });
 
     await runPost();
 
-    expect(exec.getExecOutput).toHaveBeenCalledWith(
+    expect(runWithTimeout).toHaveBeenCalledWith(
       'docker',
-      ['logout', '--', 'docker.io'],
-      expect.objectContaining({ ignoreReturnCode: true }),
+      ['logout', '--', 'https://index.docker.io/v1/'],
+      { timeoutMs: DOCKER_LOGOUT_TIMEOUT_MS },
     );
+  });
+
+  it('a logout timeout only warns — never setFailed, never exitCode', async () => {
+    mockState({ dockerLogoutRegistry: 'ghcr.io' });
+    vi.mocked(runWithTimeout).mockRejectedValueOnce(new ExecTimeoutError(DOCKER_LOGOUT_TIMEOUT_MS));
+
+    await runPost();
+
+    expect(core.warning).toHaveBeenCalled();
+    expect(core.setFailed).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
   });
 
   it('NEVER calls core.setFailed even when docker logout throws', async () => {
     mockState({ dockerLogoutRegistry: 'ghcr.io' });
-    vi.mocked(exec.getExecOutput).mockRejectedValueOnce(new Error('docker exec failure'));
+    vi.mocked(runWithTimeout).mockRejectedValueOnce(new Error('docker exec failure'));
 
     await runPost();
 
@@ -179,7 +205,7 @@ describe('runPost', () => {
 
     await runPost();
 
-    expect(exec.getExecOutput).not.toHaveBeenCalled();
+    expect(runWithTimeout).not.toHaveBeenCalled();
     expect(core.warning).not.toHaveBeenCalled();
   });
 });
@@ -228,23 +254,100 @@ describe('runMain — validation failure', () => {
     expect(core.setFailed).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
   });
+
+  it('still sets process.exitCode=1 when the job summary cannot be written', async () => {
+    vi.mocked(core.getState).mockReturnValue('');
+    vi.mocked(core.getInput).mockReturnValue(''); // api-token missing → validation error
+    vi.mocked(core.getBooleanInput).mockReturnValue(false);
+    vi.mocked(core.summary.write).mockRejectedValueOnce(
+      new Error('Unable to find environment variable for $GITHUB_STEP_SUMMARY.'),
+    );
+
+    await expect(runMain()).resolves.toBeUndefined();
+
+    expect(core.error).toHaveBeenCalledTimes(1);
+    expect(process.exitCode).toBe(1);
+    expect(core.setOutput).toHaveBeenCalledWith('failed-services', '');
+  });
 });
 
-describe('runMain — happy path under DRY_RUN', () => {
-  it('writes outputs once with deployed-services populated', async () => {
+describe('runMain — retired DRY_RUN env guard (truthy spellings)', () => {
+  function liveInputs(): void {
     vi.mocked(core.getState).mockReturnValue('');
     installHappyInputs();
-    process.env.DRY_RUN = 'true';
+    vi.mocked(core.getBooleanInput).mockImplementation(
+      (name: string): boolean => name === 'resolve-to-digest',
+    );
+  }
+
+  it.each(['1', 'TRUE', 'yes', 'Y', 'on'])(
+    'DRY_RUN=%s without the dry-run input → fails closed with the hint',
+    async (value) => {
+      liveInputs();
+      process.env.DRY_RUN = value;
+
+      await runMain();
+
+      expect(core.error).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(core.error).mock.calls[0]?.[0]).toMatch(/no longer supported/);
+      expect(process.exitCode).toBe(1);
+      expect(fetchStub).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['false', ''])('DRY_RUN=%j does not trip the guard', async (value) => {
+    liveInputs();
+    process.env.DRY_RUN = value;
 
     await runMain();
 
+    // The live client hits the (rejecting) fetch stub, so the run errors —
+    // but NOT with the DRY_RUN guard message.
+    const messages = vi.mocked(core.error).mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => /no longer supported/.test(m))).toBe(false);
+    expect(fetchStub).toHaveBeenCalled();
+  });
+});
+
+describe('runMain — dry-run input', () => {
+  it('dry-run: true → nothing reported deployed, one warning, no network', async () => {
+    vi.mocked(core.getState).mockReturnValue('');
+    installHappyInputs();
+
+    await runMain();
+
+    expect(fetchStub).not.toHaveBeenCalled();
     const deployedCalls = vi
       .mocked(core.setOutput)
       .mock.calls.filter((c) => c[0] === 'deployed-services');
     expect(deployedCalls).toHaveLength(1);
-    expect(deployedCalls[0]?.[1]).toBe('web');
-    // No error annotations on the happy path.
+    expect(deployedCalls[0]?.[1]).toBe('');
+    expect(core.setOutput).toHaveBeenCalledWith('failed-services', '');
+    const outputKeys = vi.mocked(core.setOutput).mock.calls.map((c) => c[0]);
+    expect(outputKeys).not.toContain('image-tag');
+    expect(outputKeys).not.toContain('deployment-ids');
+    expect(core.warning).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(core.warning).mock.calls[0]?.[0]).toMatch(/Dry run/);
     expect(core.error).not.toHaveBeenCalled();
     expect(process.exitCode).toBeUndefined();
+  });
+
+  it('DRY_RUN=true in env without the dry-run input → fails closed with a hint, no network', async () => {
+    vi.mocked(core.getState).mockReturnValue('');
+    installHappyInputs();
+    vi.mocked(core.getBooleanInput).mockImplementation(
+      (name: string): boolean => name === 'resolve-to-digest',
+    );
+    process.env.DRY_RUN = 'true';
+
+    await runMain();
+
+    expect(core.error).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(core.error).mock.calls[0]?.[0]).toMatch(/no longer supported/);
+    expect(process.exitCode).toBe(1);
+    expect(fetchStub).not.toHaveBeenCalled();
+    // Guard runs before DeployState is built, like any other input error.
+    expect(core.setOutput).toHaveBeenCalledWith('deployed-services', '');
+    expect(core.setOutput).toHaveBeenCalledWith('failed-services', '');
   });
 });

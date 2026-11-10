@@ -11,8 +11,19 @@ import type { DeployState } from './state';
  * - image-tag:         resolved digest ref (only set if state.imageTag defined)
  * - deployment-ids:    multiline `label=id` (one per line) — @actions/core
  *                      automatically wraps multiline values in <<DELIM/DELIM
+ *
+ * With `opts.dryRun`, nothing was deployed and nothing failed: both list keys
+ * are written empty and image-tag / deployment-ids are omitted (the dry-run
+ * digest stub is not a valid reference and the ids are canned). Outputs must
+ * never let a downstream step mistake a dry run for a real deploy.
  */
-export function writeOutputs(state: DeployState): void {
+export function writeOutputs(state: DeployState, opts: { dryRun?: boolean } = {}): void {
+  if (opts.dryRun) {
+    core.setOutput('deployed-services', '');
+    core.setOutput('failed-services', '');
+    return;
+  }
+
   core.setOutput('deployed-services', state.deployedLabels().join(','));
   core.setOutput('failed-services', state.failedLabels().join(','));
 

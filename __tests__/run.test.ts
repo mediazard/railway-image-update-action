@@ -32,11 +32,18 @@ vi.mock('@actions/core', () => ({
   },
 }));
 
+import { ClientError } from 'graphql-request';
+
 import { run } from '../src/run';
+import { FALLBACK_LOOKUP_ATTEMPTS } from '../src/railway/operations';
 import { ActionError } from '../src/errors';
 import { DeployState } from '../src/outputs/state';
+import { createDryRunClient } from '../src/railway/dry-run';
 import type { ActionInputs } from '../src/inputs/schema';
+import * as core from '@actions/core';
+
 import { FakeRailwayClient } from './fixtures/fake-client';
+import { expectNoWorkflowCommands } from './fixtures/log-assert';
 
 const ENV_UUID = '550e8400-e29b-41d4-a716-446655440000';
 const A_UUID = '550e8400-e29b-41d4-a716-446655440001';
@@ -73,8 +80,9 @@ function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
     registryPassword: '',
     resolveToDigest: false,
     allowMutableTag: true,
+    dryRun: false,
     ...overrides,
-  } as ActionInputs;
+  };
 }
 
 /** Configure the fake client with success canned responses for update + redeploy + status. */
@@ -109,7 +117,9 @@ function callSequence(client: FakeRailwayClient): Array<[string, string]> {
         ? 'deploy'
         : c.document.includes('deployment(id:')
           ? 'status'
-          : 'unknown';
+          : c.document.includes('serviceInstance(')
+            ? 'latest'
+            : 'unknown';
     return [kind, sid];
   });
 }
@@ -157,12 +167,15 @@ describe('run — ordered path (first-service set)', () => {
 
     await run({ client, execFn: makeExecFn(), inputs, state });
 
-    // Ordered flow: update(web), deploy(web), poll status until SUCCESS,
-    // then update(worker), update(clock), deploy(worker), deploy(clock).
-    // The status query has id=deploy-id-x (no sid), so its tuple is
-    // ['status', 'deploy-id-x'] from callSequence's vars.id fallback.
+    // Ordered flow: update(web), read the baseline latest deployment of web,
+    // deploy(web), poll status until SUCCESS, then update(worker),
+    // update(clock), deploy(worker), deploy(clock). The status query has
+    // id=deploy-id-x (no sid), so its tuple is ['status', 'deploy-id-x'] from
+    // callSequence's vars.id fallback. The baseline read has no canned
+    // response here; it is swallowed and never consulted on this path.
     expect(callSequence(client)).toEqual([
       ['update', A_UUID],
+      ['latest', A_UUID],
       ['deploy', A_UUID],
       ['status', 'deploy-id-x'],
       ['update', B_UUID],
@@ -334,6 +347,82 @@ describe('run — image resolution', () => {
   });
 });
 
+describe('run — registry login host comes from the image ref', () => {
+  const HUB = 'https://index.docker.io/v1/';
+
+  it.each([
+    ['myorg/app:v1', HUB],
+    ['nginx:1.25', HUB],
+    // pin: hosted registries are unchanged
+    ['ghcr.io/org/app:v1', 'ghcr.io'],
+  ])('%s → logs in to and records logout for %s', async (image, host) => {
+    const execFn = makeExecFn();
+    const inputs = makeInputs({
+      image,
+      resolveToDigest: true,
+      allowMutableTag: false,
+      registryUsername: 'u',
+      registryPassword: 'p',
+    });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    await run({ client: happyClient(), execFn, inputs, state });
+
+    const firstCall = execFn.mock.calls[0] as unknown as [string, string[]];
+    expect(firstCall[1]).toEqual(['login', '-u', 'u', '--password-stdin', '--', host]);
+    expect(core.saveState).toHaveBeenCalledWith('dockerLogoutRegistry', host);
+  });
+});
+
+describe('run — dry-run is driven by inputs.dryRun, not the DRY_RUN env', () => {
+  afterEach(() => {
+    delete process.env.DRY_RUN;
+  });
+
+  it('inputs.dryRun=true with a tagged image skips digest resolution (execFn not called)', async () => {
+    const execFn = makeExecFn();
+    const inputs = makeInputs({
+      image: 'ghcr.io/org/app:v1',
+      resolveToDigest: true,
+      allowMutableTag: false,
+      dryRun: true,
+    });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    await run({ client: createDryRunClient(), execFn, inputs, state });
+
+    expect(execFn).not.toHaveBeenCalled();
+    expect(state.imageTag).toMatch(/@sha256:dryrun$/);
+  });
+
+  it('DRY_RUN=true env with inputs.dryRun=false no longer switches the digest path (execFn called)', async () => {
+    process.env.DRY_RUN = 'true';
+    const execFn = makeExecFn();
+    const inputs = makeInputs({
+      image: 'ghcr.io/org/app:v1',
+      resolveToDigest: true,
+      allowMutableTag: false,
+      dryRun: false,
+    });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    await run({ client: happyClient(), execFn, inputs, state });
+
+    expect(execFn).toHaveBeenCalled();
+  });
+
+  it('inputs.dryRun=true logs a dry-run final line, never "Deploy complete"', async () => {
+    const inputs = makeInputs({ dryRun: true });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    await run({ client: createDryRunClient(), execFn: makeExecFn(), inputs, state });
+
+    const lines = vi.mocked(core.info).mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('Dry run complete'))).toBe(true);
+    expect(lines.some((l) => l.includes('✅ Deploy complete'))).toBe(false);
+  });
+});
+
 describe('run — sequential-iteration invariant (defense in depth)', () => {
   it('FakeRailwayClient throws on overlap; passing parallel-path test proves no overlap', async () => {
     // The happy-path parallel test (first test in this file) already exercises
@@ -351,5 +440,143 @@ describe('run — sequential-iteration invariant (defense in depth)', () => {
       c.request('any', { sid: B_UUID }, { operationName: 'updateImage' }),
     ).rejects.toThrow(/concurrent request/);
     await p1;
+  });
+});
+
+describe('run — a deployment id carrying a command (parallel path)', () => {
+  it('logs no command, records no id for that label and warns instead', async () => {
+    const services = new Map<string, string>([['web', A_UUID]]);
+    const c = new FakeRailwayClient();
+    c.setResponse('updateImage', { response: { serviceInstanceUpdate: { id: 'u' } } });
+    c.setResponse('deployService', {
+      response: { serviceInstanceDeployV2: 'abc\n::add-mask::x' },
+    });
+    const inputs = makeInputs({ services });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    await run({ client: c, execFn: makeExecFn(), inputs, state });
+
+    expectNoWorkflowCommands(vi.mocked(core.info).mock.calls.flat());
+    expect(state.ids().find((e) => e.label === 'web')).toBeUndefined();
+    expect(vi.mocked(core.warning)).toHaveBeenCalled();
+  });
+});
+
+function makeClientError(status: number): ClientError {
+  return new ClientError({ status, headers: new Headers(), body: '', errors: [] }, { query: '' });
+}
+
+const WEB_WORKER = (): Map<string, string> =>
+  new Map<string, string>([
+    ['web', A_UUID],
+    ['worker', B_UUID],
+  ]);
+
+/**
+ * Ordered-path client whose deploy returns no id (`true`) and whose
+ * latest-deployment lookups answer from `latest` in call order (the last entry
+ * repeats). Each entry is either a deployment id or an error to throw.
+ */
+function noIdClient(latest: Array<string | Error>, statusId: string): FakeRailwayClient {
+  const c = new FakeRailwayClient();
+  c.setResponse('updateImage', { response: { serviceInstanceUpdate: { id: 'u' } } });
+  c.setResponse('deployService', { response: { serviceInstanceDeployV2: true } });
+  c.setResponse('deploymentStatus', {
+    response: { deployment: { id: statusId, status: 'SUCCESS', createdAt: 't' } },
+  });
+  c.setResponse('buildLogs', { response: { buildLogs: [] } });
+  let n = 0;
+  const orig = c.request.bind(c);
+  c.request = async function <TVars, TResult>(
+    doc: string,
+    vars: TVars,
+    opts?: { signal?: AbortSignal; operationName?: string },
+  ): Promise<TResult> {
+    if (opts?.operationName === 'serviceInstanceLatestDeployment') {
+      const next = latest[Math.min(n, latest.length - 1)]!;
+      n += 1;
+      c.setResponse(
+        'serviceInstanceLatestDeployment',
+        typeof next === 'string'
+          ? {
+              response: {
+                serviceInstance: {
+                  latestDeployment: { id: next, status: 'SUCCESS', createdAt: 't' },
+                },
+              },
+            }
+          : { error: next },
+      );
+    }
+    return orig<TVars, TResult>(doc, vars, opts);
+  };
+  return c;
+}
+
+describe('run — ordered path, deploy returned no id (fallback must find OUR deployment)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('refuses to adopt the pre-existing deployment: fails "Cannot confirm" and deploys nothing else', async () => {
+    vi.useFakeTimers();
+    const client = noIdClient(['old'], 'old');
+    const inputs = makeInputs({ services: WEB_WORKER(), firstService: 'web' });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    const settled = run({ client, execFn: makeExecFn(), inputs, state }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const err = await settled;
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).message).toContain('Cannot confirm [web]');
+    expect((err as ActionError).details).toContain(
+      `No deployment newer than old appeared after ${FALLBACK_LOOKUP_ATTEMPTS} lookups`,
+    );
+    expect(state.deployedLabels()).not.toContain('web');
+    expect(callSequence(client)).not.toContainEqual(['update', B_UUID]);
+  });
+
+  it('adopts the deployment newer than the baseline and gates on it', async () => {
+    const client = noIdClient(['old', 'new'], 'new');
+    const inputs = makeInputs({ services: WEB_WORKER(), firstService: 'web' });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    await run({ client, execFn: makeExecFn(), inputs, state });
+
+    const polled = callSequence(client).filter(([kind]) => kind === 'status');
+    expect(polled.length).toBeGreaterThan(0);
+    expect(polled.every(([, id]) => id === 'new')).toBe(true);
+    expect(state.deployedLabels()).toEqual(['web', 'worker']);
+    // The recovered id reaches the deployment-ids output.
+    expect(state.ids()).toContainEqual({ label: 'web', id: 'new' });
+  });
+
+  it('fails "Cannot confirm" when no baseline could be read, even if a deployment shows later', async () => {
+    const client = noIdClient([makeClientError(403), 'new'], 'new');
+    const inputs = makeInputs({ services: WEB_WORKER(), firstService: 'web' });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    const err = await run({ client, execFn: makeExecFn(), inputs, state }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).message).toContain('Cannot confirm [web]');
+    expect(state.deployedLabels()).not.toContain('worker');
+  });
+
+  // PIN (passes before this story too): the baseline read must never fail a
+  // normal run where the deploy returned an id.
+  it('pin: a failing baseline read does not fail a run whose deploy returned an id', async () => {
+    vi.useFakeTimers();
+    const client = happyClient();
+    client.setResponse('serviceInstanceLatestDeployment', { error: makeClientError(500) });
+    const inputs = makeInputs({ services: WEB_WORKER(), firstService: 'web' });
+    const state = new DeployState(Array.from(inputs.services.keys()));
+
+    const settled = run({ client, execFn: makeExecFn(), inputs, state });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settled;
+
+    expect(state.deployedLabels()).toEqual(['web', 'worker']);
   });
 });

@@ -1,9 +1,15 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+import { inspect } from 'node:util';
+
+import * as core from '@actions/core';
+import { ClientError } from 'graphql-request';
 import { http, HttpResponse, delay } from 'msw';
 import { setupServer } from 'msw/node';
 
 import { createRailwayClient } from '../../src/railway/client';
 import { RAILWAY_API_URL, UPDATE_IMAGE_MUTATION } from '../../src/railway/mutations';
+import { withRetry } from '../../src/railway/retry';
+import { mapToActionError } from '../../src/railway/errors';
+import { expectNoWorkflowCommands, hasWorkflowCommand } from '../fixtures/log-assert';
 
 vi.mock('@actions/core', () => ({
   info: vi.fn(),
@@ -43,6 +49,14 @@ function capturingHandler(responseBody: unknown = { data: { serviceInstanceUpdat
     return HttpResponse.json(responseBody);
   });
 }
+
+describe('Railway API endpoint', () => {
+  // Documented at https://docs.railway.com/integrations/api (2026-11-10):
+  // "The public API is accessible at the following endpoint".
+  it('is the documented public GraphQL endpoint', () => {
+    expect(RAILWAY_API_URL).toBe('https://backboard.railway.com/graphql/v2');
+  });
+});
 
 describe('createRailwayClient — wire body shape', () => {
   it('POST body matches { query: UPDATE_IMAGE_MUTATION, variables }', async () => {
@@ -126,8 +140,290 @@ describe('createRailwayClient — credentials round-trip', () => {
   });
 });
 
+/**
+ * Security invariant: graphql-request's ClientError bakes the full request
+ * (incl. `variables.input.registryCredentials.password`) into `message` and
+ * `stack`. The client wrapper must redact it before anything can log it.
+ */
+describe('createRailwayClient — ClientError redaction', () => {
+  const SECRET_PASSWORD = 'pa"ss\\word-SECRET';
+  const secretVars = {
+    sid: 'svc',
+    eid: 'env',
+    input: {
+      source: { image: 'registry/repo:tag' },
+      registryCredentials: { username: 'user', password: SECRET_PASSWORD },
+    },
+  };
+  const FAST_POLICY = { retries: 2, minTimeoutMs: 1, maxTimeoutMs: 1, factor: 1, randomize: false };
+
+  function makeClient() {
+    return createRailwayClient({ token: 'tok', tokenType: 'bearer', requestTimeoutMs: 5_000 });
+  }
+
+  function expectNoSecret(err: unknown): void {
+    const e = err as ClientError;
+    for (const text of [e.message, e.stack ?? '', String(e), JSON.stringify(e)]) {
+      expect(text).not.toContain('SECRET');
+      expect(text).not.toContain('registryCredentials');
+    }
+    expect((e.request as any).variables).toBeUndefined();
+  }
+
+  it('HTTP 503: redacts message, stack and request.variables; keeps ClientError + status', async () => {
+    server.use(http.post(RAILWAY_API_URL, () => new HttpResponse(null, { status: 503 })));
+
+    const err = await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, secretVars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      );
+
+    expect(err).toBeInstanceOf(ClientError);
+    expect((err as ClientError).response.status).toBe(503);
+    expect((err as ClientError).message).toBe('GraphQL Error (Code: 503)');
+    expect((err as ClientError).request.query).toBe(UPDATE_IMAGE_MUTATION);
+    expectNoSecret(err);
+  });
+
+  it('200 with errors[]: message is the first GraphQL error; secret absent', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ data: null, errors: [{ message: 'Service not found' }] }),
+      ),
+    );
+
+    const err = await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, secretVars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      );
+
+    expect(err).toBeInstanceOf(ClientError);
+    expect((err as ClientError).message).toBe('Service not found');
+    expect((err as ClientError).response.errors?.[0]?.message).toBe('Service not found');
+    expectNoSecret(err);
+  });
+
+  it('withRetry over 503, 503, 200 resolves and never logs the secret', async () => {
+    vi.mocked(core.info).mockClear();
+    let calls = 0;
+    server.use(
+      http.post(RAILWAY_API_URL, () => {
+        calls += 1;
+        if (calls <= 2) return new HttpResponse(null, { status: 503 });
+        return HttpResponse.json({ data: { serviceInstanceUpdate: null } });
+      }),
+    );
+
+    const client = makeClient();
+    await expect(
+      withRetry(() => client.request(UPDATE_IMAGE_MUTATION, secretVars), FAST_POLICY),
+    ).resolves.toEqual({ serviceInstanceUpdate: null });
+
+    expect(calls).toBe(3);
+    const logged = vi.mocked(core.info).mock.calls.map((c) => String(c[0]));
+    expect(logged).toHaveLength(2);
+    for (const line of logged) {
+      expect(line).not.toContain('SECRET');
+      expect(line).not.toContain('variables');
+      expect(line).toContain('GraphQL Error (Code: 503)');
+    }
+  });
+});
+
+describe('createRailwayClient — Railway-echoed secrets and commands (chokepoint A)', () => {
+  const PASSWORD = 'pa"ss\\word-SECRET';
+  const TOKEN = 'tok-SECRET2';
+  const ECHO =
+    'Variable "$input" got invalid value { registryCredentials: { password: "pa\\"ss\\\\word-SECRET" } }\n::add-mask::X';
+  const vars = {
+    sid: 'svc',
+    eid: 'env',
+    input: {
+      source: { image: 'registry/repo:tag' },
+      registryCredentials: { username: 'user', password: PASSWORD },
+    },
+  };
+  const FAST_POLICY = { retries: 2, minTimeoutMs: 1, maxTimeoutMs: 1, factor: 1, randomize: false };
+
+  function makeClient() {
+    return createRailwayClient({ token: TOKEN, tokenType: 'bearer', requestTimeoutMs: 5_000 });
+  }
+
+  it('the fake echoes the JSON-escaped password verbatim (guards the test itself)', () => {
+    expect(ECHO).toContain(JSON.stringify(PASSWORD).slice(1, -1));
+  });
+
+  it('200 errors[] echoing a secret: message, errors[0].message and mapped details are scrubbed', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ data: null, errors: [{ message: ECHO }, { message: `t=${TOKEN}` }] }),
+      ),
+    );
+    const err = (await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, vars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      )) as ClientError;
+
+    expect(err).toBeInstanceOf(ClientError);
+    const mapped = mapToActionError(err, 'updateImage');
+    const texts = [
+      err.message,
+      err.stack ?? '',
+      err.response.errors?.[0]?.message ?? '',
+      err.response.errors?.[1]?.message ?? '',
+      mapped.message,
+      mapped.details ?? '',
+    ];
+    for (const text of texts) {
+      expect(text).not.toContain('SECRET');
+      expect(hasWorkflowCommand(text)).toBe(false);
+    }
+    expect(err.response.errors?.[0]?.message).toContain('***');
+  });
+
+  it('drops the raw response body and headers, keeping status and scrubbed errors', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json(
+          { data: null, errors: [{ message: ECHO }] },
+          { headers: { 'x-echo': `t=${TOKEN}` } },
+        ),
+      ),
+    );
+    const err = (await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, vars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      )) as ClientError;
+
+    expect(err).toBeInstanceOf(ClientError);
+    expect(Object.keys(err.response).sort()).toEqual(['errors', 'status']);
+    expect(err.response.status).toBe(200);
+    for (const text of [JSON.stringify(err), inspect(err, { depth: 5 })]) {
+      expect(text).not.toContain('SECRET');
+      expect(text).not.toContain('x-echo');
+    }
+    // mapToActionError still reads Railway's (scrubbed) message from errors[].
+    const mapped = mapToActionError(err, 'updateImage');
+    expect(mapped.details).toContain('got invalid value');
+  });
+
+  it('keeps only the scrubbed message on each GraphQL error (extensions/locations/path dropped)', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({
+          data: null,
+          errors: [
+            {
+              message: 'Problem processing request',
+              locations: [{ line: 1, column: 2 }],
+              path: ['serviceInstanceUpdate'],
+              extensions: { code: 'BAD_INPUT', echo: { password: PASSWORD, token: TOKEN } },
+            },
+          ],
+        }),
+      ),
+    );
+    const err = (await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, vars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      )) as ClientError;
+
+    expect(err).toBeInstanceOf(ClientError);
+    expect(err.response.errors).toEqual([{ message: 'Problem processing request' }]);
+    for (const text of [JSON.stringify(err), inspect(err, { depth: 5 })]) {
+      expect(text).not.toContain('SECRET');
+      expect(text).not.toContain('extensions');
+    }
+    const mapped = mapToActionError(err, 'updateImage');
+    expect(mapped.details).toBe('Problem processing request');
+  });
+
+  it('a secret split by CR in the echo cannot be reassembled after CR stripping', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ data: null, errors: [{ message: 'bad token tok-SEC\rRET2 given' }] }),
+      ),
+    );
+    const err = (await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, vars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      )) as ClientError;
+    expect(err).toBeInstanceOf(ClientError);
+    for (const text of [err.message, err.stack ?? '', err.response.errors?.[0]?.message ?? '']) {
+      expect(text).not.toContain(TOKEN);
+      expect(text).not.toContain('SECRET2');
+    }
+  });
+
+  it('a single 503 attempt with a JSON errors[] body carries the dangerous text into the error', async () => {
+    server.use(
+      http.post(RAILWAY_API_URL, () =>
+        HttpResponse.json({ errors: [{ message: ECHO }] }, { status: 503 }),
+      ),
+    );
+    const err = (await makeClient()
+      .request(UPDATE_IMAGE_MUTATION, vars)
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      )) as ClientError;
+    expect(err).toBeInstanceOf(ClientError);
+    expect(err.response.status).toBe(503);
+    // The fake really delivered Railway text (not the constant 'GraphQL Error (Code: 503)').
+    expect(err.response.errors?.[0]?.message).toContain('Variable "$input"');
+  });
+
+  it('withRetry over a 503 echoing a secret then 200: retry log has no secret and no command', async () => {
+    vi.mocked(core.info).mockClear();
+    let calls = 0;
+    server.use(
+      http.post(RAILWAY_API_URL, () => {
+        calls += 1;
+        if (calls === 1) return HttpResponse.json({ errors: [{ message: ECHO }] }, { status: 503 });
+        return HttpResponse.json({ data: { serviceInstanceUpdate: null } });
+      }),
+    );
+    const client = makeClient();
+    await expect(
+      withRetry(() => client.request(UPDATE_IMAGE_MUTATION, vars), FAST_POLICY),
+    ).resolves.toEqual({ serviceInstanceUpdate: null });
+
+    expect(calls).toBe(2);
+    const logged = vi.mocked(core.info).mock.calls.flat();
+    expect(logged).toHaveLength(1);
+    for (const line of logged) expect(String(line)).not.toContain('SECRET');
+    expectNoWorkflowCommands(logged);
+  });
+});
+
 describe('createRailwayClient — AbortController timeout', () => {
-  it('rejects with an abort-flavored error when the server stalls past requestTimeoutMs', async () => {
+  it('rejects with a REQUEST_TIMEOUT-coded error when the server stalls past requestTimeoutMs', async () => {
     server.use(
       http.post(RAILWAY_API_URL, async () => {
         // Far longer than the configured client timeout; the client aborts first.
@@ -145,7 +441,7 @@ describe('createRailwayClient — AbortController timeout', () => {
     const started = Date.now();
     await expect(
       client.request(UPDATE_IMAGE_MUTATION, { sid: 's', eid: 'e' }),
-    ).rejects.toBeDefined();
+    ).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
     const elapsed = Date.now() - started;
 
     // Should have aborted quickly — definitely within 5s, nowhere near 30s.
@@ -156,7 +452,7 @@ describe('createRailwayClient — AbortController timeout', () => {
 /**
  * Full-stack roundtrip: real graphql-request client → msw → real Railway
  * response shapes (captured from production). These tests catch the class
- * of bug that hit us twice on London staging: the FakeRailwayClient mocked
+ * of bug that hit us twice on a real staging deploy: the FakeRailwayClient mocked
  * what we ASSUMED Railway returns; only msw + real graphql-request exercises
  * the actual envelope-unwrapping + response-shape contract.
  *
@@ -213,7 +509,7 @@ describe('operations roundtrip — real graphql-request + msw', () => {
   });
 
   it('redeploy returns null for {data: {serviceInstanceDeploy: true}} — Railway "deploy accepted" boolean (caught in production at SHA d3e49af5)', async () => {
-    // Real Railway response captured from London staging deploy 26274637756.
+    // Real Railway response captured from a staging deploy.
     server.use(
       http.post(RAILWAY_API_URL, () =>
         HttpResponse.json({ data: { serviceInstanceDeploy: true } }),

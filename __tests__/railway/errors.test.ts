@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { ClientError } from 'graphql-request';
 import { AbortError } from 'p-retry';
 
@@ -21,13 +20,13 @@ function makeClientError(
       headers: new Headers(),
       body: '',
       errors: errors as any,
-    } as any,
+    },
     {
       query: requestBody ?? '',
       // graphql-request types don't include headers on GraphQLRequestContext,
-      // but the runtime tolerates extra fields. Cast to any to attach.
+      // but the runtime tolerates extra fields; the spread attaches them.
       ...(requestHeaders ? { headers: requestHeaders } : {}),
-    } as any,
+    },
   );
 }
 
@@ -179,6 +178,15 @@ describe('mapToActionError — network errors (post-retry exhaustion)', () => {
     expect(action.details).toBe('ECONNREFUSED');
   });
 
+  it('network-failure hint names the documented Railway API host', () => {
+    const err = new Error('fetch failed');
+    (err as any).cause = { code: 'ECONNREFUSED' };
+    const action = mapToActionError(err, 'updateImage');
+    expect(action.hint).toBe(
+      'Check your network connection and that backboard.railway.com is reachable.',
+    );
+  });
+
   it('unknown error class with no code → generic fallback', () => {
     const err = new Error('something weird');
     const action = mapToActionError(err, 'updateImage');
@@ -191,5 +199,20 @@ describe('mapToActionError — network errors (post-retry exhaustion)', () => {
     const action = mapToActionError('weird-string', 'updateImage');
     expect(action.message).toMatch(/updateImage/);
     expect(action.details).toBe('weird-string');
+  });
+});
+
+describe('mapToActionError — ActionError pass-through', () => {
+  it('returns an existing ActionError unchanged (same instance, fields intact)', () => {
+    const original = new ActionError(
+      'Railway deployment response missing required fields',
+      'Got: {"id":null}',
+      'The deployment status query did not return the expected shape.',
+    );
+    const mapped = mapToActionError(original, 'deploymentStatus');
+    expect(mapped).toBe(original);
+    expect(mapped.message).toBe('Railway deployment response missing required fields');
+    expect(mapped.details).toBe('Got: {"id":null}');
+    expect(mapped.hint).toBe('The deployment status query did not return the expected shape.');
   });
 });

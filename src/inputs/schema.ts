@@ -28,6 +28,28 @@ export const IMAGE_REF_PATTERN = /^[a-z0-9][a-z0-9._/-]*(:[a-zA-Z0-9._-]+|@sha25
 const NO_WORKFLOW_COMMAND_CHARS = /^[^\r\n%]*$/;
 
 /**
+ * Characters a service label may not contain (a denylist, so spaces, `/` and
+ * unicode keep working). Labels are printed in many `core.info` progress
+ * lines and joined into the comma-separated outputs:
+ *   - any control character (`\p{Cc}`): an embedded `\r` is a runner line break
+ *   - U+2028 / U+2029: line separators, banned for hygiene
+ *   - `[` / `]`: block the legacy `##[` command form; labels print inside `[...]`
+ *   - `,`: would corrupt `deployed-services` / `failed-services`
+ * `:` can never appear (the line is split on the first one).
+ */
+const LABEL_FORBIDDEN_CHARS = /[\p{Cc}\u2028\u2029,[\]]/u;
+
+/** `first-service` follows the label rule, plus `:` and `%`. */
+const FIRST_SERVICE_FORBIDDEN_CHARS = /[\p{Cc}\u2028\u2029,[\]:%]/u;
+
+function isSafeFirstService(value: string): boolean {
+  return !FIRST_SERVICE_FORBIDDEN_CHARS.test(value);
+}
+
+/** `registry-username`: no CR/LF/`%`, and no `[`/`]` (blocks `##[` in the dry-run body). */
+const REGISTRY_USERNAME_ALLOWED = /^[^\r\n%[\]]*$/;
+
+/**
  * Parse the multiline `services` input into a `Map<label, serviceId>`.
  *
  * - Split on `\n`; strip trailing `\r` (CRLF tolerance).
@@ -38,6 +60,7 @@ const NO_WORKFLOW_COMMAND_CHARS = /^[^\r\n%]*$/;
  */
 export function parseServicesString(input: string): Map<string, string> {
   const result = new Map<string, string>();
+  const seenIds = new Set<string>();
 
   for (const rawLine of input.split('\n')) {
     const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
@@ -55,6 +78,24 @@ export function parseServicesString(input: string): Map<string, string> {
       );
     }
 
+    if (LABEL_FORBIDDEN_CHARS.test(label)) {
+      throw new ActionError(
+        'services: label contains forbidden characters',
+        `Offending line: '${rawLine}'`,
+        'Labels may not contain control characters, line separators, commas or square brackets.',
+      );
+    }
+
+    // A repeated label would silently overwrite the earlier entry, dropping a
+    // service from the deploy. Safe to echo: it passed the denylist above.
+    if (result.has(label)) {
+      throw new ActionError(
+        `services: label '${label}' appears more than once`,
+        undefined,
+        'Each services line needs a unique label.',
+      );
+    }
+
     if (!UUID_PATTERN.test(serviceId)) {
       throw new ActionError(
         `services: service ID for '${label}' is not a valid UUID`,
@@ -62,6 +103,19 @@ export function parseServicesString(input: string): Map<string, string> {
         'Use the Railway service UUID, e.g. 1234abcd-12ab-34cd-56ef-1234567890ab.',
       );
     }
+
+    // The same service under two labels would be updated and redeployed
+    // twice. Safe to echo: it passed UUID_PATTERN above. UUIDs are
+    // case-insensitive, so compare lowercased.
+    const idKey = serviceId.toLowerCase();
+    if (seenIds.has(idKey)) {
+      throw new ActionError(
+        `services: service ID '${serviceId}' appears more than once`,
+        undefined,
+        'List each Railway service once in services.',
+      );
+    }
+    seenIds.add(idKey);
 
     result.set(label, serviceId);
   }
@@ -78,13 +132,13 @@ function refineCredentialPair(
   const hasPass = val.registryPassword !== '';
   if (hasUser && !hasPass) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: 'custom',
       path: ['registryUsername'],
       message: 'registry-username provided without registry-password',
     });
   } else if (hasPass && !hasUser) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: 'custom',
       path: ['registryPassword'],
       message: 'registry-password provided without registry-username',
     });
@@ -93,16 +147,22 @@ function refineCredentialPair(
 
 /**
  * If `firstService` is non-empty, it must be a label present in the parsed
- * services Map. The error message intentionally includes the offending name.
+ * services Map. The error message includes the offending name, which is safe
+ * because values failing the character rule return early and are never echoed.
  */
 function refineFirstServiceExists(
   val: { firstService: string; services: Map<string, string> },
   ctx: z.RefinementCtx,
 ): void {
   if (val.firstService === '') return;
+  // zod 3 and 4 both run this refinement when `services` failed its own check
+  // (e.g. empty, "services is required"); the transform never ran, so it is still a string.
+  if (!(val.services instanceof Map)) return;
+  // A value failing the character rule already has its own issue; never echo it.
+  if (!isSafeFirstService(val.firstService)) return;
   if (!val.services.has(val.firstService)) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: 'custom',
       path: ['firstService'],
       message: `first-service '${val.firstService}' not found in services list`,
     });
@@ -121,24 +181,23 @@ export const ActionInputsSchema = z
       .min(1, 'api-token is required')
       .regex(NO_WORKFLOW_COMMAND_CHARS, 'api-token contains forbidden characters'),
     tokenType: z
-      .enum(['bearer', 'project'], {
-        errorMap: () => ({ message: "token-type must be 'bearer' or 'project'" }),
-      })
+      .enum(['bearer', 'project'], { error: "token-type must be 'bearer' or 'project'" })
       .default('bearer'),
     environmentId: z.string().regex(UUID_PATTERN, 'environment-id must be a UUID'),
     image: z.string().regex(IMAGE_REF_PATTERN, 'image is not a valid Docker image reference'),
     services: z.string().min(1, 'services is required').transform(parseServicesString),
     firstService: z
       .string()
-      .regex(NO_WORKFLOW_COMMAND_CHARS, 'first-service contains forbidden characters')
+      .refine(isSafeFirstService, 'first-service contains forbidden characters')
       .default(''),
     registryUsername: z
       .string()
-      .regex(NO_WORKFLOW_COMMAND_CHARS, 'registry-username contains forbidden characters')
+      .regex(REGISTRY_USERNAME_ALLOWED, 'registry-username contains forbidden characters')
       .default(''),
     registryPassword: z.string().default(''),
     resolveToDigest: z.boolean().default(true),
     allowMutableTag: z.boolean().default(false),
+    dryRun: z.boolean().default(false),
   })
   .superRefine(refineCredentialPair)
   .superRefine(refineFirstServiceExists);

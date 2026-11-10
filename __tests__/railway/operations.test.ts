@@ -1,15 +1,21 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { ClientError } from 'graphql-request';
 
 import { ActionError } from '../../src/errors';
 import {
+  FALLBACK_LOOKUP_ATTEMPTS,
+  REDEPLOY_OUTCOME_UNKNOWN_HINT,
+  findDeploymentStartedAfter,
+  getBaselineDeploymentId,
   getDeploymentStatus,
   getLatestDeploymentForService,
   redeploy,
   updateImage,
   waitForDeployment,
 } from '../../src/railway/operations';
+import * as core from '@actions/core';
+
 import { FakeRailwayClient } from '../fixtures/fake-client';
+import { expectNoWorkflowCommands } from '../fixtures/log-assert';
 
 // Silence retry's `core.info` retry-attempt log.
 vi.mock('@actions/core', () => ({
@@ -27,8 +33,8 @@ function makeClientError(status: number): ClientError {
       headers: new Headers(),
       body: '',
       errors: [],
-    } as any,
-    { query: '' } as any,
+    },
+    { query: '' },
   );
 }
 
@@ -143,7 +149,7 @@ describe('redeploy — happy path', () => {
     // Railway sometimes returns `serviceInstanceDeploy: true` instead of an id
     // string (deploy accepted but no id surfaced). v0 bash handled this via
     // `[[ "$deploy_id" != "true" ]]`. v1 normalizes boolean → null here so the
-    // caller's "unavailable" warning fires. Caught by a failed London staging
+    // caller's "unavailable" warning fires. Caught by a failed staging
     // deploy at SHA d3e49af5; without this normalization the zod schema
     // rejected the response and the whole deploy failed.
     const client = new FakeRailwayClient();
@@ -308,6 +314,37 @@ describe('getLatestDeploymentForService — V2 no-id fallback', () => {
       environmentId: ENV_ID,
     });
     expect(result).toBeNull();
+  });
+});
+
+describe('getLatestDeploymentForService — error paths', () => {
+  it('maps a 401 to the ActionError (not a raw ClientError)', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('serviceInstanceLatestDeployment', { error: makeClientError(401) });
+    await expect(
+      getLatestDeploymentForService(client, { serviceId: SERVICE_ID, environmentId: ENV_ID }),
+    ).rejects.toMatchObject({
+      name: 'ActionError',
+      message: 'Railway API authentication failed',
+      details: 'HTTP 401',
+    });
+  });
+
+  it('re-throws the abort reason as-is when the signal is aborted', async () => {
+    const client = new FakeRailwayClient();
+    const controller = new AbortController();
+    const reason = new Error('cancelled');
+    client.request = async function <_TVars, TResult>(): Promise<TResult> {
+      controller.abort(reason);
+      throw reason;
+    };
+    await expect(
+      getLatestDeploymentForService(
+        client,
+        { serviceId: SERVICE_ID, environmentId: ENV_ID },
+        controller.signal,
+      ),
+    ).rejects.toBe(reason);
   });
 });
 
@@ -674,6 +711,7 @@ describe('classifyStatus', () => {
     expect(classifyStatus('WAITING')).toBe('progressing');
     expect(classifyStatus('QUEUED')).toBe('progressing');
     expect(classifyStatus('REMOVING')).toBe('progressing');
+    expect(classifyStatus('NEEDS_APPROVAL')).toBe('needs-approval');
   });
 
   it('treats an unrecognized status as progressing (never misread as healthy)', async () => {
@@ -859,7 +897,450 @@ describe('waitForDeployment — constant gate behavior', () => {
         onPoll: () => undefined,
         sleep: () => Promise.resolve(),
       }),
-    ).rejects.toBeInstanceOf(ClientError);
+    ).rejects.toMatchObject({
+      name: 'ActionError',
+      message: 'Railway API authentication failed',
+      details: 'HTTP 401',
+    });
     expect(statusCalls).toBe(1); // one attempt, no retry, no re-poll
+  });
+
+  it('passes a snapshot-shape ActionError from deploymentStatus through unchanged', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('deploymentStatus', {
+      response: { deployment: { id: 'd1', createdAt: 't' } }, // status missing
+    });
+    const err = await waitForDeployment(client, 'd1', {
+      timeoutMs: 100_000,
+      stallTimeoutMs: 0,
+      pollIntervalMs: 1,
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+    }).then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).message).toBe(
+      'Railway deployment response missing required fields',
+    );
+    expect((err as ActionError).details).toContain('Got: ');
+  });
+
+  it('re-throws the abort reason as-is when the signal aborts during an in-flight status request', async () => {
+    const client = new FakeRailwayClient();
+    const controller = new AbortController();
+    const reason = new Error('cancelled');
+    let statusCalls = 0;
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        statusCalls += 1;
+        controller.abort(reason);
+        throw reason;
+      }
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+    await expect(
+      waitForDeployment(client, 'd1', {
+        timeoutMs: 100_000,
+        stallTimeoutMs: 0,
+        pollIntervalMs: 1,
+        onPoll: () => undefined,
+        sleep: () => Promise.resolve(),
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(reason);
+    expect(statusCalls).toBe(1);
+  });
+});
+
+describe('Railway values are shape-checked before use (injection hardening)', () => {
+  it('redeploy: a deployment id carrying a command is treated as unavailable; d1 still accepted', async () => {
+    const bad = new FakeRailwayClient();
+    bad.setResponse('deployService', {
+      response: { serviceInstanceDeployV2: 'abc\n##[add-mask]x' },
+    });
+    const r1 = await redeploy(bad, { serviceId: SERVICE_ID, environmentId: ENV_ID });
+    expect(r1.deploymentId).toBeNull();
+
+    const good = new FakeRailwayClient();
+    good.setResponse('deployService', { response: { serviceInstanceDeployV2: 'd1' } });
+    const r2 = await redeploy(good, { serviceId: SERVICE_ID, environmentId: ENV_ID });
+    expect(r2.deploymentId).toBe('d1');
+  });
+
+  it('getDeploymentStatus: a malformed status rejects with "missing required fields"', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('deploymentStatus', {
+      response: { deployment: { id: 'd1', status: 'BUILDING\r::add-mask::x', createdAt: 't' } },
+    });
+    await expect(getDeploymentStatus(client, 'd1')).rejects.toThrow(/missing required fields/);
+    await expect(getDeploymentStatus(client, 'd1')).rejects.toBeInstanceOf(ActionError);
+  });
+
+  it('getDeploymentStatus: a malformed id rejects with "missing required fields"', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('deploymentStatus', {
+      response: { deployment: { id: 'd1\n::x', status: 'SUCCESS', createdAt: 't' } },
+    });
+    await expect(getDeploymentStatus(client, 'd1')).rejects.toThrow(/missing required fields/);
+  });
+
+  it('waitForDeployment (default onPoll): a malformed status fails closed and logs no command', async () => {
+    vi.mocked(core.info).mockClear();
+    const client = new FakeRailwayClient();
+    client.setResponse('deploymentStatus', {
+      response: { deployment: { id: 'd1', status: 'BUILDING\r::add-mask::x', createdAt: 't' } },
+    });
+    await expect(
+      waitForDeployment(client, 'd1', {
+        timeoutMs: 1000,
+        pollIntervalMs: 1,
+        sleep: () => Promise.resolve(),
+      }),
+    ).rejects.toThrow(/missing required fields/);
+    expectNoWorkflowCommands(vi.mocked(core.info).mock.calls.flat());
+  });
+
+  it('getLatestDeploymentForService: a malformed id returns null', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('serviceInstanceLatestDeployment', {
+      response: {
+        serviceInstance: { latestDeployment: { id: 'x\ry', status: 'SUCCESS', createdAt: 't' } },
+      },
+    });
+    const snap = await getLatestDeploymentForService(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+    });
+    expect(snap).toBeNull();
+  });
+});
+
+describe('redeploy is sent at most once (non-idempotent)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not resend on HTTP 503 and says the deploy may have started', async () => {
+    vi.useFakeTimers();
+    const client = new FakeRailwayClient();
+    client.setResponse('deployService', { error: makeClientError(503) });
+
+    const settled = redeploy(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+      serviceLabel: 'web',
+    }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const err = await settled;
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).hint).toContain('may have reached Railway');
+    expect(client.calls).toHaveLength(1);
+  });
+
+  // PIN (passes before this story too): 429 is rejected unprocessed, so it's resent.
+  it('pin: resends after HTTP 429 and resolves with the id', async () => {
+    vi.useFakeTimers();
+    const client = new FakeRailwayClient();
+    let deployCalls = 0;
+    const orig = client.request.bind(client);
+    client.request = async function <TVars, TResult>(
+      doc: string,
+      vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      deployCalls += 1;
+      client.setResponse(
+        'deployService',
+        deployCalls === 1
+          ? { error: makeClientError(429) }
+          : { response: { serviceInstanceDeployV2: 'd1' } },
+      );
+      return orig<TVars, TResult>(doc, vars, opts);
+    };
+
+    const settled = redeploy(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+      serviceLabel: 'web',
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await expect(settled).resolves.toMatchObject({ deploymentId: 'd1' });
+    expect(client.calls).toHaveLength(2);
+  });
+});
+
+describe('waitForDeployment — only judges the deployment it asked for', () => {
+  it('fails closed when Railway returns a different deployment id', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('deploymentStatus', {
+      response: { deployment: { id: 'd-other', status: 'SUCCESS', createdAt: 't' } },
+    });
+    client.setResponse('buildLogs', { response: { buildLogs: [] } });
+
+    const err = await waitForDeployment(client, 'd1', {
+      timeoutMs: 1000,
+      pollIntervalMs: 1,
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).message).toContain('different deployment');
+    expect((err as ActionError).details).toContain('d-other');
+    expect(client.calls.some((c) => c.operationName === 'buildLogs')).toBe(false);
+  });
+});
+
+/** Client whose latest-deployment lookups return the given ids in order (last one repeats). */
+function latestSequenceClient(ids: string[]): { client: FakeRailwayClient; lookups: () => number } {
+  const client = new FakeRailwayClient();
+  let n = 0;
+  client.request = async function <_TVars, TResult>(): Promise<TResult> {
+    const id = ids[Math.min(n, ids.length - 1)];
+    n += 1;
+    return {
+      serviceInstance: { latestDeployment: { id, status: 'BUILDING', createdAt: 't' } },
+    } as TResult;
+  };
+  return { client, lookups: () => n };
+}
+
+describe('findDeploymentStartedAfter — bounded search for the new deployment', () => {
+  it('returns the first latest deployment whose id differs from the baseline', async () => {
+    const { client, lookups } = latestSequenceClient(['old', 'old', 'new']);
+    const sleep = vi.fn(() => Promise.resolve());
+
+    const found = await findDeploymentStartedAfter(
+      client,
+      { serviceId: SERVICE_ID, environmentId: ENV_ID },
+      'old',
+      { sleep },
+    );
+
+    expect(found?.id).toBe('new');
+    expect(lookups()).toBe(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns null after FALLBACK_LOOKUP_ATTEMPTS lookups when only the baseline shows', async () => {
+    const { client, lookups } = latestSequenceClient(['old']);
+    const sleep = vi.fn(() => Promise.resolve());
+
+    const found = await findDeploymentStartedAfter(
+      client,
+      { serviceId: SERVICE_ID, environmentId: ENV_ID },
+      'old',
+      { sleep },
+    );
+
+    expect(found).toBeNull();
+    expect(lookups()).toBe(FALLBACK_LOOKUP_ATTEMPTS);
+  });
+});
+
+describe('getBaselineDeploymentId', () => {
+  it('returns the latest deployment id', async () => {
+    const { client } = latestSequenceClient(['base']);
+    await expect(
+      getBaselineDeploymentId(client, { serviceId: SERVICE_ID, environmentId: ENV_ID }),
+    ).resolves.toBe('base');
+  });
+
+  it('returns null (never throws) when the lookup fails', async () => {
+    const client = new FakeRailwayClient();
+    client.setResponse('serviceInstanceLatestDeployment', { error: makeClientError(403) });
+    await expect(
+      getBaselineDeploymentId(client, { serviceId: SERVICE_ID, environmentId: ENV_ID }),
+    ).resolves.toBeNull();
+  });
+
+  it('re-throws the abort reason when the signal is aborted', async () => {
+    const client = new FakeRailwayClient();
+    const controller = new AbortController();
+    const reason = new Error('cancelled');
+    client.request = async function <_TVars, TResult>(): Promise<TResult> {
+      controller.abort(reason);
+      throw reason;
+    };
+    await expect(
+      getBaselineDeploymentId(
+        client,
+        { serviceId: SERVICE_ID, environmentId: ENV_ID },
+        controller.signal,
+      ),
+    ).rejects.toBe(reason);
+  });
+});
+
+describe('redeploy — outcome-unknown hint on every failure that is not a definitive rejection', () => {
+  async function redeployError(error: unknown): Promise<ActionError> {
+    const client = new FakeRailwayClient();
+    client.setResponse('deployService', { error });
+    const err = await redeploy(client, {
+      serviceId: SERVICE_ID,
+      environmentId: ENV_ID,
+      serviceLabel: 'web',
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ActionError);
+    expect(client.calls).toHaveLength(1);
+    return err as ActionError;
+  }
+
+  it('our own 30s request timeout (plain Error, no code) → outcome-unknown hint', async () => {
+    const err = await redeployError(new Error('Request timed out after 30000ms'));
+    expect(err.hint).toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  it('an unlisted network code (EPIPE on cause.code) → outcome-unknown hint', async () => {
+    const err = await redeployError(
+      Object.assign(new Error('fetch failed'), { cause: { code: 'EPIPE' } }),
+    );
+    expect(err.hint).toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  // PIN (passes before this change too).
+  it('pin: ECONNRESET on cause.code → outcome-unknown hint', async () => {
+    const err = await redeployError(
+      Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNRESET' } }),
+    );
+    expect(err.hint).toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  // PIN: a definitive server rejection keeps the mapped hint.
+  it('pin: HTTP 403 keeps the generic mapped hint', async () => {
+    const err = await redeployError(makeClientError(403));
+    expect(err.message).toBe('Railway API rejected the request (forbidden)');
+    expect(err.hint).not.toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  // A gateway 5xx can carry an errors[] body; the status says Railway may not
+  // have finished (or may have finished) processing, so the outcome is unknown.
+  it('HTTP 502 with GraphQL errors[] → outcome-unknown hint, sent once', async () => {
+    const gqlError = new ClientError(
+      {
+        status: 502,
+        headers: new Headers(),
+        body: '',
+        errors: [{ message: 'upstream connect error' }],
+      } as any,
+      { query: '' },
+    );
+    const err = await redeployError(gqlError);
+    expect(err.hint).toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
+  // PIN: GraphQL errors[] means Railway processed and refused the mutation.
+  it('pin: GraphQL errors[] keep the generic mapped hint', async () => {
+    const gqlError = new ClientError(
+      {
+        status: 200,
+        headers: new Headers(),
+        body: '',
+        errors: [{ message: 'Service not found' }],
+      } as any,
+      { query: '' },
+    );
+    const err = await redeployError(gqlError);
+    expect(err.message).toContain('Railway GraphQL error');
+    expect(err.hint).not.toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+});
+
+describe('findDeploymentStartedAfter — stays near its bound on a flaky lookup', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('retries each lookup at most once (2 attempts), then propagates', async () => {
+    vi.useFakeTimers();
+    const client = new FakeRailwayClient();
+    client.setResponse('serviceInstanceLatestDeployment', { error: makeClientError(503) });
+
+    const settled = findDeploymentStartedAfter(
+      client,
+      { serviceId: SERVICE_ID, environmentId: ENV_ID },
+      'old',
+      { sleep: () => Promise.resolve() },
+    ).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const err = await settled;
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect(client.calls).toHaveLength(2);
+  });
+});
+
+describe('waitForDeployment — failure path stays bounded (story 13)', () => {
+  /** Status always `status`; buildLogs always fails with `buildLogsError`. */
+  function countingClient(status: string, buildLogsError: unknown) {
+    const counts = { deploymentStatus: 0, buildLogs: 0 };
+    const client = new FakeRailwayClient();
+    client.request = async function <TVars, TResult>(
+      _doc: string,
+      _vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        counts.deploymentStatus += 1;
+        return { deployment: { id: 'd1', status, createdAt: 't' } } as TResult;
+      }
+      if (opts?.operationName === 'buildLogs') {
+        counts.buildLogs += 1;
+        throw buildLogsError;
+      }
+      throw new Error(`unexpected operation ${String(opts?.operationName)}`);
+    };
+    return { client, counts };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reads build logs for a gate failure in exactly one attempt (no retry backoff)', async () => {
+    vi.useFakeTimers();
+    const { client, counts } = countingClient('FAILED', makeClientError(503));
+
+    const settled = waitForDeployment(client, 'd1', {
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+    }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const err = await settled;
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).message).toBe('Deployment d1 ended in FAILED');
+    expect(counts.buildLogs).toBe(1);
+  });
+
+  it('NEEDS_APPROVAL fails on the first poll with an approve-then-re-run hint', async () => {
+    const { client, counts } = countingClient('NEEDS_APPROVAL', makeClientError(404));
+    let t = 0;
+
+    const err = await waitForDeployment(client, 'd1', {
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+      // Advancing clock so the loop ends even if the status is not terminal.
+      now: () => (t += 10_000),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect(counts.deploymentStatus).toBe(1);
+    expect((err as ActionError).message).toBe('Deployment d1 is waiting for approval');
+    expect((err as ActionError).details).toContain('Status: NEEDS_APPROVAL');
+    expect((err as ActionError).hint).toBe(
+      'This deployment is waiting for approval in the Railway dashboard; approve it, then re-run.',
+    );
   });
 });

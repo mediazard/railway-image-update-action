@@ -52,5 +52,5 @@ bun.lockb
 # Claude
 .claude/
 
-# Jujutsu (jj)
-.jj/
+# Internal planning docs (epics, story plans)
+.dev-docs/

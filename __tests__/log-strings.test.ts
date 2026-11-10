@@ -35,6 +35,7 @@ import { ActionError, emitToCore } from '../src/errors';
 import { DeployState } from '../src/outputs/state';
 import type { ActionInputs } from '../src/inputs/schema';
 import { FakeRailwayClient } from './fixtures/fake-client';
+import { expectNoWorkflowCommands } from './fixtures/log-assert';
 
 const ENV_UUID = '550e8400-e29b-41d4-a716-446655440000';
 const A_UUID = '550e8400-e29b-41d4-a716-446655440001';
@@ -44,7 +45,11 @@ const DIGEST_IMAGE =
   'ghcr.io/org/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 function makeExecFn() {
-  return vi.fn(async () => ({ stdout: '{"digest":"sha256:f00"}', stderr: '', exitCode: 0 }));
+  return vi.fn(async () => ({
+    stdout: '{"digest":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}',
+    stderr: '',
+    exitCode: 0,
+  }));
 }
 
 function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
@@ -78,7 +83,8 @@ function happyClient(deployId: string | null = 'deploy-id-1'): FakeRailwayClient
   // this client but don't poll, so the canned response is harmless there.
   c.setResponse('deploymentStatus', {
     response: {
-      deployment: { id: 'd', status: 'SUCCESS', createdAt: '1970-01-01T00:00:00Z' },
+      // Same id the deploy returned: the gate refuses a different deployment.
+      deployment: { id: deployId ?? 'd', status: 'SUCCESS', createdAt: '1970-01-01T00:00:00Z' },
     },
   });
   return c;
@@ -158,7 +164,7 @@ describe('log strings — per-service progress lines', () => {
   });
 
   it('emits "[label] deployment-id: (unavailable — Railway returned: true)" when Railway sent the boolean', async () => {
-    // The real-production case captured from London staging run 26274637756:
+    // The real-production case captured from a real deploy:
     // Railway returns the boolean `true` from serviceInstanceDeploy. v1
     // surfaces the actual value in the warning, not a hardcoded "null".
     const inputs = makeInputs();
@@ -290,5 +296,18 @@ describe('log strings — error annotations', () => {
     // for emitToCore's "Details" wrapping.
     expect(vi.mocked(core.startGroup)).not.toHaveBeenCalled();
     expect(vi.mocked(core.endGroup)).not.toHaveBeenCalled();
+  });
+});
+
+describe('log strings — emitToCore sanitizes details (chokepoint B)', () => {
+  it('details carrying V2 and legacy commands never reach core.info as commands', async () => {
+    await emitToCore(
+      new ActionError('m', 'ok\n::add-mask::P1\nfoo ##[add-mask]P2\rbar::error::P3'),
+    );
+    const infos = vi.mocked(core.info).mock.calls.flat();
+    expect(infos.length).toBeGreaterThan(0);
+    expectNoWorkflowCommands(infos);
+    const raw = vi.mocked(core.summary.addRaw).mock.calls.flat();
+    expectNoWorkflowCommands(raw);
   });
 });

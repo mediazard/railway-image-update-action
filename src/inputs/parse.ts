@@ -5,7 +5,7 @@ import { ActionError } from '../errors';
 import { ActionInputsSchema, zodErrorToActionError, type ActionInputs } from './schema';
 
 /**
- * String-typed snapshot of every `core.getInput` result, plus the two
+ * String-typed snapshot of every `core.getInput` result, plus the three
  * `core.getBooleanInput` booleans. This is the input to the zod schema.
  */
 export interface RawInputs {
@@ -19,6 +19,7 @@ export interface RawInputs {
   registryPassword: string;
   resolveToDigest: boolean;
   allowMutableTag: boolean;
+  dryRun: boolean;
 }
 
 /**
@@ -32,7 +33,7 @@ export interface RawInputs {
  * usernames are not secrets per OCI conventions; v0 logs them verbatim and
  * masking them breaks debug-ability).
  *
- * The two booleans (`resolve-to-digest`, `allow-mutable-tag`) use
+ * The three booleans (`resolve-to-digest`, `allow-mutable-tag`, `dry-run`) use
  * `core.getBooleanInput` (Appendix D) which throws on invalid values per
  * the GitHub Actions YAML 1.2 boolean spec — strictly better than
  * `z.coerce.boolean()` which accepts almost anything as truthy.
@@ -58,6 +59,7 @@ export function readRawFromCore(): RawInputs {
 
   const resolveToDigest = core.getBooleanInput('resolve-to-digest');
   const allowMutableTag = core.getBooleanInput('allow-mutable-tag');
+  const dryRun = core.getBooleanInput('dry-run');
 
   return {
     apiToken,
@@ -70,6 +72,7 @@ export function readRawFromCore(): RawInputs {
     registryPassword,
     resolveToDigest,
     allowMutableTag,
+    dryRun,
   };
 }
 

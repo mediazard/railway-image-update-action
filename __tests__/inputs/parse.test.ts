@@ -1,7 +1,7 @@
 import { ActionError } from '../../src/errors';
 
 // Mock `@actions/core` with explicit named exports. Vitest's `clearMocks`
-// + `restoreMocks` (set in vitest.config.ts) reset call history between
+// + `restoreMocks` (set in vitest.config.mts) reset call history between
 // tests; we re-stub `getInput` / `getBooleanInput` per test as needed.
 vi.mock('@actions/core', () => ({
   getInput: vi.fn(),
@@ -37,6 +37,7 @@ interface InputsBundle {
 interface BooleanBundle {
   'resolve-to-digest': boolean;
   'allow-mutable-tag': boolean;
+  'dry-run': boolean;
 }
 
 /**
@@ -60,6 +61,7 @@ function installCoreMocks(
   const booleanDefaults: BooleanBundle = {
     'resolve-to-digest': true,
     'allow-mutable-tag': false,
+    'dry-run': false,
   };
 
   const mergedStrings: InputsBundle = { ...stringDefaults, ...strings };
@@ -99,6 +101,16 @@ describe('readInputs — happy path', () => {
     expect(inputs.registryPassword).toBe('');
     expect(inputs.resolveToDigest).toBe(true);
     expect(inputs.allowMutableTag).toBe(false);
+    expect(inputs.dryRun).toBe(false);
+  });
+
+  it('reads dry-run with core.getBooleanInput into inputs.dryRun', () => {
+    installCoreMocks({}, { 'dry-run': true });
+
+    const inputs = readInputs();
+
+    expect(core.getBooleanInput).toHaveBeenCalledWith('dry-run');
+    expect(inputs.dryRun).toBe(true);
   });
 });
 
@@ -186,6 +198,18 @@ describe('readInputs — masking happens BEFORE schema validation', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(ActionError);
       expect((err as ActionError).message).toBe('api-token is required');
+    }
+  });
+
+  it('throws ActionError "services is required" when services is empty but first-service is set', () => {
+    installCoreMocks({ services: '', 'first-service': 'web' });
+
+    try {
+      readInputs();
+      throw new Error('expected readInputs to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ActionError);
+      expect((err as ActionError).message).toBe('services is required');
     }
   });
 });

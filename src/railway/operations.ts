@@ -20,13 +20,13 @@ import {
   type ServiceInstanceUpdateInput,
   type UpdateImageVariables,
 } from './mutations';
-import { withRetry, isRetryableError, type RetryPolicy } from './retry';
+import { withRetry, isDefinitiveRejection, isRetryableError, type RetryPolicy } from './retry';
 
 /**
  * Why no zod schemas here?
  *
  * We hit two production bugs in a row by being too strict about the response
- * shape (both caught by London staging dogfood, neither caught by the unit
+ * shape (both caught by a real staging deploy, neither caught by the unit
  * tests):
  *
  *   1. graphql-request@7 returns the UNWRAPPED `data` field, not the
@@ -108,14 +108,27 @@ export interface RedeployResult {
 }
 
 /**
+ * Hint for a redeploy whose outcome is unknown: the request failed in any way
+ * other than a definitive rejection (5xx, connection reset, timeout, unknown
+ * error), which can happen after Railway already created the deployment.
+ */
+export const REDEPLOY_OUTCOME_UNKNOWN_HINT =
+  "The redeploy request may have reached Railway before the request failed. Check the service's deployments in the Railway dashboard before re-running; it was not retried, to avoid a duplicate deployment.";
+
+/**
  * Trigger a redeploy on a Railway service instance.
  *
  * On success the deploy is accepted server-side. We return both the parsed
  * deployment-id (string) and the raw value Railway sent — `deploymentId`
- * is `null` whenever `rawValue` is anything other than a non-empty string
- * (commonly `true` or `null`; see `extractDeploymentId` for full coverage).
+ * is `null` whenever `rawValue` is anything other than a string matching
+ * `DEPLOYMENT_ID_PATTERN` (commonly `true` or `null`; see
+ * `extractDeploymentId` for full coverage).
  * The caller surfaces an "unavailable" warning in the null case but doesn't
  * fail the deploy, because Railway already accepted it.
+ *
+ * Sent at most once unless the failure proves Railway never got it (429,
+ * connect/DNS failure): each accepted call creates a deployment, and a resend
+ * after an ambiguous failure could start a second one.
  */
 export async function redeploy(client: RailwayClient, args: RedeployArgs): Promise<RedeployResult> {
   const variables: DeployVariables = {
@@ -124,10 +137,12 @@ export async function redeploy(client: RailwayClient, args: RedeployArgs): Promi
   };
 
   try {
-    const raw = await withRetry<unknown>(() =>
-      client.request<DeployVariables, unknown>(DEPLOY_MUTATION, variables, {
-        operationName: 'deployService',
-      }),
+    const raw = await withRetry<unknown>(
+      () =>
+        client.request<DeployVariables, unknown>(DEPLOY_MUTATION, variables, {
+          operationName: 'deployService',
+        }),
+      { idempotent: false },
     );
     return {
       deploymentId: extractDeploymentId(raw),
@@ -135,6 +150,11 @@ export async function redeploy(client: RailwayClient, args: RedeployArgs): Promi
     };
   } catch (err) {
     const actionErr: ActionError = mapToActionError(err, `deployService:${args.serviceLabel}`);
+    // Classify the ORIGINAL error (p-retry rejects with it), not the mapped one.
+    // Only a definitive server rejection rules out a started deployment.
+    if (!isDefinitiveRejection(err)) {
+      throw new ActionError(actionErr.message, actionErr.details, REDEPLOY_OUTCOME_UNKNOWN_HINT);
+    }
     throw actionErr;
   }
 }
@@ -155,7 +175,7 @@ function extractRawValue(raw: unknown): unknown {
 
 /**
  * Pull the deployment-id off Railway's response defensively. Returns the
- * deployment-id string if it's a non-empty string, else `null`.
+ * deployment-id string if it matches `DEPLOYMENT_ID_PATTERN`, else `null`.
  *
  * Known wire-shapes Railway has returned:
  *   - V2: `{ serviceInstanceDeployV2: "<id>" }`  — happy path
@@ -170,8 +190,24 @@ function extractRawValue(raw: unknown): unknown {
  */
 function extractDeploymentId(raw: unknown): string | null {
   const value = extractRawValue(raw);
-  return typeof value === 'string' && value !== '' ? value : null;
+  return typeof value === 'string' && DEPLOYMENT_ID_PATTERN.test(value) ? value : null;
 }
+
+/**
+ * Shape of a Railway deployment id as we accept it: a token, not a UUID
+ * (fixtures and dry-run use `d1`, `dry-run-deploy-id`), leaving room for
+ * Railway id-format changes. The id is logged via `core.info` and written to
+ * the newline-separated `deployment-ids` output, so anything with control
+ * chars, `:`, `#` or `[` is refused here.
+ */
+export const DEPLOYMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+/**
+ * Shape of a GraphQL enum value as Railway sends it. A non-matching status is
+ * a broken response; the gate fails closed on it. A well-formed but unknown
+ * status still classifies as `progressing`.
+ */
+export const DEPLOYMENT_STATUS_PATTERN = /^[A-Z][A-Z_]{0,31}$/;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Deployment observability — used by run.ts deployOrdered's first-service
@@ -205,23 +241,33 @@ export async function getDeploymentStatus(
 }
 
 /**
- * Fallback for the rare case `serviceInstanceDeployV2` doesn't surface an id:
- * look up the latest deployment for a service in this environment. Picks up
- * the deployment we just triggered (Railway's deployment list is ordered by
- * `createdAt` desc).
+ * Look up the latest deployment for a service in this environment. Used for the
+ * pre-redeploy baseline and by the no-id fallback, which only adopts a result
+ * whose id differs from that baseline: Railway doesn't document whether
+ * `latestDeployment` is the newest created or the latest active one, so the
+ * result alone can't be trusted to be the deployment we just triggered.
  */
 export async function getLatestDeploymentForService(
   client: RailwayClient,
   args: { serviceId: string; environmentId: string },
   signal?: AbortSignal,
+  retryPolicy?: Partial<RetryPolicy>,
 ): Promise<DeploymentSnapshot | null> {
-  const raw = await withRetry<unknown>(() =>
-    client.request<ServiceInstanceLatestDeploymentVariables, unknown>(
-      SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY,
-      { sid: args.serviceId, eid: args.environmentId },
-      { operationName: 'serviceInstanceLatestDeployment', signal },
-    ),
-  );
+  let raw: unknown;
+  try {
+    raw = await withRetry<unknown>(
+      () =>
+        client.request<ServiceInstanceLatestDeploymentVariables, unknown>(
+          SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY,
+          { sid: args.serviceId, eid: args.environmentId },
+          { operationName: 'serviceInstanceLatestDeployment', signal },
+        ),
+      retryPolicy,
+    );
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    throw mapToActionError(err, 'serviceInstanceLatestDeployment');
+  }
   if (typeof raw !== 'object' || raw === null) return null;
   const serviceInstance = (raw as Record<string, unknown>).serviceInstance;
   if (typeof serviceInstance !== 'object' || serviceInstance === null) return null;
@@ -232,6 +278,75 @@ export async function getLatestDeploymentForService(
   } catch {
     return null;
   }
+}
+
+/**
+ * Read the service's latest deployment id BEFORE redeploying, so the no-id
+ * fallback can tell the deployment this run started apart from an older one.
+ *
+ * Never fails the run: on any non-abort error it returns `null`. `null` means
+ * "no usable baseline" (lookup failed, unparseable shape, or no deployment
+ * yet), and the fallback then fails closed. One retry, not two, so a flaky
+ * read endpoint can't add much to every ordered run.
+ */
+export async function getBaselineDeploymentId(
+  client: RailwayClient,
+  args: { serviceId: string; environmentId: string },
+  signal?: AbortSignal,
+): Promise<string | null> {
+  try {
+    const latest = await getLatestDeploymentForService(client, args, signal, { retries: 1 });
+    return latest?.id ?? null;
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    core.debug(
+      `Baseline deployment lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+}
+
+/** Reads of the latest deployment the no-id fallback makes before giving up. */
+export const FALLBACK_LOOKUP_ATTEMPTS = 6;
+
+/**
+ * Gap between those reads (~10s of waiting in total). Railway's list can lag a
+ * just-created deployment; the ~10s window is an estimate, not a measured or
+ * documented Railway figure.
+ */
+export const FALLBACK_LOOKUP_INTERVAL_MS = 2_000;
+
+export interface FindDeploymentOptions {
+  /** Injectable sleep for tests. Defaults to real `setTimeout`. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  signal?: AbortSignal;
+}
+
+/**
+ * Bounded search for the deployment a redeploy started when Railway returned
+ * no id: the first latest deployment whose id differs from `baselineId`.
+ * Returns `null` if none appears within `FALLBACK_LOOKUP_ATTEMPTS` reads.
+ * Each read retries at most once, so a flaky endpoint keeps the search near
+ * its bound. Lookup errors propagate (already mapped to `ActionError`).
+ *
+ * An id different from the baseline proves a newer deployment exists, not that
+ * this run created it (a concurrent run could have started one).
+ */
+export async function findDeploymentStartedAfter(
+  client: RailwayClient,
+  args: { serviceId: string; environmentId: string },
+  baselineId: string,
+  opts: FindDeploymentOptions = {},
+): Promise<DeploymentSnapshot | null> {
+  const sleep = opts.sleep ?? defaultSleep;
+  const { signal } = opts;
+  for (let attempt = 1; attempt <= FALLBACK_LOOKUP_ATTEMPTS; attempt += 1) {
+    signal?.throwIfAborted();
+    const latest = await getLatestDeploymentForService(client, args, signal, { retries: 1 });
+    if (latest !== null && latest.id !== baselineId) return latest;
+    if (attempt < FALLBACK_LOOKUP_ATTEMPTS) await sleep(FALLBACK_LOOKUP_INTERVAL_MS, signal);
+  }
+  return null;
 }
 
 /**
@@ -258,14 +373,17 @@ export async function getBuildLogs(
   id: string,
   limit = 100,
   signal?: AbortSignal,
+  policy?: Partial<RetryPolicy>,
 ): Promise<string> {
   try {
-    const raw = await withRetry<unknown>(() =>
-      client.request<BuildLogsVariables, unknown>(
-        BUILD_LOGS_QUERY,
-        { id, limit },
-        { operationName: 'buildLogs', signal },
-      ),
+    const raw = await withRetry<unknown>(
+      () =>
+        client.request<BuildLogsVariables, unknown>(
+          BUILD_LOGS_QUERY,
+          { id, limit },
+          { operationName: 'buildLogs', signal },
+        ),
+      policy,
     );
     if (typeof raw !== 'object' || raw === null) return '';
     const logs = (raw as Record<string, unknown>).buildLogs;
@@ -323,7 +441,8 @@ export const GATE_STALL_TIMEOUT_MS = 360_000;
 export const GATE_TOTAL_TIMEOUT_MS = 600_000;
 
 /** Bucket a Railway deployment status for the poll loop. */
-export type StatusClass = 'ready' | 'failed' | 'terminal-neutral' | 'progressing';
+export type StatusClass =
+  'ready' | 'failed' | 'terminal-neutral' | 'needs-approval' | 'progressing';
 
 /**
  * Classify a Railway deployment status. Exhaustive and intentional: an
@@ -331,7 +450,8 @@ export type StatusClass = 'ready' | 'failed' | 'terminal-neutral' | 'progressing
  * Railway invents can never be silently misread as healthy. `SLEEPING`,
  * `REMOVED`, and `SKIPPED` are terminal-but-not-success (`terminal-neutral`) —
  * they'll never reach SUCCESS by polling, so we fail fast rather than burn the
- * whole wait budget.
+ * whole wait budget. `NEEDS_APPROVAL` (`needs-approval`) only moves on when
+ * someone approves it in the dashboard, so it fails fast too, with its own hint.
  */
 export function classifyStatus(status: string): StatusClass {
   switch (status) {
@@ -344,6 +464,8 @@ export function classifyStatus(status: string): StatusClass {
     case 'SKIPPED':
     case 'SLEEPING':
       return 'terminal-neutral';
+    case 'NEEDS_APPROVAL':
+      return 'needs-approval';
     case 'BUILDING':
     case 'DEPLOYING':
     case 'INITIALIZING':
@@ -388,7 +510,8 @@ export interface WaitForDeploymentOptions {
 
 /**
  * Poll `deployment(id)` until status enters a terminal state, then resolve
- * (on SUCCESS) or throw an `ActionError` (on FAILED/CRASHED/REMOVED/SKIPPED).
+ * (on SUCCESS) or throw an `ActionError` (on FAILED/CRASHED/REMOVED/SKIPPED/
+ * SLEEPING/NEEDS_APPROVAL).
  * On timeout, throw an `ActionError` with the last observed status.
  *
  * Used by `run.ts deployOrdered` after the first-service redeploy so we
@@ -412,7 +535,6 @@ export async function waitForDeployment(
   let lastStatus: string | null = null;
   let lastTransitionAt = started;
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     signal?.throwIfAborted();
     // One retry (not the default two): a single poll must not spend the budget.
@@ -426,7 +548,8 @@ export async function waitForDeployment(
       // loop's own cadence would otherwise absorb the blip. Count the failed
       // poll toward the total budget and re-poll. A permanent error (auth, 4xx,
       // deployment-not-found) is NOT retryable and still aborts fast.
-      if (signal?.aborted || !isRetryableError(err)) throw err;
+      if (signal?.aborted) throw err;
+      if (!isRetryableError(err)) throw mapToActionError(err, 'deploymentStatus');
       const elapsed = now() - started;
       if (elapsed >= timeoutMs) {
         throw await gateError(
@@ -443,6 +566,15 @@ export async function waitForDeployment(
       await sleepClamped(sleep, pollIntervalMs, elapsed, timeoutMs, signal);
       continue;
     }
+    // Only ever judge the deployment we asked for. Both ids passed
+    // DEPLOYMENT_ID_PATTERN, so they are safe to log.
+    if (snapshot.id !== deploymentId) {
+      throw new ActionError(
+        'Railway returned a different deployment than requested',
+        `Requested: ${deploymentId}\nGot: ${snapshot.id}`,
+        'Refusing to judge the deploy on another deployment. Check the Railway dashboard.',
+      );
+    }
     onPoll(snapshot);
 
     if (snapshot.status !== lastStatus) {
@@ -453,6 +585,16 @@ export async function waitForDeployment(
     const klass = classifyStatus(snapshot.status);
     if (klass === 'ready') {
       return snapshot;
+    }
+    if (klass === 'needs-approval') {
+      throw await gateError(
+        client,
+        deploymentId,
+        `Deployment ${deploymentId} is waiting for approval`,
+        `Status: ${snapshot.status}`,
+        'This deployment is waiting for approval in the Railway dashboard; approve it, then re-run.',
+        signal,
+      );
     }
     if (klass !== 'progressing') {
       // failed OR terminal-neutral — will never reach SUCCESS by polling.
@@ -517,8 +659,11 @@ function parseDeploymentSnapshot(raw: unknown, contextKey: string): DeploymentSn
     );
   }
   const o = obj as Record<string, unknown>;
-  const id = typeof o.id === 'string' ? o.id : null;
-  const status = typeof o.status === 'string' ? (o.status as DeploymentStatus) : null;
+  const id = typeof o.id === 'string' && DEPLOYMENT_ID_PATTERN.test(o.id) ? o.id : null;
+  const status =
+    typeof o.status === 'string' && DEPLOYMENT_STATUS_PATTERN.test(o.status)
+      ? (o.status as DeploymentStatus)
+      : null;
   const createdAt = typeof o.createdAt === 'string' ? o.createdAt : '';
   if (id === null || status === null) {
     throw new ActionError(
@@ -533,6 +678,8 @@ function parseDeploymentSnapshot(raw: unknown, contextKey: string): DeploymentSn
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
+      // Propagate the abort reason verbatim (AbortSignal semantics), whatever its type.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
       reject(signal.reason ?? new Error('Aborted'));
       return;
     }
@@ -543,6 +690,7 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
     const onAbort = (): void => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
       reject(signal?.reason ?? new Error('Aborted'));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -565,7 +713,10 @@ async function gateError(
   hint: string,
   signal?: AbortSignal,
 ): Promise<ActionError> {
-  const logs = await getBuildLogs(client, deploymentId, 100, signal);
+  // Single attempt: this read is best-effort and runs after the gate already
+  // failed or hit its cap, so it adds at most one request timeout (30s), not
+  // the default policy's ~100s.
+  const logs = await getBuildLogs(client, deploymentId, 100, signal, { retries: 0 });
   const detailsParts = [`Deployment: ${deploymentId}`, statusLine];
   if (logs !== '') detailsParts.push(`Build logs (last 100 lines):\n${logs}`);
   return new ActionError(message, detailsParts.join('\n'), hint);

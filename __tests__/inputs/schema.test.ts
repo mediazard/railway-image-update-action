@@ -3,7 +3,24 @@ import {
   parseServicesString,
   zodErrorToActionError,
 } from '../../src/inputs/schema';
-import { ActionError } from '../../src/errors';
+import * as core from '@actions/core';
+
+import { ActionError, emitToCore } from '../../src/errors';
+import { expectNoWorkflowCommands } from '../fixtures/log-assert';
+
+vi.mock('@actions/core', () => ({
+  info: vi.fn(),
+  error: vi.fn(),
+  notice: vi.fn(),
+  startGroup: vi.fn(),
+  endGroup: vi.fn(),
+  summary: {
+    addHeading: vi.fn().mockReturnThis(),
+    addRaw: vi.fn().mockReturnThis(),
+    addQuote: vi.fn().mockReturnThis(),
+    write: vi.fn().mockResolvedValue(undefined),
+  },
+}));
 
 // Real UUIDs used across fixtures.
 const ENV_UUID = '550e8400-e29b-41d4-a716-446655440000';
@@ -101,6 +118,13 @@ describe('ActionInputsSchema — happy path and refines', () => {
     expect(Array.from(result.data.services.keys())).toEqual(['web', 'worker']);
     expect(result.data.resolveToDigest).toBe(true);
     expect(result.data.allowMutableTag).toBe(false);
+  });
+
+  it('defaults dryRun to false when omitted, and keeps an explicit true', () => {
+    const omitted = ActionInputsSchema.safeParse(makeRawInputs());
+    expect(omitted.success && omitted.data.dryRun).toBe(false);
+    const on = ActionInputsSchema.safeParse(makeRawInputs({ dryRun: true }));
+    expect(on.success && on.data.dryRun).toBe(true);
   });
 
   describe('refineCredentialPair', () => {
@@ -230,11 +254,201 @@ describe('zodErrorToActionError — action-input-name messages', () => {
     }
   });
 
+  it('missing services with a first-service set → "services is required", not a TypeError', () => {
+    const err = mapError(makeRawInputs({ services: '', firstService: 'web' }));
+    expect(err.message).toBe('services is required');
+    expect(err.details).toBeUndefined();
+  });
+
   it('multiple issues → all listed in details', () => {
     const err = mapError(makeRawInputs({ apiToken: '', environmentId: '' }));
     // First issue surfaces as headline; both appear in details.
     expect(err.message).toBe('api-token is required');
     expect(err.details).toContain('api-token is required');
     expect(err.details).toContain('environment-id must be a UUID');
+  });
+});
+
+describe('injection hardening — first-service, labels, registry-username', () => {
+  const DIRTY_FIRST = 'x\n::add-mask::PWNED';
+
+  it('a forbidden first-service yields exactly one issue that does not echo the value', () => {
+    const result = ActionInputsSchema.safeParse(makeRawInputs({ firstService: DIRTY_FIRST }));
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.issues).toHaveLength(1);
+    for (const issue of result.error.issues) {
+      expect(issue.message).not.toContain('PWNED');
+    }
+  });
+
+  it('a forbidden first-service, end to end through emitToCore, prints no workflow command', async () => {
+    const result = ActionInputsSchema.safeParse(makeRawInputs({ firstService: DIRTY_FIRST }));
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    await emitToCore(zodErrorToActionError(result.error));
+    expectNoWorkflowCommands(vi.mocked(core.info).mock.calls.flat());
+    expectNoWorkflowCommands(vi.mocked(core.summary.addRaw).mock.calls.flat());
+  });
+
+  it.each([
+    ['embedded CR + legacy command', `web\r##[add-mask]PWNED:${WEB_UUID}`],
+    ['comma', `a,b:${WEB_UUID}`],
+    ['open bracket', `we[b:${WEB_UUID}`],
+    ['close bracket', `we]b:${WEB_UUID}`],
+    ['control char', `we\u0007b:${WEB_UUID}`],
+    ['U+2028', `we\u2028b:${WEB_UUID}`],
+    ['U+2029', `we\u2029b:${WEB_UUID}`],
+  ])('rejects a label with %s', (_name, input) => {
+    expect(() => parseServicesString(input)).toThrow(ActionError);
+    expect(() => parseServicesString(input)).toThrow(
+      'services: label contains forbidden characters',
+    );
+  });
+
+  it('rejects a label that appears more than once (no silent overwrite)', () => {
+    const input = `web:${WEB_UUID}\nworker:${WORKER_UUID}\n web :${WORKER_UUID}`;
+    expect(() => parseServicesString(input)).toThrow(ActionError);
+    expect(() => parseServicesString(input)).toThrow(
+      "services: label 'web' appears more than once",
+    );
+  });
+
+  it('checks forbidden characters before duplicates, so an unsafe label is never echoed', () => {
+    const input = `a,b:${WEB_UUID}\na,b:${WORKER_UUID}`;
+    expect(() => parseServicesString(input)).toThrow(
+      'services: label contains forbidden characters',
+    );
+  });
+
+  it('rejects a service ID that appears more than once (same service deployed twice)', () => {
+    const input = `web:${WEB_UUID}\nworker:${WEB_UUID}`;
+    expect(() => parseServicesString(input)).toThrow(ActionError);
+    expect(() => parseServicesString(input)).toThrow(
+      `services: service ID '${WEB_UUID}' appears more than once`,
+    );
+  });
+
+  it('treats service IDs that differ only in letter case as duplicates', () => {
+    const upper = '550E8400-E29B-41D4-A716-4466554400AA';
+    const input = `web:${upper.toLowerCase()}\nworker:${upper}`;
+    expect(() => parseServicesString(input)).toThrow(
+      `services: service ID '${upper}' appears more than once`,
+    );
+  });
+
+  it('validates the UUID before the duplicate check, so a non-UUID is never echoed as an ID', () => {
+    const input = `web:not-a-uuid\nworker:not-a-uuid`;
+    expect(() => parseServicesString(input)).toThrow(
+      "services: service ID for 'web' is not a valid UUID",
+    );
+  });
+
+  it('still accepts labels with spaces and dashes', () => {
+    const map = parseServicesString(`web app:${WEB_UUID}\napi-v2:${WORKER_UUID}`);
+    expect(Array.from(map.keys())).toEqual(['web app', 'api-v2']);
+  });
+
+  it('rejects a first-service with a bracket or comma (same rule as labels)', () => {
+    for (const firstService of ['we[b', 'a,b', 'x\u2028y']) {
+      const result = ActionInputsSchema.safeParse(makeRawInputs({ firstService }));
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error.issues).toHaveLength(1);
+      expect(result.error.issues[0]!.message).toBe('first-service contains forbidden characters');
+    }
+  });
+
+  it('rejects a registry-username containing ##[ and accepts org+robot', () => {
+    const bad = ActionInputsSchema.safeParse(
+      makeRawInputs({ registryUsername: 'u##[add-mask]x', registryPassword: 'p' }),
+    );
+    expect(bad.success).toBe(false);
+    const good = ActionInputsSchema.safeParse(
+      makeRawInputs({ registryUsername: 'org+robot', registryPassword: 'p' }),
+    );
+    expect(good.success).toBe(true);
+  });
+});
+
+/**
+ * Pins for the zod 3 → 4 migration. Written green on zod 3; they must stay
+ * green on zod 4. The never-echo pin (forbidden first-service) may never be relaxed.
+ */
+describe('zod major-upgrade pins', () => {
+  function issuesOf(rawInputs: Record<string, unknown>): string[] {
+    const result = ActionInputsSchema.safeParse(rawInputs);
+    if (result.success) throw new Error('expected schema to fail; this test fixture is invalid');
+    return result.error.issues.map((i) => i.message);
+  }
+
+  it('an invalid token-type has exactly the custom headline', () => {
+    const result = ActionInputsSchema.safeParse(makeRawInputs({ tokenType: 'nope' }));
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(zodErrorToActionError(result.error).message).toBe(
+      "token-type must be 'bearer' or 'project'",
+    );
+  });
+
+  it('omitted optional inputs take their defaults', () => {
+    const raw = makeRawInputs();
+    for (const key of [
+      'tokenType',
+      'firstService',
+      'registryUsername',
+      'registryPassword',
+      'resolveToDigest',
+      'allowMutableTag',
+      'dryRun',
+    ]) {
+      delete raw[key];
+    }
+    const result = ActionInputsSchema.safeParse(raw);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.tokenType).toBe('bearer');
+    expect(result.data.firstService).toBe('');
+    expect(result.data.registryUsername).toBe('');
+    expect(result.data.registryPassword).toBe('');
+    expect(result.data.resolveToDigest).toBe(true);
+    expect(result.data.allowMutableTag).toBe(false);
+    expect(result.data.dryRun).toBe(false);
+  });
+
+  it('an ActionError thrown by the services transform propagates out of safeParse', () => {
+    expect(() =>
+      ActionInputsSchema.safeParse(makeRawInputs({ services: 'web:not-a-uuid' })),
+    ).toThrow(ActionError);
+    expect(() =>
+      ActionInputsSchema.safeParse(makeRawInputs({ services: 'web:not-a-uuid' })),
+    ).toThrow(/not a valid UUID/);
+  });
+
+  it('the object-level credential-pair refinement runs when no field issue exists', () => {
+    expect(issuesOf(makeRawInputs({ registryUsername: 'u', registryPassword: '' }))).toEqual([
+      'registry-username provided without registry-password',
+    ]);
+  });
+
+  it('a forbidden first-service is never echoed, even alongside the refinements', () => {
+    const raw = 'evil%0A::warning::x';
+    const messages = issuesOf(makeRawInputs({ firstService: raw }));
+    expect(messages).toContain('first-service contains forbidden characters');
+    for (const message of messages) {
+      expect(message).not.toContain(raw);
+      expect(message).not.toContain('evil');
+    }
+  });
+
+  it('a field issue is the headline when an unknown first-service is also present', () => {
+    const result = ActionInputsSchema.safeParse(
+      makeRawInputs({ apiToken: 'a\nb', firstService: 'ghost' }),
+    );
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(zodErrorToActionError(result.error).message).toBe(
+      'api-token contains forbidden characters',
+    );
   });
 });
