@@ -131,6 +131,9 @@ function refineFirstServiceExists(
   ctx: z.RefinementCtx,
 ): void {
   if (val.firstService === '') return;
+  // zod 3 and 4 both run this refinement when `services` failed its own check
+  // (e.g. empty, "services is required"); the transform never ran, so it is still a string.
+  if (!(val.services instanceof Map)) return;
   // A value failing the character rule already has its own issue; never echo it.
   if (!isSafeFirstService(val.firstService)) return;
   if (!val.services.has(val.firstService)) {

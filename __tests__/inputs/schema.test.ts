@@ -254,6 +254,12 @@ describe('zodErrorToActionError — action-input-name messages', () => {
     }
   });
 
+  it('missing services with a first-service set → "services is required", not a TypeError', () => {
+    const err = mapError(makeRawInputs({ services: '', firstService: 'web' }));
+    expect(err.message).toBe('services is required');
+    expect(err.details).toBeUndefined();
+  });
+
   it('multiple issues → all listed in details', () => {
     const err = mapError(makeRawInputs({ apiToken: '', environmentId: '' }));
     // First issue surfaces as headline; both appear in details.

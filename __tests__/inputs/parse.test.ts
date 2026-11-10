@@ -200,4 +200,16 @@ describe('readInputs — masking happens BEFORE schema validation', () => {
       expect((err as ActionError).message).toBe('api-token is required');
     }
   });
+
+  it('throws ActionError "services is required" when services is empty but first-service is set', () => {
+    installCoreMocks({ services: '', 'first-service': 'web' });
+
+    try {
+      readInputs();
+      throw new Error('expected readInputs to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ActionError);
+      expect((err as ActionError).message).toBe('services is required');
+    }
+  });
 });
