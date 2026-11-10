@@ -9,6 +9,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Retry and error logs no longer contain GraphQL request bodies. The registry password sent with the image update could previously appear in a failed request's error message.
 - Workflow-command injection through logs is closed. Text echoed from Railway, `docker` and inputs is sanitized before it reaches the log, and Railway deployment ids, statuses and resolved digests are shape-checked.
 - Private-registry login goes to the image's real registry host. Docker Hub images (short names such as `myorg/app` or `nginx`, and `docker.io/...`) log in to `https://index.docker.io/v1/`, so the post step's logout now erases the stored Docker Hub credentials.
+- Patched vulnerable dependencies: `undici` (pinned to a fixed 6.x release) and `zod` (now zod 4).
 
 ### Fixed
 
@@ -17,13 +18,16 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Registry calls time out: `docker login` after 60s, `docker buildx imagetools inspect` after 120s and `docker logout` after 30s, instead of hanging the job.
 - Private Docker Hub images referenced by short name now work with `registry-username`/`registry-password`. Previously the login targeted the first path segment (for example `myorg`) as a host and failed.
 - `CODEOWNERS` now points at `@mediazard` (a user). The previous `@mediazard/engineering` team never resolved, so no owner was requested.
+- An empty `services` input together with `first-service` now fails with "services is required" instead of a `TypeError`.
 
 ### Added
 
 - `dry-run` input (default `false`). Logs the Railway API calls that would be made without sending them; `deployed-services` and `failed-services` are written empty.
+- `LICENSE` (MIT) and consumer documentation: tokens, IDs, output semantics, registry trust.
 
 ### Changed
 
+- The action runs on `node24` (was `node20`). Self-hosted runners need actions/runner v2.328.0 or newer; macOS 13.4 or earlier and ARM32 runners are not supported.
 - Setting a truthy `DRY_RUN` environment variable without the `dry-run` input now fails the step with a hint. Use the `dry-run` input instead.
 - The post step runs `docker logout` even when `docker login` failed.
 

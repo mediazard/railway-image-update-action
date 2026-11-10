@@ -18,7 +18,7 @@ inputs:
     description: "Railway environment ID (UUID)"
     required: true
   image:
-    description: "Full Docker image URI with tag or digest (e.g. ghcr.io/org/app:sha-abc123)"
+    description: "Full Docker image URI with tag or digest (e.g. ghcr.io/org/app:sha-abc123). Registry credentials are sent to this image's registry. Never build it from untrusted input."
     required: true
   services:
     description: "Multiline label:service_id pairs. Labels are for logging only. All services receive the same image."
@@ -40,7 +40,7 @@ inputs:
     required: false
     default: "true"
   allow-mutable-tag:
-    description: "When resolve-to-digest is 'false', allow deploying a mutable tag (latest, main, master, develop, stable, or no tag). Defaults to 'false' to fail fast on unsafe refs."
+    description: "When resolve-to-digest is 'false', allow deploying a mutable tag (latest, main, master, develop, stable, or no tag; a heuristic list, other tags such as prod or edge are not detected). Defaults to 'false' to fail fast on unsafe refs."
     required: false
     default: "false"
   dry-run:
@@ -50,9 +50,9 @@ inputs:
 
 outputs:
   deployed-services:
-    description: "Comma-separated list of service labels that were successfully deployed (always written, even on partial failure)"
+    description: "Comma-separated labels whose redeploy Railway accepted. With first-service, that service is listed only after it reached SUCCESS; the others are listed when Railway accepts their redeploy. Always written; empty in dry-run."
   failed-services:
-    description: "Comma-separated list of service labels that were not deployed (empty on full success; populated on partial or full failure)"
+    description: "Comma-separated labels that were not deployed, including any never attempted after an earlier failure. Empty on full success and in dry-run."
   image-tag:
     description: "The resolved image reference that was deployed. When resolve-to-digest is true (default), this is a digest-pinned ref."
   deployment-ids:
