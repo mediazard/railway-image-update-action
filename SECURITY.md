@@ -23,7 +23,7 @@ You will receive an acknowledgement within 2 business days and a status update w
 
 ## What this action handles
 
-- **Railway API token** — read from the `api-token` input. On startup, before using any input, the action calls `core.setSecret(value)` so any subsequent log line that contains the token is masked. The token is sent only to `https://backboard.railway.app/graphql/v2` over HTTPS.
+- **Railway API token** — read from the `api-token` input. On startup, before using any input, the action calls `core.setSecret(value)` so any subsequent log line that contains the token is masked. The token is sent only to `https://backboard.railway.com/graphql/v2` over HTTPS.
 - **Registry password** — read from the `registry-password` input and registered via `core.setSecret` immediately. It is sent to two places: the image's registry (`docker login` on the runner, during digest resolution) and Railway (in the image-update mutation's `registryCredentials`, so Railway can pull the image). The registry host is derived from `image`; Docker Hub images log in to `https://index.docker.io/v1/`.
 - **Registry username** — read but NOT masked (OCI registry usernames are not secrets per convention; masking them in logs breaks debug-ability).
 

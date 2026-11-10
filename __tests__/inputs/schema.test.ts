@@ -321,6 +321,29 @@ describe('injection hardening — first-service, labels, registry-username', () 
     );
   });
 
+  it('rejects a service ID that appears more than once (same service deployed twice)', () => {
+    const input = `web:${WEB_UUID}\nworker:${WEB_UUID}`;
+    expect(() => parseServicesString(input)).toThrow(ActionError);
+    expect(() => parseServicesString(input)).toThrow(
+      `services: service ID '${WEB_UUID}' appears more than once`,
+    );
+  });
+
+  it('treats service IDs that differ only in letter case as duplicates', () => {
+    const upper = '550E8400-E29B-41D4-A716-4466554400AA';
+    const input = `web:${upper.toLowerCase()}\nworker:${upper}`;
+    expect(() => parseServicesString(input)).toThrow(
+      `services: service ID '${upper}' appears more than once`,
+    );
+  });
+
+  it('validates the UUID before the duplicate check, so a non-UUID is never echoed as an ID', () => {
+    const input = `web:not-a-uuid\nworker:not-a-uuid`;
+    expect(() => parseServicesString(input)).toThrow(
+      "services: service ID for 'web' is not a valid UUID",
+    );
+  });
+
   it('still accepts labels with spaces and dashes', () => {
     const map = parseServicesString(`web app:${WEB_UUID}\napi-v2:${WORKER_UUID}`);
     expect(Array.from(map.keys())).toEqual(['web app', 'api-v2']);

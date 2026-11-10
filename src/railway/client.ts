@@ -140,7 +140,8 @@ function collectSecretValues(value: unknown, out: string[] = []): string[] {
  * Mutated in place (not rebuilt) on purpose: a new `ClientError` would re-run
  * its constructor and bake the JSON back in, and the same instance must keep
  * `instanceof ClientError`, `response.status` and `response.errors` working
- * for retry classification and `mapToActionError`.
+ * for retry classification and `mapToActionError`. Every other `response`
+ * field (raw `body`, `headers`, `data`, `extensions`) is dropped.
  */
 function redactClientError(err: ClientError, secrets: readonly string[]): ClientError {
   // Strip CR before scrubbing: sanitizeForLog drops CRs, which would otherwise
@@ -155,6 +156,12 @@ function redactClientError(err: ClientError, secrets: readonly string[]): Client
   err.message =
     err.response.errors?.[0]?.message ?? `GraphQL Error (Code: ${String(err.response.status)})`;
   err.request = { query: err.request.query };
+  // Keep only what retry classification and mapToActionError read. `body` is
+  // the raw, unscrubbed response text (it repeats any echoed secret), and
+  // `headers`/`data`/`extensions` are never used; all would show up in
+  // `JSON.stringify(err)` or `util.inspect(err)`.
+  const { status, errors } = err.response;
+  err.response = { status, errors } as ClientError['response'];
   // Keep the stack frames, drop the JSON-bearing header lines.
   const frames = (err.stack ?? '').split('\n').filter((line) => /^\s+at /.test(line));
   err.stack = [`ClientError: ${err.message}`, ...frames].join('\n');

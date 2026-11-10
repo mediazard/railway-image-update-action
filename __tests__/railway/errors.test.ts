@@ -178,6 +178,15 @@ describe('mapToActionError — network errors (post-retry exhaustion)', () => {
     expect(action.details).toBe('ECONNREFUSED');
   });
 
+  it('network-failure hint names the documented Railway API host', () => {
+    const err = new Error('fetch failed');
+    (err as any).cause = { code: 'ECONNREFUSED' };
+    const action = mapToActionError(err, 'updateImage');
+    expect(action.hint).toBe(
+      'Check your network connection and that backboard.railway.com is reachable.',
+    );
+  });
+
   it('unknown error class with no code → generic fallback', () => {
     const err = new Error('something weird');
     const action = mapToActionError(err, 'updateImage');

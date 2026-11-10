@@ -175,7 +175,7 @@ export async function resolveImageDigest(
       // since ActionError.details is emitted via core.info (raw stdout, no
       // escaping), an attacker-controlled error payload would inject workflow
       // commands. Replace `::` with the U+2236 ratio glyph and strip CR.
-      `Image: ${ref}\nError: ${sanitizeForLog(inspect.stderr)}`,
+      `Image: ${ref}\nError: ${capDockerOutput(sanitizeForLog(inspect.stderr))}`,
       'Check that the image exists, is accessible, and registry credentials are correct',
     );
   }
@@ -189,7 +189,7 @@ export async function resolveImageDigest(
     // unmasked stdout fragments. details already includes the stdout.
     throw new ActionError(
       'Failed to parse manifest JSON for image',
-      `Image: ${ref}\nOutput: ${sanitizeForLog(inspect.stdout)}`,
+      `Image: ${ref}\nOutput: ${capDockerOutput(sanitizeForLog(inspect.stdout))}`,
       'Ensure the image tag exists and the registry returns a valid manifest',
     );
   }
@@ -220,4 +220,16 @@ export async function resolveImageDigest(
 
   core.info(`  ✓ Resolved: ${resolved}`);
   return resolved;
+}
+
+/** Max chars of docker stdout/stderr carried into an error's details. */
+const DOCKER_OUTPUT_MAX_CHARS = 4096;
+
+/**
+ * Cap docker output quoted in error details, with the same elision marker as
+ * `getBuildLogs`: a registry can return an arbitrarily large error body.
+ */
+function capDockerOutput(text: string): string {
+  if (text.length <= DOCKER_OUTPUT_MAX_CHARS) return text;
+  return `${text.slice(0, DOCKER_OUTPUT_MAX_CHARS)}\n…[truncated ${text.length - DOCKER_OUTPUT_MAX_CHARS} bytes]`;
 }

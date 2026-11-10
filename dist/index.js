@@ -65006,8 +65006,10 @@ const log_sanitize_1 = __nccwpck_require__(329);
 class ActionError extends Error {
     details;
     hint;
-    constructor(message, details, hint, options) {
-        super(message, options);
+    // Deliberately no `cause` option: Node's unhandled-rejection printer walks
+    // `.cause` chains and could print an unredacted underlying error.
+    constructor(message, details, hint) {
+        super(message);
         this.name = 'ActionError';
         this.details = details;
         this.hint = hint;
@@ -65041,12 +65043,33 @@ async function emitToCore(err) {
     }
     core.summary.addHeading(message, 3);
     if (details) {
-        core.summary.addRaw('\n```\n' + details + '\n```\n');
+        // Escaped inside <pre>, not a ``` fence: details carry untrusted text
+        // (Railway, docker), and a fence in it would end the block and let the
+        // rest render as markdown/HTML.
+        core.summary.addRaw('\n<pre>' + escapeHtml(details) + '</pre>\n');
     }
     if (hint) {
         core.summary.addQuote('💡 ' + hint);
     }
-    await core.summary.write();
+    // The summary is best-effort: with no GITHUB_STEP_SUMMARY (some self-hosted
+    // or local runners) write() rejects, which must not replace the real error
+    // or skip the caller's exit code.
+    try {
+        await core.summary.write();
+    }
+    catch (writeErr) {
+        core.summary.emptyBuffer();
+        core.debug(`Could not write the job summary: ${(0, log_sanitize_1.sanitizeForLog)(writeErr instanceof Error ? writeErr.message : String(writeErr))}`);
+    }
+}
+/** Escape text for literal display inside HTML (the job summary). */
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 
@@ -65203,7 +65226,7 @@ async function resolveImageDigest(ref, opts, execFn) {
         // since ActionError.details is emitted via core.info (raw stdout, no
         // escaping), an attacker-controlled error payload would inject workflow
         // commands. Replace `::` with the U+2236 ratio glyph and strip CR.
-        `Image: ${ref}\nError: ${(0, log_sanitize_1.sanitizeForLog)(inspect.stderr)}`, 'Check that the image exists, is accessible, and registry credentials are correct');
+        `Image: ${ref}\nError: ${capDockerOutput((0, log_sanitize_1.sanitizeForLog)(inspect.stderr))}`, 'Check that the image exists, is accessible, and registry credentials are correct');
     }
     let parsed;
     try {
@@ -65213,7 +65236,7 @@ async function resolveImageDigest(ref, opts, execFn) {
         // Intentionally no { cause } — Node's default unhandled-rejection
         // printer walks .cause chains; the underlying SyntaxError can include
         // unmasked stdout fragments. details already includes the stdout.
-        throw new errors_1.ActionError('Failed to parse manifest JSON for image', `Image: ${ref}\nOutput: ${(0, log_sanitize_1.sanitizeForLog)(inspect.stdout)}`, 'Ensure the image tag exists and the registry returns a valid manifest');
+        throw new errors_1.ActionError('Failed to parse manifest JSON for image', `Image: ${ref}\nOutput: ${capDockerOutput((0, log_sanitize_1.sanitizeForLog)(inspect.stdout))}`, 'Ensure the image tag exists and the registry returns a valid manifest');
     }
     const digest = parsed.digest;
     if (!digest) {
@@ -65230,6 +65253,17 @@ async function resolveImageDigest(ref, opts, execFn) {
     const resolved = `${base}@${digest}`;
     core.info(`  ✓ Resolved: ${resolved}`);
     return resolved;
+}
+/** Max chars of docker stdout/stderr carried into an error's details. */
+const DOCKER_OUTPUT_MAX_CHARS = 4096;
+/**
+ * Cap docker output quoted in error details, with the same elision marker as
+ * `getBuildLogs`: a registry can return an arbitrarily large error body.
+ */
+function capDockerOutput(text) {
+    if (text.length <= DOCKER_OUTPUT_MAX_CHARS)
+        return text;
+    return `${text.slice(0, DOCKER_OUTPUT_MAX_CHARS)}\n…[truncated ${text.length - DOCKER_OUTPUT_MAX_CHARS} bytes]`;
 }
 
 
@@ -65587,6 +65621,7 @@ const REGISTRY_USERNAME_ALLOWED = /^[^\r\n%[\]]*$/;
  */
 function parseServicesString(input) {
     const result = new Map();
+    const seenIds = new Set();
     for (const rawLine of input.split('\n')) {
         const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
         if (line.trim() === '')
@@ -65608,6 +65643,14 @@ function parseServicesString(input) {
         if (!exports.UUID_PATTERN.test(serviceId)) {
             throw new errors_1.ActionError(`services: service ID for '${label}' is not a valid UUID`, `Got: '${serviceId}'`, 'Use the Railway service UUID, e.g. 1234abcd-12ab-34cd-56ef-1234567890ab.');
         }
+        // The same service under two labels would be updated and redeployed
+        // twice. Safe to echo: it passed UUID_PATTERN above. UUIDs are
+        // case-insensitive, so compare lowercased.
+        const idKey = serviceId.toLowerCase();
+        if (seenIds.has(idKey)) {
+            throw new errors_1.ActionError(`services: service ID '${serviceId}' appears more than once`, undefined, 'List each Railway service once in services.');
+        }
+        seenIds.add(idKey);
         result.set(label, serviceId);
     }
     return result;
@@ -66206,7 +66249,8 @@ function collectSecretValues(value, out = []) {
  * Mutated in place (not rebuilt) on purpose: a new `ClientError` would re-run
  * its constructor and bake the JSON back in, and the same instance must keep
  * `instanceof ClientError`, `response.status` and `response.errors` working
- * for retry classification and `mapToActionError`.
+ * for retry classification and `mapToActionError`. Every other `response`
+ * field (raw `body`, `headers`, `data`, `extensions`) is dropped.
  */
 function redactClientError(err, secrets) {
     // Strip CR before scrubbing: sanitizeForLog drops CRs, which would otherwise
@@ -66221,6 +66265,12 @@ function redactClientError(err, secrets) {
     err.message =
         err.response.errors?.[0]?.message ?? `GraphQL Error (Code: ${String(err.response.status)})`;
     err.request = { query: err.request.query };
+    // Keep only what retry classification and mapToActionError read. `body` is
+    // the raw, unscrubbed response text (it repeats any echoed secret), and
+    // `headers`/`data`/`extensions` are never used; all would show up in
+    // `JSON.stringify(err)` or `util.inspect(err)`.
+    const { status, errors } = err.response;
+    err.response = { status, errors };
     // Keep the stack frames, drop the JSON-bearing header lines.
     const frames = (err.stack ?? '').split('\n').filter((line) => /^\s+at /.test(line));
     err.stack = [`ClientError: ${err.message}`, ...frames].join('\n');
@@ -66575,7 +66625,7 @@ function mapToActionError(err, operation) {
         const code = (typeof causeCode === 'string' ? causeCode : undefined) ??
             (typeof e.code === 'string' ? e.code : undefined);
         if (code) {
-            return new errors_1.ActionError('Railway API request failed', code, 'Check your network connection and that backboard.railway.app is reachable.');
+            return new errors_1.ActionError('Railway API request failed', code, 'Check your network connection and that backboard.railway.com is reachable.');
         }
     }
     // Unknown error class — preserve only the message text. No { cause }.
@@ -66603,7 +66653,7 @@ function mapToActionError(err, operation) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.BUILD_LOGS_QUERY = exports.SERVICE_INSTANCE_LATEST_DEPLOYMENT_QUERY = exports.DEPLOYMENT_STATUS_QUERY = exports.DEPLOY_MUTATION = exports.UPDATE_IMAGE_MUTATION = exports.RAILWAY_API_URL = void 0;
 /** Railway Backboard GraphQL endpoint. */
-exports.RAILWAY_API_URL = 'https://backboard.railway.app/graphql/v2';
+exports.RAILWAY_API_URL = 'https://backboard.railway.com/graphql/v2';
 // ─────────────────────────────────────────────────────────────────────────
 // Mutations
 // ─────────────────────────────────────────────────────────────────────────
@@ -66932,9 +66982,9 @@ const BUILD_LOG_MAX_BYTES = 16 * 1024;
  * truncated to `BUILD_LOG_MAX_BYTES`. The truncated portion is replaced
  * by a clearly-marked elision marker so log readers can tell.
  */
-async function getBuildLogs(client, id, limit = 100, signal) {
+async function getBuildLogs(client, id, limit = 100, signal, policy) {
     try {
-        const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.BUILD_LOGS_QUERY, { id, limit }, { operationName: 'buildLogs', signal }));
+        const raw = await (0, retry_1.withRetry)(() => client.request(mutations_1.BUILD_LOGS_QUERY, { id, limit }, { operationName: 'buildLogs', signal }), policy);
         if (typeof raw !== 'object' || raw === null)
             return '';
         const logs = raw.buildLogs;
@@ -66997,7 +67047,8 @@ exports.GATE_TOTAL_TIMEOUT_MS = 600_000;
  * Railway invents can never be silently misread as healthy. `SLEEPING`,
  * `REMOVED`, and `SKIPPED` are terminal-but-not-success (`terminal-neutral`) —
  * they'll never reach SUCCESS by polling, so we fail fast rather than burn the
- * whole wait budget.
+ * whole wait budget. `NEEDS_APPROVAL` (`needs-approval`) only moves on when
+ * someone approves it in the dashboard, so it fails fast too, with its own hint.
  */
 function classifyStatus(status) {
     switch (status) {
@@ -67010,6 +67061,8 @@ function classifyStatus(status) {
         case 'SKIPPED':
         case 'SLEEPING':
             return 'terminal-neutral';
+        case 'NEEDS_APPROVAL':
+            return 'needs-approval';
         case 'BUILDING':
         case 'DEPLOYING':
         case 'INITIALIZING':
@@ -67024,7 +67077,8 @@ function classifyStatus(status) {
 }
 /**
  * Poll `deployment(id)` until status enters a terminal state, then resolve
- * (on SUCCESS) or throw an `ActionError` (on FAILED/CRASHED/REMOVED/SKIPPED).
+ * (on SUCCESS) or throw an `ActionError` (on FAILED/CRASHED/REMOVED/SKIPPED/
+ * SLEEPING/NEEDS_APPROVAL).
  * On timeout, throw an `ActionError` with the last observed status.
  *
  * Used by `run.ts deployOrdered` after the first-service redeploy so we
@@ -67082,6 +67136,9 @@ async function waitForDeployment(client, deploymentId, opts = {}) {
         const klass = classifyStatus(snapshot.status);
         if (klass === 'ready') {
             return snapshot;
+        }
+        if (klass === 'needs-approval') {
+            throw await gateError(client, deploymentId, `Deployment ${deploymentId} is waiting for approval`, `Status: ${snapshot.status}`, 'This deployment is waiting for approval in the Railway dashboard; approve it, then re-run.', signal);
         }
         if (klass !== 'progressing') {
             // failed OR terminal-neutral — will never reach SUCCESS by polling.
@@ -67151,7 +67208,10 @@ function defaultOnPoll(snapshot) {
  * (best-effort) so a deploy that failed server-side surfaces its logs.
  */
 async function gateError(client, deploymentId, message, statusLine, hint, signal) {
-    const logs = await getBuildLogs(client, deploymentId, 100, signal);
+    // Single attempt: this read is best-effort and runs after the gate already
+    // failed or hit its cap, so it adds at most one request timeout (30s), not
+    // the default policy's ~100s.
+    const logs = await getBuildLogs(client, deploymentId, 100, signal, { retries: 0 });
     const detailsParts = [`Deployment: ${deploymentId}`, statusLine];
     if (logs !== '')
         detailsParts.push(`Build logs (last 100 lines):\n${logs}`);
@@ -67314,7 +67374,9 @@ function isSafeToResendError(err) {
 }
 /**
  * True only if Railway definitively processed and refused the request: a
- * GraphQL `errors[]` response, or an HTTP 4xx other than 429. Our own
+ * GraphQL `errors[]` response with a status below 500, or an HTTP 4xx other
+ * than 429. A 5xx is never definitive, even with an `errors[]` body (a
+ * gateway or a half-finished request can produce one). Our own
  * `ActionError`s (shape validation) also count. Everything else — 5xx, 429
  * after retries, any network error, our per-request timeout
  * (`RequestTimeoutError`), unknown shapes — leaves a non-idempotent call's outcome
@@ -67324,9 +67386,11 @@ function isDefinitiveRejection(err) {
     if (err instanceof errors_1.ActionError)
         return true;
     if (err instanceof graphql_request_1.ClientError) {
+        const status = err.response.status;
+        if (status >= 500)
+            return false;
         if ((err.response.errors?.length ?? 0) > 0)
             return true;
-        const status = err.response.status;
         return status >= 400 && status < 500 && status !== 429;
     }
     return false;

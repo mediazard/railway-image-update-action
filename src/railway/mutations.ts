@@ -11,7 +11,7 @@
 import type { RegistryCredentials } from '../types';
 
 /** Railway Backboard GraphQL endpoint. */
-export const RAILWAY_API_URL = 'https://backboard.railway.app/graphql/v2';
+export const RAILWAY_API_URL = 'https://backboard.railway.com/graphql/v2';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Mutations
@@ -129,4 +129,5 @@ export type DeploymentStatus =
   | 'SLEEPING'
   | 'SKIPPED'
   | 'WAITING'
-  | 'QUEUED';
+  | 'QUEUED'
+  | 'NEEDS_APPROVAL';
