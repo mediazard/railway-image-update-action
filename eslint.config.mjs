@@ -14,6 +14,7 @@ export default defineConfig([
     '**/*.mjs',
     '*.config.js',
     '*.config.ts',
+    '*.config.mts',
   ]),
   {
     files: ['**/*.ts'],

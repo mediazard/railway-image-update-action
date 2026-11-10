@@ -1,7 +1,7 @@
 import { ActionError } from '../../src/errors';
 
 // Mock `@actions/core` with explicit named exports. Vitest's `clearMocks`
-// + `restoreMocks` (set in vitest.config.ts) reset call history between
+// + `restoreMocks` (set in vitest.config.mts) reset call history between
 // tests; we re-stub `getInput` / `getBooleanInput` per test as needed.
 vi.mock('@actions/core', () => ({
   getInput: vi.fn(),
