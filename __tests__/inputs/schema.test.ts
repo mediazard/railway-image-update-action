@@ -306,6 +306,21 @@ describe('injection hardening — first-service, labels, registry-username', () 
     );
   });
 
+  it('rejects a label that appears more than once (no silent overwrite)', () => {
+    const input = `web:${WEB_UUID}\nworker:${WORKER_UUID}\n web :${WORKER_UUID}`;
+    expect(() => parseServicesString(input)).toThrow(ActionError);
+    expect(() => parseServicesString(input)).toThrow(
+      "services: label 'web' appears more than once",
+    );
+  });
+
+  it('checks forbidden characters before duplicates, so an unsafe label is never echoed', () => {
+    const input = `a,b:${WEB_UUID}\na,b:${WORKER_UUID}`;
+    expect(() => parseServicesString(input)).toThrow(
+      'services: label contains forbidden characters',
+    );
+  });
+
   it('still accepts labels with spaces and dashes', () => {
     const map = parseServicesString(`web app:${WEB_UUID}\napi-v2:${WORKER_UUID}`);
     expect(Array.from(map.keys())).toEqual(['web app', 'api-v2']);

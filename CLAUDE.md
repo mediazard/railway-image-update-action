@@ -54,7 +54,8 @@ Flow (`src/run.ts`):
 - `src/railway/dry-run.ts` — Dry-run path (no live API calls)
 - `src/image/{digest,mutable}.ts` — Digest resolution + mutable-tag guard
 - `src/outputs/{state,writer}.ts` — Deploy state + `$GITHUB_OUTPUT` writer
-- `src/errors.ts` — `ActionError`, `mapToActionError`
+- `src/errors.ts` — `ActionError`, `emitToCore`
+- `src/railway/errors.ts` — `mapToActionError` (strips request bodies/headers)
 - `src/log-sanitize.ts` — `sanitizeForLog` (strips workflow-command injection)
 - `dist/index.js` — Bundled output; **must be rebuilt and committed** on any src change
 - `eslint.config.mjs` — ESLint 10 flat config (type-aware, typescript-eslint 8)
@@ -66,7 +67,8 @@ Flow (`src/run.ts`):
 
 - Pure TypeScript, strict mode; deps declared in `package.json`
 - Validate all inputs with zod (`ActionInputsSchema`); never trust raw strings
-- Errors: `throw new ActionError(message, details, hint)` — caught + surfaced by `mapToActionError`
+- Errors: `throw new ActionError(message, details, hint)` — caught in `src/main.ts` + surfaced by `emitToCore`;
+  Railway transport errors are mapped first by `mapToActionError` (`src/railway/errors.ts`)
 - Wrap every live GraphQL call in `withRetry()` (retries 429/5xx + network codes only)
 - Sanitize anything echoed to logs with `sanitizeForLog()` (build logs, user input)
 - Immutable updates (spread), async/await + try-catch
@@ -101,6 +103,7 @@ Flow (`src/run.ts`):
 | `registry-password` | No | Private registry password (with username) |
 | `resolve-to-digest` | No | Resolve tag to a content-addressed digest (default: `true`) |
 | `allow-mutable-tag` | No | Allow a mutable tag when `resolve-to-digest` is false (default: `false`) |
+| `dry-run` | No | Log the Railway API calls without sending them; nothing is deployed (default: `false`) |
 
 ## Outputs
 
