@@ -43,7 +43,7 @@ npm run smoke      # node -e "require('./dist/index.js')"
 npm run verify     # everything above
 ```
 
-After ANY src/ change, run `npm run bundle && git add dist/` before pushing. CI runs `git diff --exit-code dist/` and fails if you forget.
+After ANY src/ change, run `npm run bundle && git add dist/` before pushing. CI runs `npm run bundle`, then fails if `git status --porcelain dist/` is non-empty (modified *or new* files).
 
 If `dist/` conflicts on rebase or merge, regenerate it: `npm run bundle && git add dist/`. We deliberately do NOT use `.gitattributes merge=ours` because it strands stale bundles silently.
 
@@ -58,13 +58,30 @@ User-facing changes (new inputs, changed behaviour, new outputs, bug fixes) requ
 - Sequential service iteration is an **invariant** — never replace the `for...of await` loop in `run.ts` with `Promise.all`. The `FakeRailwayClient` fixture throws on concurrent `request()` to enforce this.
 - Use libraries to reduce code: `zod` for validation, `graphql-request` for transport, `p-retry` for retries. Don't roll your own.
 - Logs go through `@actions/core` — never `console.log` or `process.stdout.write` directly.
+- Don't reference private deployments, workflow run ids or company names in code, comments, tests or docs.
 
 ## Branch protection
 
-`main` branch should have:
-- Required PR review (at least 1 approval)
-- Required status checks: `Build & Test`, `actionlint`
-- Required up-to-date with base
-- Restricted force-push
+`main` is protected by a repository ruleset that targets the default branch:
 
-The rolling major tag (e.g. `v1`) is force-pushed by the release workflow — exclude it from branch protection.
+- Every change goes through a pull request. Required approvals: **0**. This is a solo-maintained project and you can't approve your own PR, so the protection is "PR plus green checks", not a second reviewer.
+- Required status checks: `Build & Test` and `actionlint` (the job `name:` values in `ci.yml`), and the branch must be up to date with `main`. Renaming either job silently blocks every PR until the ruleset is updated to match.
+- No force-push and no deletion of `main`.
+
+The ruleset targets branches only, so the rolling major tag (e.g. `v1`), which the release workflow force-pushes, is unaffected.
+
+## Releasing
+
+1. In a PR, bump the version with `npm version X.Y.Z --no-git-tag-version` (updates `package.json` and `package-lock.json`) and move the `[Unreleased]` changelog section to `[X.Y.Z] — YYYY-MM-DD`.
+2. After the PR merges, tag the merge commit on `main` and push the tag:
+   ```bash
+   git switch main && git pull
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+3. The release workflow runs only for semver tags (`vX.Y.Z` or `vX.Y.Z-suffix`). It checks that the tag matches `package.json`, that the tagged commit is on `main` (a tag pushed before its merge reaches `main` fails), and that `dist/` is fresh. Then it publishes the GitHub release.
+4. The rolling major tag (`v1`) moves only for a stable `v1.x.y` or later. Prereleases (`-rc.N` and other `-` suffixes) are published as prereleases, and neither they nor `v0.x` tags ever create or move a rolling tag.
+
+## Dependabot
+
+npm PRs that change bundled code fail the `dist/` check by design, because Dependabot doesn't rebuild `dist/`. Check out the branch, run `npm run bundle`, and commit `dist/`.
