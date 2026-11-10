@@ -22,7 +22,7 @@ This project uses plain **git**. Branch off `main`, commit, push, open a PR.
 
 ## Architecture
 
-TypeScript GitHub Action running on `node20`, bundled to a single committed
+TypeScript GitHub Action running on `node24`, bundled to a single committed
 `dist/index.js` via `@vercel/ncc`. No bash. `action.yml` points `main`/`post`
 at `dist/index.js`; the entry module is `src/main.ts`, which delegates to
 `src/run.ts`.
@@ -42,7 +42,7 @@ Flow (`src/run.ts`):
 
 ## Key Files
 
-- `action.yml` — Action metadata, inputs/outputs, `node20`/`dist` wiring
+- `action.yml` — Action metadata, inputs/outputs, `node24`/`dist` wiring
 - `src/main.ts` — Entry point; top-level error mapping
 - `src/run.ts` — Orchestration (`deployOrdered` / `deployParallel`, the gate)
 - `src/inputs/parse.ts` — Read raw inputs from core
