@@ -108,13 +108,13 @@ function refineCredentialPair(
   const hasPass = val.registryPassword !== '';
   if (hasUser && !hasPass) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: 'custom',
       path: ['registryUsername'],
       message: 'registry-username provided without registry-password',
     });
   } else if (hasPass && !hasUser) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: 'custom',
       path: ['registryPassword'],
       message: 'registry-password provided without registry-username',
     });
@@ -131,11 +131,14 @@ function refineFirstServiceExists(
   ctx: z.RefinementCtx,
 ): void {
   if (val.firstService === '') return;
+  // zod 3 and 4 both run this refinement when `services` failed its own check
+  // (e.g. empty, "services is required"); the transform never ran, so it is still a string.
+  if (!(val.services instanceof Map)) return;
   // A value failing the character rule already has its own issue; never echo it.
   if (!isSafeFirstService(val.firstService)) return;
   if (!val.services.has(val.firstService)) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: 'custom',
       path: ['firstService'],
       message: `first-service '${val.firstService}' not found in services list`,
     });
@@ -154,9 +157,7 @@ export const ActionInputsSchema = z
       .min(1, 'api-token is required')
       .regex(NO_WORKFLOW_COMMAND_CHARS, 'api-token contains forbidden characters'),
     tokenType: z
-      .enum(['bearer', 'project'], {
-        errorMap: () => ({ message: "token-type must be 'bearer' or 'project'" }),
-      })
+      .enum(['bearer', 'project'], { error: "token-type must be 'bearer' or 'project'" })
       .default('bearer'),
     environmentId: z.string().regex(UUID_PATTERN, 'environment-id must be a UUID'),
     image: z.string().regex(IMAGE_REF_PATTERN, 'image is not a valid Docker image reference'),

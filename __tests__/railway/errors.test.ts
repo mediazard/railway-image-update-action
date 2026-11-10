@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { ClientError } from 'graphql-request';
 import { AbortError } from 'p-retry';
 
@@ -21,13 +20,13 @@ function makeClientError(
       headers: new Headers(),
       body: '',
       errors: errors as any,
-    } as any,
+    },
     {
       query: requestBody ?? '',
       // graphql-request types don't include headers on GraphQLRequestContext,
-      // but the runtime tolerates extra fields. Cast to any to attach.
+      // but the runtime tolerates extra fields; the spread attaches them.
       ...(requestHeaders ? { headers: requestHeaders } : {}),
-    } as any,
+    },
   );
 }
 

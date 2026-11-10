@@ -6,4 +6,4 @@ package-lock.json
 *.md
 *.yml
 *.yaml
-.eslintrc.cjs
+eslint.config.mjs

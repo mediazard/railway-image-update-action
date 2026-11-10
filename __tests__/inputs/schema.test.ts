@@ -254,6 +254,12 @@ describe('zodErrorToActionError — action-input-name messages', () => {
     }
   });
 
+  it('missing services with a first-service set → "services is required", not a TypeError', () => {
+    const err = mapError(makeRawInputs({ services: '', firstService: 'web' }));
+    expect(err.message).toBe('services is required');
+    expect(err.details).toBeUndefined();
+  });
+
   it('multiple issues → all listed in details', () => {
     const err = mapError(makeRawInputs({ apiToken: '', environmentId: '' }));
     // First issue surfaces as headline; both appear in details.
@@ -324,5 +330,87 @@ describe('injection hardening — first-service, labels, registry-username', () 
       makeRawInputs({ registryUsername: 'org+robot', registryPassword: 'p' }),
     );
     expect(good.success).toBe(true);
+  });
+});
+
+/**
+ * Pins for the zod 3 → 4 migration. Written green on zod 3; they must stay
+ * green on zod 4. The never-echo pin (forbidden first-service) may never be relaxed.
+ */
+describe('zod major-upgrade pins', () => {
+  function issuesOf(rawInputs: Record<string, unknown>): string[] {
+    const result = ActionInputsSchema.safeParse(rawInputs);
+    if (result.success) throw new Error('expected schema to fail; this test fixture is invalid');
+    return result.error.issues.map((i) => i.message);
+  }
+
+  it('an invalid token-type has exactly the custom headline', () => {
+    const result = ActionInputsSchema.safeParse(makeRawInputs({ tokenType: 'nope' }));
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(zodErrorToActionError(result.error).message).toBe(
+      "token-type must be 'bearer' or 'project'",
+    );
+  });
+
+  it('omitted optional inputs take their defaults', () => {
+    const raw = makeRawInputs();
+    for (const key of [
+      'tokenType',
+      'firstService',
+      'registryUsername',
+      'registryPassword',
+      'resolveToDigest',
+      'allowMutableTag',
+      'dryRun',
+    ]) {
+      delete raw[key];
+    }
+    const result = ActionInputsSchema.safeParse(raw);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.tokenType).toBe('bearer');
+    expect(result.data.firstService).toBe('');
+    expect(result.data.registryUsername).toBe('');
+    expect(result.data.registryPassword).toBe('');
+    expect(result.data.resolveToDigest).toBe(true);
+    expect(result.data.allowMutableTag).toBe(false);
+    expect(result.data.dryRun).toBe(false);
+  });
+
+  it('an ActionError thrown by the services transform propagates out of safeParse', () => {
+    expect(() =>
+      ActionInputsSchema.safeParse(makeRawInputs({ services: 'web:not-a-uuid' })),
+    ).toThrow(ActionError);
+    expect(() =>
+      ActionInputsSchema.safeParse(makeRawInputs({ services: 'web:not-a-uuid' })),
+    ).toThrow(/not a valid UUID/);
+  });
+
+  it('the object-level credential-pair refinement runs when no field issue exists', () => {
+    expect(issuesOf(makeRawInputs({ registryUsername: 'u', registryPassword: '' }))).toEqual([
+      'registry-username provided without registry-password',
+    ]);
+  });
+
+  it('a forbidden first-service is never echoed, even alongside the refinements', () => {
+    const raw = 'evil%0A::warning::x';
+    const messages = issuesOf(makeRawInputs({ firstService: raw }));
+    expect(messages).toContain('first-service contains forbidden characters');
+    for (const message of messages) {
+      expect(message).not.toContain(raw);
+      expect(message).not.toContain('evil');
+    }
+  });
+
+  it('a field issue is the headline when an unknown first-service is also present', () => {
+    const result = ActionInputsSchema.safeParse(
+      makeRawInputs({ apiToken: 'a\nb', firstService: 'ghost' }),
+    );
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(zodErrorToActionError(result.error).message).toBe(
+      'api-token contains forbidden characters',
+    );
   });
 });

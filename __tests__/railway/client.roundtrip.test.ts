@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import * as core from '@actions/core';
 import { ClientError } from 'graphql-request';
 import { http, HttpResponse, delay } from 'msw';

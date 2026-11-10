@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import * as core from '@actions/core';
 import { ClientError } from 'graphql-request';
 
@@ -27,8 +26,8 @@ function makeClientError(status: number): ClientError {
       headers: new Headers(),
       body: '',
       errors: [],
-    } as any,
-    { query: '' } as any,
+    },
+    { query: '' },
   );
 }
 

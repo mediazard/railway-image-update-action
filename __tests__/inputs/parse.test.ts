@@ -1,7 +1,7 @@
 import { ActionError } from '../../src/errors';
 
 // Mock `@actions/core` with explicit named exports. Vitest's `clearMocks`
-// + `restoreMocks` (set in vitest.config.ts) reset call history between
+// + `restoreMocks` (set in vitest.config.mts) reset call history between
 // tests; we re-stub `getInput` / `getBooleanInput` per test as needed.
 vi.mock('@actions/core', () => ({
   getInput: vi.fn(),
@@ -198,6 +198,18 @@ describe('readInputs — masking happens BEFORE schema validation', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(ActionError);
       expect((err as ActionError).message).toBe('api-token is required');
+    }
+  });
+
+  it('throws ActionError "services is required" when services is empty but first-service is set', () => {
+    installCoreMocks({ services: '', 'first-service': 'web' });
+
+    try {
+      readInputs();
+      throw new Error('expected readInputs to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ActionError);
+      expect((err as ActionError).message).toBe('services is required');
     }
   });
 });

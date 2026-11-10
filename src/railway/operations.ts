@@ -527,7 +527,6 @@ export async function waitForDeployment(
   let lastStatus: string | null = null;
   let lastTransitionAt = started;
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     signal?.throwIfAborted();
     // One retry (not the default two): a single poll must not spend the budget.
@@ -661,6 +660,8 @@ function parseDeploymentSnapshot(raw: unknown, contextKey: string): DeploymentSn
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
+      // Propagate the abort reason verbatim (AbortSignal semantics), whatever its type.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
       reject(signal.reason ?? new Error('Aborted'));
       return;
     }
@@ -671,6 +672,7 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
     const onAbort = (): void => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
       reject(signal?.reason ?? new Error('Aborted'));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
