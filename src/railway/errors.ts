@@ -159,7 +159,7 @@ export function mapToActionError(err: unknown, operation: string): ActionError {
       return new ActionError(
         'Railway API request failed',
         code,
-        'Check your network connection and that backboard.railway.app is reachable.',
+        'Check your network connection and that backboard.railway.com is reachable.',
       );
     }
   }

@@ -373,14 +373,17 @@ export async function getBuildLogs(
   id: string,
   limit = 100,
   signal?: AbortSignal,
+  policy?: Partial<RetryPolicy>,
 ): Promise<string> {
   try {
-    const raw = await withRetry<unknown>(() =>
-      client.request<BuildLogsVariables, unknown>(
-        BUILD_LOGS_QUERY,
-        { id, limit },
-        { operationName: 'buildLogs', signal },
-      ),
+    const raw = await withRetry<unknown>(
+      () =>
+        client.request<BuildLogsVariables, unknown>(
+          BUILD_LOGS_QUERY,
+          { id, limit },
+          { operationName: 'buildLogs', signal },
+        ),
+      policy,
     );
     if (typeof raw !== 'object' || raw === null) return '';
     const logs = (raw as Record<string, unknown>).buildLogs;
@@ -438,7 +441,8 @@ export const GATE_STALL_TIMEOUT_MS = 360_000;
 export const GATE_TOTAL_TIMEOUT_MS = 600_000;
 
 /** Bucket a Railway deployment status for the poll loop. */
-export type StatusClass = 'ready' | 'failed' | 'terminal-neutral' | 'progressing';
+export type StatusClass =
+  'ready' | 'failed' | 'terminal-neutral' | 'needs-approval' | 'progressing';
 
 /**
  * Classify a Railway deployment status. Exhaustive and intentional: an
@@ -446,7 +450,8 @@ export type StatusClass = 'ready' | 'failed' | 'terminal-neutral' | 'progressing
  * Railway invents can never be silently misread as healthy. `SLEEPING`,
  * `REMOVED`, and `SKIPPED` are terminal-but-not-success (`terminal-neutral`) —
  * they'll never reach SUCCESS by polling, so we fail fast rather than burn the
- * whole wait budget.
+ * whole wait budget. `NEEDS_APPROVAL` (`needs-approval`) only moves on when
+ * someone approves it in the dashboard, so it fails fast too, with its own hint.
  */
 export function classifyStatus(status: string): StatusClass {
   switch (status) {
@@ -459,6 +464,8 @@ export function classifyStatus(status: string): StatusClass {
     case 'SKIPPED':
     case 'SLEEPING':
       return 'terminal-neutral';
+    case 'NEEDS_APPROVAL':
+      return 'needs-approval';
     case 'BUILDING':
     case 'DEPLOYING':
     case 'INITIALIZING':
@@ -503,7 +510,8 @@ export interface WaitForDeploymentOptions {
 
 /**
  * Poll `deployment(id)` until status enters a terminal state, then resolve
- * (on SUCCESS) or throw an `ActionError` (on FAILED/CRASHED/REMOVED/SKIPPED).
+ * (on SUCCESS) or throw an `ActionError` (on FAILED/CRASHED/REMOVED/SKIPPED/
+ * SLEEPING/NEEDS_APPROVAL).
  * On timeout, throw an `ActionError` with the last observed status.
  *
  * Used by `run.ts deployOrdered` after the first-service redeploy so we
@@ -577,6 +585,16 @@ export async function waitForDeployment(
     const klass = classifyStatus(snapshot.status);
     if (klass === 'ready') {
       return snapshot;
+    }
+    if (klass === 'needs-approval') {
+      throw await gateError(
+        client,
+        deploymentId,
+        `Deployment ${deploymentId} is waiting for approval`,
+        `Status: ${snapshot.status}`,
+        'This deployment is waiting for approval in the Railway dashboard; approve it, then re-run.',
+        signal,
+      );
     }
     if (klass !== 'progressing') {
       // failed OR terminal-neutral — will never reach SUCCESS by polling.
@@ -695,7 +713,10 @@ async function gateError(
   hint: string,
   signal?: AbortSignal,
 ): Promise<ActionError> {
-  const logs = await getBuildLogs(client, deploymentId, 100, signal);
+  // Single attempt: this read is best-effort and runs after the gate already
+  // failed or hit its cap, so it adds at most one request timeout (30s), not
+  // the default policy's ~100s.
+  const logs = await getBuildLogs(client, deploymentId, 100, signal, { retries: 0 });
   const detailsParts = [`Deployment: ${deploymentId}`, statusLine];
   if (logs !== '') detailsParts.push(`Build logs (last 100 lines):\n${logs}`);
   return new ActionError(message, detailsParts.join('\n'), hint);

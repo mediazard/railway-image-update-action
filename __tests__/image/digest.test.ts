@@ -176,6 +176,36 @@ describe('resolveImageDigest', () => {
     expect(e.details).toContain('manifest unknown');
   });
 
+  it('caps docker stderr in the error details (a 1 MB stderr stays under ~4.2 KB)', async () => {
+    const execFn = vi.fn(async () => ({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'e'.repeat(1024 * 1024),
+    })) as unknown as ExecFn;
+
+    const err = (await resolveImageDigest('ghcr.io/org/app:v1.2.3', {}, execFn).catch(
+      (e: unknown) => e,
+    )) as ActionError;
+
+    expect(err.message).toBe('Failed to resolve manifest digest for image');
+    const errorPart = err.details!.slice(err.details!.indexOf('Error: '));
+    expect(errorPart.length).toBeLessThanOrEqual(4200);
+    expect(errorPart).toContain(`…[truncated ${1024 * 1024 - 4096} bytes]`);
+  });
+
+  it('caps unparseable docker stdout in the error details', async () => {
+    const execFn = mockExecOk('o'.repeat(1024 * 1024));
+
+    const err = (await resolveImageDigest('ghcr.io/org/app:v1.2.3', {}, execFn).catch(
+      (e: unknown) => e,
+    )) as ActionError;
+
+    expect(err.message).toBe('Failed to parse manifest JSON for image');
+    const outputPart = err.details!.slice(err.details!.indexOf('Output: '));
+    expect(outputPart.length).toBeLessThanOrEqual(4200);
+    expect(outputPart).toContain(`…[truncated ${1024 * 1024 - 4096} bytes]`);
+  });
+
   it('throws ActionError when inspect returns empty digest field', async () => {
     const execFn = mockExecOk('{"digest":""}');
 

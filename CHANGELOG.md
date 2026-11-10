@@ -14,6 +14,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - The action runs on `node24` (was `node20`). Self-hosted runners need actions/runner v2.328.0 or newer; macOS 13.4 or earlier and ARM32 runners are not supported.
 - Setting a truthy `DRY_RUN` environment variable without the `dry-run` input now fails the step with a hint. Use the `dry-run` input instead.
 - The post step runs `docker logout` even when `docker login` failed.
+- Railway API requests go to `https://backboard.railway.com/graphql/v2`, the endpoint in Railway's API docs (was `backboard.railway.app`). Update any egress allowlist.
 
 ### Removed
 
@@ -28,6 +29,11 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - `CODEOWNERS` now points at `@mediazard` (a user). The previous `@mediazard/engineering` team never resolved, so no owner was requested.
 - An empty `services` input together with `first-service` now fails with "services is required" instead of a `TypeError`.
 - A label repeated in `services` now fails with "services: label '…' appears more than once". Previously the later line silently replaced the earlier one, so a service could be dropped from the deploy.
+- A service ID repeated in `services` (under two labels) now fails with "services: service ID '…' appears more than once" instead of updating and redeploying the same service twice.
+- A redeploy that fails with HTTP 5xx now always gets the "may have reached Railway" hint, even when the response carries GraphQL errors. It is still never resent.
+- A `first-service` deployment waiting for approval (`NEEDS_APPROVAL`) fails the gate at once with "Deployment … is waiting for approval", instead of waiting about 6 minutes for the stall timeout.
+- When the gate fails, the build logs for the error are read in one attempt, so a failing Railway API adds at most 30 seconds instead of about 100. The README now states the gate's true worst case (about 12 minutes).
+- A missing job summary file (`GITHUB_STEP_SUMMARY` unset) no longer turns the error report into an unhandled rejection; the step still fails with the original error.
 
 ### Security
 
@@ -35,6 +41,9 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Workflow-command injection through logs is closed. Text echoed from Railway, `docker` and inputs is sanitized before it reaches the log, and Railway deployment ids, statuses and resolved digests are shape-checked.
 - Private-registry login goes to the image's real registry host. Docker Hub images (short names such as `myorg/app` or `nginx`, and `docker.io/...`) log in to `https://index.docker.io/v1/`, so the post step's logout now erases the stored Docker Hub credentials.
 - Patched vulnerable dependencies: `undici` (pinned to a fixed 6.x release) and `zod` (now zod 4).
+- `docker` output quoted in an error is capped at 4096 characters, so a registry cannot flood the log and job summary.
+- Redacted Railway API errors no longer keep the raw response body or headers, and each GraphQL error keeps only its scrubbed message (no `extensions`, `locations` or `path`). These could repeat an echoed secret when the error object was serialized.
+- The job summary is HTML-escaped: the error heading and hint, and the details (inside `<pre>`), so text from Railway, `docker` or a service label cannot render as markdown or HTML.
 
 ## [1.1.0] — 2026-07-09
 

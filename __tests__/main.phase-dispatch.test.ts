@@ -34,6 +34,7 @@ vi.mock('@actions/core', () => ({
     addRaw: vi.fn().mockReturnThis(),
     addQuote: vi.fn().mockReturnThis(),
     write: vi.fn().mockResolvedValue(undefined),
+    emptyBuffer: vi.fn().mockReturnThis(),
   },
 }));
 
@@ -252,6 +253,21 @@ describe('runMain — validation failure', () => {
 
     expect(core.setFailed).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
+  });
+
+  it('still sets process.exitCode=1 when the job summary cannot be written', async () => {
+    vi.mocked(core.getState).mockReturnValue('');
+    vi.mocked(core.getInput).mockReturnValue(''); // api-token missing → validation error
+    vi.mocked(core.getBooleanInput).mockReturnValue(false);
+    vi.mocked(core.summary.write).mockRejectedValueOnce(
+      new Error('Unable to find environment variable for $GITHUB_STEP_SUMMARY.'),
+    );
+
+    await expect(runMain()).resolves.toBeUndefined();
+
+    expect(core.error).toHaveBeenCalledTimes(1);
+    expect(process.exitCode).toBe(1);
+    expect(core.setOutput).toHaveBeenCalledWith('failed-services', '');
   });
 });
 

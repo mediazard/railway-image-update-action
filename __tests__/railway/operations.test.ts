@@ -711,6 +711,7 @@ describe('classifyStatus', () => {
     expect(classifyStatus('WAITING')).toBe('progressing');
     expect(classifyStatus('QUEUED')).toBe('progressing');
     expect(classifyStatus('REMOVING')).toBe('progressing');
+    expect(classifyStatus('NEEDS_APPROVAL')).toBe('needs-approval');
   });
 
   it('treats an unrecognized status as progressing (never misread as healthy)', async () => {
@@ -1223,6 +1224,22 @@ describe('redeploy — outcome-unknown hint on every failure that is not a defin
     expect(err.hint).not.toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
   });
 
+  // A gateway 5xx can carry an errors[] body; the status says Railway may not
+  // have finished (or may have finished) processing, so the outcome is unknown.
+  it('HTTP 502 with GraphQL errors[] → outcome-unknown hint, sent once', async () => {
+    const gqlError = new ClientError(
+      {
+        status: 502,
+        headers: new Headers(),
+        body: '',
+        errors: [{ message: 'upstream connect error' }],
+      } as any,
+      { query: '' },
+    );
+    const err = await redeployError(gqlError);
+    expect(err.hint).toBe(REDEPLOY_OUTCOME_UNKNOWN_HINT);
+  });
+
   // PIN: GraphQL errors[] means Railway processed and refused the mutation.
   it('pin: GraphQL errors[] keep the generic mapped hint', async () => {
     const gqlError = new ClientError(
@@ -1261,5 +1278,69 @@ describe('findDeploymentStartedAfter — stays near its bound on a flaky lookup'
 
     expect(err).toBeInstanceOf(ActionError);
     expect(client.calls).toHaveLength(2);
+  });
+});
+
+describe('waitForDeployment — failure path stays bounded (story 13)', () => {
+  /** Status always `status`; buildLogs always fails with `buildLogsError`. */
+  function countingClient(status: string, buildLogsError: unknown) {
+    const counts = { deploymentStatus: 0, buildLogs: 0 };
+    const client = new FakeRailwayClient();
+    client.request = async function <TVars, TResult>(
+      _doc: string,
+      _vars: TVars,
+      opts?: { signal?: AbortSignal; operationName?: string },
+    ): Promise<TResult> {
+      if (opts?.operationName === 'deploymentStatus') {
+        counts.deploymentStatus += 1;
+        return { deployment: { id: 'd1', status, createdAt: 't' } } as TResult;
+      }
+      if (opts?.operationName === 'buildLogs') {
+        counts.buildLogs += 1;
+        throw buildLogsError;
+      }
+      throw new Error(`unexpected operation ${String(opts?.operationName)}`);
+    };
+    return { client, counts };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reads build logs for a gate failure in exactly one attempt (no retry backoff)', async () => {
+    vi.useFakeTimers();
+    const { client, counts } = countingClient('FAILED', makeClientError(503));
+
+    const settled = waitForDeployment(client, 'd1', {
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+    }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const err = await settled;
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).message).toBe('Deployment d1 ended in FAILED');
+    expect(counts.buildLogs).toBe(1);
+  });
+
+  it('NEEDS_APPROVAL fails on the first poll with an approve-then-re-run hint', async () => {
+    const { client, counts } = countingClient('NEEDS_APPROVAL', makeClientError(404));
+    let t = 0;
+
+    const err = await waitForDeployment(client, 'd1', {
+      onPoll: () => undefined,
+      sleep: () => Promise.resolve(),
+      // Advancing clock so the loop ends even if the status is not terminal.
+      now: () => (t += 10_000),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ActionError);
+    expect(counts.deploymentStatus).toBe(1);
+    expect((err as ActionError).message).toBe('Deployment d1 is waiting for approval');
+    expect((err as ActionError).details).toContain('Status: NEEDS_APPROVAL');
+    expect((err as ActionError).hint).toBe(
+      'This deployment is waiting for approval in the Railway dashboard; approve it, then re-run.',
+    );
   });
 });

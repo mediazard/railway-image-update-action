@@ -132,7 +132,9 @@ export function isSafeToResendError(err: unknown): boolean {
 
 /**
  * True only if Railway definitively processed and refused the request: a
- * GraphQL `errors[]` response, or an HTTP 4xx other than 429. Our own
+ * GraphQL `errors[]` response with a status below 500, or an HTTP 4xx other
+ * than 429. A 5xx is never definitive, even with an `errors[]` body (a
+ * gateway or a half-finished request can produce one). Our own
  * `ActionError`s (shape validation) also count. Everything else — 5xx, 429
  * after retries, any network error, our per-request timeout
  * (`RequestTimeoutError`), unknown shapes — leaves a non-idempotent call's outcome
@@ -141,8 +143,9 @@ export function isSafeToResendError(err: unknown): boolean {
 export function isDefinitiveRejection(err: unknown): boolean {
   if (err instanceof ActionError) return true;
   if (err instanceof ClientError) {
-    if ((err.response.errors?.length ?? 0) > 0) return true;
     const status = err.response.status;
+    if (status >= 500) return false;
+    if ((err.response.errors?.length ?? 0) > 0) return true;
     return status >= 400 && status < 500 && status !== 429;
   }
   return false;

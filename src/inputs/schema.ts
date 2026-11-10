@@ -60,6 +60,7 @@ const REGISTRY_USERNAME_ALLOWED = /^[^\r\n%[\]]*$/;
  */
 export function parseServicesString(input: string): Map<string, string> {
   const result = new Map<string, string>();
+  const seenIds = new Set<string>();
 
   for (const rawLine of input.split('\n')) {
     const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
@@ -102,6 +103,19 @@ export function parseServicesString(input: string): Map<string, string> {
         'Use the Railway service UUID, e.g. 1234abcd-12ab-34cd-56ef-1234567890ab.',
       );
     }
+
+    // The same service under two labels would be updated and redeployed
+    // twice. Safe to echo: it passed UUID_PATTERN above. UUIDs are
+    // case-insensitive, so compare lowercased.
+    const idKey = serviceId.toLowerCase();
+    if (seenIds.has(idKey)) {
+      throw new ActionError(
+        `services: service ID '${serviceId}' appears more than once`,
+        undefined,
+        'List each Railway service once in services.',
+      );
+    }
+    seenIds.add(idKey);
 
     result.set(label, serviceId);
   }
