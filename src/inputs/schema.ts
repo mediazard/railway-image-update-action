@@ -85,6 +85,16 @@ export function parseServicesString(input: string): Map<string, string> {
       );
     }
 
+    // A repeated label would silently overwrite the earlier entry, dropping a
+    // service from the deploy. Safe to echo: it passed the denylist above.
+    if (result.has(label)) {
+      throw new ActionError(
+        `services: label '${label}' appears more than once`,
+        undefined,
+        'Each services line needs a unique label.',
+      );
+    }
+
     if (!UUID_PATTERN.test(serviceId)) {
       throw new ActionError(
         `services: service ID for '${label}' is not a valid UUID`,

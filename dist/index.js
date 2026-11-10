@@ -65600,6 +65600,11 @@ function parseServicesString(input) {
         if (LABEL_FORBIDDEN_CHARS.test(label)) {
             throw new errors_1.ActionError('services: label contains forbidden characters', `Offending line: '${rawLine}'`, 'Labels may not contain control characters, line separators, commas or square brackets.');
         }
+        // A repeated label would silently overwrite the earlier entry, dropping a
+        // service from the deploy. Safe to echo: it passed the denylist above.
+        if (result.has(label)) {
+            throw new errors_1.ActionError(`services: label '${label}' appears more than once`, undefined, 'Each services line needs a unique label.');
+        }
         if (!exports.UUID_PATTERN.test(serviceId)) {
             throw new errors_1.ActionError(`services: service ID for '${label}' is not a valid UUID`, `Got: '${serviceId}'`, 'Use the Railway service UUID, e.g. 1234abcd-12ab-34cd-56ef-1234567890ab.');
         }
