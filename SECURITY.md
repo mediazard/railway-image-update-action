@@ -4,7 +4,8 @@
 
 | Version          | Status                                     |
 | ---------------- | ------------------------------------------ |
-| `v1.x` (current) | Active development; security and bug fixes |
+| `v2.x` (current) | Active development; security and bug fixes |
+| `v1.x`           | No longer developed; upgrade to v2         |
 | older            | Unsupported                                |
 
 ## Reporting a vulnerability

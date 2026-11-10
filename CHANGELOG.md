@@ -4,6 +4,10 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-11-10
+
+Upgrading from v1: the action now runs on `node24` (self-hosted runners need actions/runner v2.328.0+), the `DRY_RUN` environment variable fails the step (use the `dry-run` input), duplicate service labels or IDs are rejected, and the Railway API host is `backboard.railway.com`. Pin `@v2` or a v2 SHA to opt in.
+
 ### Added
 
 - `dry-run` input (default `false`). Logs the Railway API calls that would be made without sending them; `deployed-services` and `failed-services` are written empty.

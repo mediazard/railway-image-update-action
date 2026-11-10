@@ -241,7 +241,7 @@ Services are always processed one at a time, in input order (after `first-servic
 | ----------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Full commit SHA (recommended) | `@<full-commit-sha> # vX.Y.Z` | Cannot be changed under you                                                                                  |
 | Specific version tag          | `@vX.Y.Z`                     | A tag, so it can be moved. It becomes immutable only once immutable releases are enabled for this repository |
-| Rolling major tag             | `@v1`                         | Moves to every stable v1 release                                                                             |
+| Rolling major tag             | `@v2`                         | Moves to every stable v2 release                                                                             |
 
 To keep SHA pins current, enable Dependabot for GitHub Actions:
 
