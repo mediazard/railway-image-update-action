@@ -48,7 +48,7 @@ The `image-tag` output holds the resolved digest ref (for example `ghcr.io/myorg
 | Workspace | One workspace                               | `Authorization: Bearer` | `bearer` (default) |
 | Project   | One environment of one project              | `Project-Access-Token`  | `project`          |
 
-- **Recommended: a project token for the target environment.** It is the least privilege that works. Create it in the project's settings under Tokens, choosing the environment you deploy to.
+- **Recommended: a project token for the target environment.** It is the least privilege that works. Create a project token in the Railway dashboard for the environment you deploy to.
 - A project token only works for its own environment. Its environment must be the one in `environment-id`; otherwise Railway answers with "forbidden" or "not found" errors.
 - Setting the wrong `token-type` for a token (for example a project token with the default `bearer`) fails with `Railway API authentication failed`.
 - Store the token in `secrets`, never in `vars` or in the workflow file.
