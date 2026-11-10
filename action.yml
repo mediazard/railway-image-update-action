@@ -59,7 +59,7 @@ outputs:
     description: "Newline-separated label=deployment-id pairs for each service deployed."
 
 runs:
-  using: "node20"
+  using: "node24"
   main: "dist/index.js"
   post: "dist/index.js"
   post-if: "always()"
