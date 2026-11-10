@@ -10,7 +10,7 @@ A reusable GitHub Action that updates Docker image source on Railway services an
 - Private registry authentication (AWS ECR, Azure ACR, GHCR, Docker Hub, self-hosted)
 - **Resolves image tags to content-addressed digests by default** — prevents mutable-tag races
 - TypeScript implementation, bundled to a single committed `dist/index.js` (no runtime install)
-- Runs on `node20` (~200 ms cold start)
+- Runs on `node24`
 
 ## Why digest pinning?
 
@@ -135,13 +135,13 @@ If any step fails, only services that completed their own update + redeploy appe
 
 ## Runner requirements
 
-- **Node 20** — provided automatically on GitHub-hosted runners (`ubuntu-latest`, `windows-latest`, `macos-latest`). Self-hosted runners must have Node 20 installed.
+- **Node 24** — provided by the runner (`using: node24`) on GitHub-hosted runners (`ubuntu-latest`, `windows-latest`, `macos-latest`). Self-hosted runners need **actions/runner v2.328.0 or newer**; macOS 13.4 or earlier and ARM32 can't run node24 actions.
 - **`docker buildx`** — required when `resolve-to-digest: true` (the default). Pre-installed on `ubuntu-latest`. Self-hosted runners without docker must either disable digest resolution (`resolve-to-digest: false`) AND set `allow-mutable-tag: true` (or use an immutable `:tag` or `@sha256:` ref), or install docker + buildx.
 - **Linux runners** are the supported configuration. `windows-latest` and `macos-latest` may work for the no-docker path but are not tested.
 
 ## Architecture
 
-Pure TypeScript, bundled to a single `dist/index.js` via `@vercel/ncc`. The runtime is `node20` (provided by the GitHub Actions runner).
+Pure TypeScript, bundled to a single `dist/index.js` via `@vercel/ncc`. The runtime is `node24` (provided by the GitHub Actions runner).
 
 Dependencies (runtime — bundled):
 - `@actions/core`, `@actions/exec` — Actions runtime
