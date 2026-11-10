@@ -4,7 +4,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const BUDGET_BYTES = 2_500_000; // 2.5 MB — covers graphql-request + zod + p-retry + @actions/* stack
+// Measured 3,139,903 B (ncc 0.45, zod 4) plus about 10% headroom. zod 4 classic adds about 1 MB:
+// the build is CommonJS, so ncc bundles the whole package and nothing is tree-shaken.
+const BUDGET_BYTES = 3_450_000;
 const distPath = path.join(__dirname, '..', 'dist', 'index.js');
 
 let size;
