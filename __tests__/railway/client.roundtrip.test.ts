@@ -378,7 +378,7 @@ describe('createRailwayClient — AbortController timeout', () => {
 /**
  * Full-stack roundtrip: real graphql-request client → msw → real Railway
  * response shapes (captured from production). These tests catch the class
- * of bug that hit us twice on London staging: the FakeRailwayClient mocked
+ * of bug that hit us twice on a real staging deploy: the FakeRailwayClient mocked
  * what we ASSUMED Railway returns; only msw + real graphql-request exercises
  * the actual envelope-unwrapping + response-shape contract.
  *
@@ -435,7 +435,7 @@ describe('operations roundtrip — real graphql-request + msw', () => {
   });
 
   it('redeploy returns null for {data: {serviceInstanceDeploy: true}} — Railway "deploy accepted" boolean (caught in production at SHA d3e49af5)', async () => {
-    // Real Railway response captured from London staging deploy 26274637756.
+    // Real Railway response captured from a staging deploy.
     server.use(
       http.post(RAILWAY_API_URL, () =>
         HttpResponse.json({ data: { serviceInstanceDeploy: true } }),

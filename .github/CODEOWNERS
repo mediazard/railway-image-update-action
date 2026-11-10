@@ -3,18 +3,18 @@
 
 # Catch-all for /.github/ so CODEOWNERS, dependabot, workflows, etc. are
 # themselves owned — otherwise a future PR could silently remove protections.
-/.github/            @mediazard/engineering
+/.github/            @mediazard
 
 # Core action logic and CI/CD (more specific overrides above where needed)
-/src/                @mediazard/engineering
-/dist/               @mediazard/engineering
-/action.yml          @mediazard/engineering
-/.github/workflows/  @mediazard/engineering
-/package.json        @mediazard/engineering
-/package-lock.json   @mediazard/engineering
+/src/                @mediazard
+/dist/               @mediazard
+/action.yml          @mediazard
+/.github/workflows/  @mediazard
+/package.json        @mediazard
+/package-lock.json   @mediazard
 
 # Security + contribution guidance
-/SECURITY.md         @mediazard/engineering
-/CONTRIBUTING.md     @mediazard/engineering
+/SECURITY.md         @mediazard
+/CONTRIBUTING.md     @mediazard
 
 # README and docs — unowned (anyone can update)

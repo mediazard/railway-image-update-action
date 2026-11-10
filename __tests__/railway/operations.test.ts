@@ -150,7 +150,7 @@ describe('redeploy — happy path', () => {
     // Railway sometimes returns `serviceInstanceDeploy: true` instead of an id
     // string (deploy accepted but no id surfaced). v0 bash handled this via
     // `[[ "$deploy_id" != "true" ]]`. v1 normalizes boolean → null here so the
-    // caller's "unavailable" warning fires. Caught by a failed London staging
+    // caller's "unavailable" warning fires. Caught by a failed staging
     // deploy at SHA d3e49af5; without this normalization the zod schema
     // rejected the response and the whole deploy failed.
     const client = new FakeRailwayClient();
