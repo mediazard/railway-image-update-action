@@ -57,6 +57,9 @@ Flow (`src/run.ts`):
 - `src/errors.ts` — `ActionError`, `mapToActionError`
 - `src/log-sanitize.ts` — `sanitizeForLog` (strips workflow-command injection)
 - `dist/index.js` — Bundled output; **must be rebuilt and committed** on any src change
+- `eslint.config.mjs` — ESLint 10 flat config (type-aware, typescript-eslint 8)
+- `scripts/size-check.js` — Bundle size budget (3.45 MB)
+- `vitest.config.mts` — Test config; `__tests__/setup.ts` puts a fake `docker` (exit 97) first on PATH
 - `__tests__/` — Vitest suites mirroring `src/`
 
 ## Conventions
@@ -70,6 +73,10 @@ Flow (`src/run.ts`):
 
 ## Gotchas
 
+- Never attach `{ cause }` to errors: Node's unhandled-rejection printer walks `.cause`
+  and would print request bodies. ESLint's `preserve-caught-error` is off on purpose.
+- zod 4 under the CommonJS ncc build adds ~1 MB that can't be tree-shaken; that is why
+  the bundle budget is 3.45 MB.
 - **Rebuild `dist/` after any `src/` change** (`npm run bundle`) and commit it —
   GitHub runs the bundle, not `src/`. A stale `dist/` ships old behavior silently.
 - The first-service deploy gate is **fail-closed**: only `SUCCESS` proceeds;
